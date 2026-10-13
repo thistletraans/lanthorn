@@ -55,7 +55,7 @@ Every slash command, grouped the way `/help` groups them. Type any of these afte
 | Transcript | `search-transcript [query]` | search the transcript; no query repeats the last search |
 | Transcript | `filter-transcript story|meta|both` | filter the transcript by category |
 | Transcript | `export-transcript [file]` | export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead) |
-| Transcript | `toggle-zen-mode` | dim earlier transcript and mark your latest command (persisted) |
+| Transcript | `toggle-zen-mode` | at the live bottom, dim earlier transcript lines and mark your latest command; scrollback is unchanged (persisted) |
 | Style | `open-settings` | open the global settings screen |
 | Style | `reload-style` | reload style.toml from disk |
 | Style | `toggle-watch` | toggle live style-file watching |

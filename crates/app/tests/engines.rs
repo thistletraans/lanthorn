@@ -205,6 +205,8 @@ mod native_disk_sound;
 mod dialog_story_degradation;
 #[path = "suites/lost_treasures_iso_dedupe.rs"]
 mod lost_treasures_iso_dedupe;
+#[path = "suites/image_read_once.rs"]
+mod image_read_once;
 
 #[path = "suites/sq1515_kerkerkruip_restore_arrange.rs"]
 mod sq1515_kerkerkruip_restore_arrange;
@@ -212,6 +214,10 @@ mod sq1515_kerkerkruip_restore_arrange;
 mod sq1712_restore_window_contents;
 #[path = "suites/sq1715_rewind_transcript.rs"]
 mod sq1715_rewind_transcript;
+#[path = "suites/sq1767_rewind_status_line.rs"]
+mod sq1767_rewind_status_line;
+#[path = "suites/sq1758_typed_input.rs"]
+mod sq1758_typed_input;
 #[path = "suites/sq1529_kerkerkruip_grid_fg_ground.rs"]
 mod sq1529_kerkerkruip_grid_fg_ground;
 #[path = "suites/sq1565_kerkerkruip_title_rule_pixel_height.rs"]

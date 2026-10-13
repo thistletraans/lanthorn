@@ -102,8 +102,8 @@ const STARTUP: &[Row] = &[
         &[
             "Root directory for lanthorn data (saves/, users/, documents/).",
             "Default: your platform's data folder (macOS and Linux ~/.local/share/lanthorn,",
-            "Windows %APPDATA%\\lanthorn), or ~/.lanthorn if that",
-            "folder already exists. config.toml and style.toml stay in the config folder.",
+            "Windows %APPDATA%\\lanthorn), or ~/.lanthorn if that holds settings or saves",
+            "(if both hold files, lanthorn asks). config.toml and style.toml stay in the config folder.",
         ],
     ),
     ex(
@@ -208,7 +208,7 @@ const INTERFACE: &[Row] = &[
         ],
     ),
     d("command_prefix", "\"/\"", &["The character that routes a line to a slash command."]),
-    d("command_separator", "false", &["Zen Mode: dim earlier transcript and mark your latest command with a LINE-coloured rule. Toggle with /toggle-zen-mode."]),
+    d("command_separator", "false", &["Zen Mode: at the live bottom, dim earlier lines and mark the latest command with a LINE-coloured rule. Scrollback is unchanged. Toggle with /toggle-zen-mode."]),
     d(
         "guidance",
         "true",
@@ -250,6 +250,24 @@ const INTERFACE: &[Row] = &[
             "The footprint on the STORY pane's bottom border switches it — beside",
             "the map toggle, since the search keeps running with the map hidden —",
             "and \"/set-return-probe\" persists it per-game.",
+        ],
+    ),
+    d(
+        "scan_exits",
+        "true",
+        &[
+            "The first time you stand in a room, ask a silent throwaway copy of the",
+            "game which ways lead out of it, and let the map show the real exits you",
+            "have not walked yet (the \"»\" marks in the matrix and the room card),",
+            "including ones the room description never mentions. Only the direction",
+            "is kept: the map never shows, names or creates the room on the far side",
+            "until you walk there yourself. A way the game refused is asked again on",
+            "a later visit, since a door may have opened. Off, every direction you",
+            "have not typed counts as unexplored, as before.",
+            "",
+            "On by default; it runs your game a few extra turns in private, never",
+            "touches your screen or saves, and waits behind the searches your own",
+            "moves need. Independent of return_probe.",
         ],
     ),
     d(

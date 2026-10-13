@@ -885,6 +885,9 @@ pub struct GameSession {
     /// Whether the turn just drained began printing exactly where the previous
     /// output left the cursor — see [`Engine::output_continued_line`].
     output_continued: bool,
+    /// The story's own input style captured as the last line was submitted — see
+    /// [`Engine::last_input_style`] (SQ-1758).
+    echo_style: crate::engine::InputStyle,
     /// Lazily-built, memoized disassembly cache (routine-discovery boundaries).
     /// `RefCell` because the Debugger read-path is `&self`; consistent with the
     /// existing `mem_fault` interior-mutability pattern.
@@ -911,6 +914,11 @@ pub struct GameSession {
     /// tallies every property of every object once, and the answer describes the
     /// compiler's layout, which no turn can change.
     parse_names: std::cell::OnceCell<Option<zvm::objects::ParseNames>>,
+    /// Names that a `short_name` ROUTINE computes, run on a throwaway copy of the
+    /// story (SQ-1774) — see [`RunningNames`]. Dropped wherever
+    /// [`object_word_set`](Self::object_word_set) is, for the same reason: a
+    /// name read off the game's state is only good while that state is.
+    running_names: std::cell::RefCell<RunningNames>,
     /// The story's avatar-candidate pools (SQ-1259 perf follow-up) — cached
     /// beside [`parse_names`](Self::parse_names) for the identical reason:
     /// both depend only on what is compiled into the story (short names and
@@ -1101,24 +1109,39 @@ pub struct GameSession {
     ///
     /// [`declared_story_screen_dims`]: crate::render::screen::declared_story_screen_dims
     pub boot_screen_cols: u16,
-    /// What [`boot_screen_cols`](Self::boot_screen_cols) was immediately BEFORE
-    /// the most recent [`note_restored_screen_cols`](Self::note_restored_screen_cols)
-    /// raised it, so the raise can be given back once it is safe to (SQ-1604).
+    /// While `Some`, a restore has raised [`boot_screen_cols`](Self::boot_screen_cols)
+    /// above the pane this session booted at and nobody yet knows whether the
+    /// running story needs that floor. The value is the pane width to give back
+    /// if it does not (SQ-1604, reworked SQ-1778).
     ///
     /// The SQ-0681 floor is a blunt protection: it holds the restored save's
-    /// width for the rest of the session even for a story that recomputes its
-    /// status-line layout from header byte $21 every turn, for which the floor
-    /// protects nothing after the first repaint. Set only when a restore is
-    /// about to WIDEN the floor (`cols > boot_screen_cols`, so a restore into a
-    /// narrower save that never raises anything leaves this `None` and never
-    /// reverts a floor the story's own boot established). `drain_turn` clears it
-    /// back to `None` the first time [`GameSession::take_header_width_read`]
-    /// reports the game itself read `$21` — proof the running story does not
-    /// need the floor's protection any more, because it lays its own fields out
-    /// fresh every turn rather than baking them in once at boot the way Zork 1
-    /// r52 does (SQ-0681's specimen, which never reads `$21` again and must keep
-    /// this pin forever).
+    /// width for the rest of the session. Right for Zork 1 r52, which computes
+    /// its status columns once (52 and 65) and keeps drawing there; wrong for
+    /// Lost Pig, which lays the line out afresh from the width it is told.
+    /// A READ of header byte $21 does not tell them apart (r52 reads it every
+    /// turn and still draws at fixed columns), so
+    /// [`settle_width_floor`](Self::settle_width_floor) asks the story directly:
+    /// at the first line read with text in the upper window it replays the
+    /// player's own command on a throwaway copy whose $21 is this pane width and
+    /// counts the cursor moves that fall outside it. None outside means the
+    /// story adapts and the floor is released; any means the layout is baked and
+    /// the floor stays. Cleared once a verdict is in.
     pre_restore_screen_cols: Option<u16>,
+    /// The story file as loaded, kept so the shadow width check can boot a
+    /// throwaway copy (the live image is dirtied by play and by restores).
+    story: std::sync::Arc<Vec<u8>>,
+    /// The floor was a guess (a bare Quetzal `.qzl` carries no screen width, so
+    /// [`note_bare_quetzal_width`](crate::engine_helpers::note_bare_quetzal_width)
+    /// assumes 80). A baked verdict then refines it to the width the story's
+    /// furthest status column implies instead of keeping the guess.
+    floor_is_guess: bool,
+    /// What the shadow width check concluded about this story, remembered for
+    /// the session so a later restore does not ask again (SQ-1778).
+    width_verdict: Option<WidthVerdict>,
+    /// Inconclusive shadow checks so far (a turn that moved no upper-window
+    /// cursor says nothing); capped so a story that never draws a status line
+    /// does not boot a shadow for every command.
+    width_check_tries: u8,
     /// The pre-loaded text (ZMSD §15 `read`, v5+ — TerpEtude option 12,
     /// Beyond Zork's "AGAIN") `zvm` reported for the CURRENTLY pending line
     /// read, empty when nothing is pre-loaded (the overwhelmingly common
@@ -1137,6 +1160,24 @@ pub struct GameSession {
 }
 
 // ── GameSession impl ──────────────────────────────────────────────────────────
+
+/// What the shadow width check learned about a story (SQ-1778).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WidthVerdict {
+    /// Every upper-window cursor move fit the narrower width: the story lays its
+    /// status line out for the width it is told.
+    Adapts,
+    /// Some moves fell outside it: the columns are baked in.
+    Baked,
+}
+
+/// What a throwaway turn at a given header width reported.
+struct ShadowWidthReport {
+    moves: u32,
+    overreach: u32,
+    /// Furthest non-blank upper-window column after the turn.
+    extent: u16,
+}
 
 impl GameSession {
     /// Build a new session from raw story bytes.
@@ -1303,6 +1344,7 @@ impl GameSession {
         config: zvm::cpu::exec::BootConfig,
         trace_from_boot: bool,
     ) -> Result<GameSession, ZError> {
+        let story_image = std::sync::Arc::new(story.clone());
         let mem = Memory::new(story)?;
         // Both read BEFORE the config is handed over, because it is consumed by
         // the boot. `resolved_art_scale` is the same number `BootConfig` scaled
@@ -1331,7 +1373,7 @@ impl GameSession {
         let (pending, quit, line_preload) = run_settled(&mut machine, default_turn_budget());
 
         Ok(GameSession {
-            machine, quit, pending, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit, pending, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -1339,6 +1381,7 @@ impl GameSession {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -1353,6 +1396,10 @@ impl GameSession {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: story_image,
             line_preload,
             line_preload_seeded: false,
         })
@@ -1822,11 +1869,25 @@ impl GameSession {
     /// known prefix is stripped back off here first — passing the untouched
     /// `command` through unchanged would double it.
     pub fn submit_line_with_terminator(&mut self, command: &str, terminator: u8) -> TurnResult {
+        self.settle_width_floor(command, terminator);
+        self.echo_style = self.read_input_style();
         let typed = command.strip_prefix(self.line_preload.as_str()).unwrap_or(command);
         self.machine.supply_line(typed, terminator);
         self.line_preload.clear();
         self.line_preload_seeded = false;
         self.advance_after_input(false)
+    }
+
+    /// The RAW input style the story had on when it asked for the line now pending
+    /// (SQ-1758): its text style and colour at the `@read`. Whether that is a style
+    /// for INPUT or just the page's own text is the host's call, made against what
+    /// is on screen (`AppState::input_style_against_prompt`) -- the engine keeps no
+    /// memory of its prompt, which a restore would reset. Fixed-pitch is not an
+    /// emphasis and is dropped.
+    fn read_input_style(&self) -> crate::engine::InputStyle {
+        let s = &self.machine.screen;
+        let ink = if s.current_fg == ZColour::Default { 0 } else { crate::state::pack_zcolour(s.current_fg) };
+        crate::engine::InputStyle { bits: s.text_style & 0x07, ink, bits_vs_prompt: true }
     }
 
     /// v5+: does `ch` terminate a line read per the game's terminating-characters
@@ -1958,23 +2019,117 @@ impl GameSession {
         if version < 4 || version == 6 {
             return;
         }
-        // Remember what the floor was about to give up, but only when this
-        // restore actually raises it — a restore into a narrower save is a
-        // no-op `max` with nothing to revert (SQ-1604).
         if cols > self.boot_screen_cols {
-            self.pre_restore_screen_cols = Some(self.boot_screen_cols);
+            match self.width_verdict {
+                // A story already shown to lay itself out for the width it is
+                // told has no baked columns to protect (SQ-1778).
+                Some(WidthVerdict::Adapts) => return,
+                // Already shown to bake them: raise the floor, nothing to ask.
+                Some(WidthVerdict::Baked) => {}
+                // Unknown: raise it, and remember the pane width so the first
+                // qualifying moment can ask the story (`settle_width_floor`).
+                None => {
+                    if self.pre_restore_screen_cols.is_none() {
+                        self.pre_restore_screen_cols = Some(self.boot_screen_cols);
+                    }
+                }
+            }
         }
         self.boot_screen_cols = self.boot_screen_cols.max(cols);
     }
 
-    /// Drain whether the game's own `loadb`/`loadw` read header byte `$21`
-    /// (screen width) since the last drain (SQ-1604) — `zvm`'s own
-    /// [`zvm::cpu::exec::Machine::take_header_width_read`], set inside those
-    /// two opcode arms alone (never the interpreter's own internal reads),
-    /// forwarded from here so `drain_turn` reads it the same way it reads
-    /// every other per-turn VM signal.
-    pub fn take_header_width_read(&mut self) -> bool {
-        self.machine.take_header_width_read()
+    /// [`note_restored_screen_cols`](Self::note_restored_screen_cols) for a
+    /// width that is only a guess (a bare Quetzal save carries none).
+    pub fn note_guessed_screen_cols(&mut self, cols: u16) {
+        let before = self.boot_screen_cols;
+        self.note_restored_screen_cols(cols);
+        if self.boot_screen_cols > before && self.pre_restore_screen_cols.is_some() {
+            self.floor_is_guess = true;
+        }
+    }
+
+    /// Whether the upper window holds any text at all.
+    fn upper_window_holds_text(&self) -> bool {
+        self.machine.screen.upper.cells.iter().any(|c| !c.ch.is_whitespace())
+    }
+
+    /// Replay one command on a throwaway copy of this session whose header
+    /// width is `cols`, and report where the story aimed its upper-window
+    /// cursor (SQ-1778). Nothing here touches `self`, its screen or the host.
+    fn shadow_width_turn(&self, command: &str, terminator: u8, cols: u16) -> Option<ShadowWidthReport> {
+        let rows = self.machine.mem.read_byte(0x20) as u16;
+        let interp = self.machine.mem.read_byte(0x1E);
+        let save = Engine::save_state(self);
+        let mut sh = GameSession::new_with_trace(
+            (*self.story).clone(),
+            false,
+            false,
+            Some(interp),
+            false,
+            Vec::new(),
+            None,
+            None,
+            Some((rows, cols)),
+        )
+        .ok()?;
+        Engine::restore_state(&mut sh, &save).ok()?;
+        sh.machine.screen = self.machine.screen.clone();
+        Engine::set_screen_dims(&mut sh, rows, cols);
+        if sh.pending != InputKind::Line {
+            return None;
+        }
+        let _ = sh.machine.take_upper_cursor_moves();
+        let typed = command.strip_prefix(self.line_preload.as_str()).unwrap_or(command);
+        sh.machine.supply_line(typed, terminator);
+        let _ = sh.advance_after_input(false);
+        let (moves, overreach) = sh.machine.take_upper_cursor_moves();
+        let u = &sh.machine.screen.upper;
+        let extent = (1..=u.cols)
+            .rev()
+            .find(|&c| (1..=u.rows).any(|r| !u.cell(r, c).ch.is_whitespace()))
+            .unwrap_or(0);
+        Some(ShadowWidthReport { moves, overreach, extent })
+    }
+
+    /// Decide, at the first qualifying moment after a restore, whether the
+    /// SQ-0681 floor still protects anything (SQ-1778).
+    ///
+    /// Qualifying: a floor is on trial, the game is at a LINE read (not a key
+    /// wait, so a Save State taken at an intro just keeps its width through the
+    /// intro) and its upper window holds text (the status line has been drawn).
+    /// Then the player's own command is replayed on a throwaway copy whose
+    /// header says the pane width; the live screen never sees it. A turn that
+    /// aimed no cursor at the upper window is no evidence and the floor stays
+    /// on trial.
+    fn settle_width_floor(&mut self, command: &str, terminator: u8) {
+        let Some(narrow) = self.pre_restore_screen_cols else { return };
+        if self.pending != InputKind::Line || !self.upper_window_holds_text() || self.width_check_tries >= 4 {
+            return;
+        }
+        let Some(report) = self.shadow_width_turn(command, terminator, narrow) else { return };
+        if report.moves == 0 {
+            self.width_check_tries += 1;
+            return;
+        }
+        let rows = self.machine.mem.read_byte(0x20) as u16;
+        if report.overreach == 0 {
+            self.width_verdict = Some(WidthVerdict::Adapts);
+            self.boot_screen_cols = narrow;
+        } else {
+            self.width_verdict = Some(WidthVerdict::Baked);
+            if self.floor_is_guess {
+                // The save said nothing about its width: take it from where the
+                // story draws when nothing stops it.
+                if let Some(wide) = self.shadow_width_turn(command, terminator, 255) {
+                    self.boot_screen_cols = narrow.max(wide.extent);
+                }
+            }
+        }
+        self.pre_restore_screen_cols = None;
+        self.floor_is_guess = false;
+        // Do not wait for the host's next poll: this very turn must run at the
+        // settled width.
+        Engine::set_screen_dims(self, rows, self.boot_screen_cols);
     }
 
     /// Build the `TurnResult` from a `RunStop` and drain the VM's per-turn
@@ -2049,6 +2204,7 @@ impl GameSession {
         // the game's own @restore/@restart), so this is the per-turn
         // invalidation the cache's soundness rests on (SQ-1176).
         self.object_word_set.take();
+        self.running_names.take();
         // A mid-turn @restart re-booted the VM: drop the app-side v6 chrome the
         // VM's own screen reset cannot reach — the rasterized picture-canvas
         // cache and the window-0 char counters — so the reboot's fresh boot art
@@ -2093,21 +2249,6 @@ impl GameSession {
                 .and_then(|v6| v6.windows.get(idx))
                 .is_some_and(|w| w.stream_origin == Some(pen))
         });
-        // SQ-1604: a real turn just ran, so this is the earliest safe point to
-        // ask whether the story read header byte $21 itself — restoring never
-        // executes Z-code, so `take_header_width_read` cannot fire from the
-        // restore that raised `pre_restore_screen_cols` in the first place,
-        // only from a turn processed after it. Once it fires, give the
-        // SQ-0681 floor back what a restore borrowed from it: a story that
-        // reads $21 every turn (Lost Pig) lays its fields out fresh from
-        // whatever's declared next turn, so the wide pin has nothing left to
-        // protect; one that never reads it again (Zork 1 r52) never satisfies
-        // this and keeps the pin forever, exactly as SQ-0681 intended.
-        if self.take_header_width_read() {
-            if let Some(cols) = self.pre_restore_screen_cols.take() {
-                self.boot_screen_cols = cols;
-            }
-        }
         let win0_base = self.v6_win0_chars_seen;
         let (erase_lower, cleared_at) = self.take_screen_clear();
         let (raw, raw_runs) = sink_mut(&mut self.machine).take_styled();
@@ -3396,6 +3537,12 @@ impl GameSession {
     /// which is where it lives because a style reload rebuilds it (SQ-1047). `None`
     /// for the engine-only view, which says so rather than reporting a default face
     /// nobody is drawing with.
+    /// The release, serial and checksum this story's header states, for
+    /// [`crate::screen_reader::regions`].
+    pub fn game_identifier(&self) -> blorb::GameIdentifier {
+        crate::screen_reader::identify(&self.machine)
+    }
+
     pub fn v6_window_dump(
         &self,
         cells: &[crate::state::V6CellRect],
@@ -3672,6 +3819,7 @@ impl GameSession {
 
             if let Some(canvas) = visible.get(&(i as u8)) {
                 graphics_entries.push((canvas.z_seq, PositionedWindow {
+                    window: Some(i as u8),
                     x,
                     y,
                     w: cols,
@@ -3736,6 +3884,7 @@ impl GameSession {
                     ry1 = ry1.max(t.y.saturating_sub(1).saturating_add(font_h));
                 }
                 text_entries.push(PositionedWindow {
+                    window: Some(i as u8),
                     x: rx0 / font_w,
                     y: ry0 / font_h,
                     w: (rx1 - rx0).div_ceil(font_w),
@@ -3906,6 +4055,7 @@ impl GameSession {
                 })
             };
             text_entries.push(PositionedWindow {
+                window: Some(i as u8),
                 x,
                 y,
                 w: cols,
@@ -3965,6 +4115,7 @@ impl GameSession {
         // zero-extent test, so the two ask their own questions from here on.
         if text_entries.is_empty() && graphics_entries.is_empty() {
             text_entries.push(PositionedWindow {
+                window: Some(0),
                 x: 0,
                 y: 0,
                 w: content_size.0,
@@ -4340,7 +4491,20 @@ pub fn apply_turn(
         death.unresolved = true;
     }
     if let Some(snap) = &result.location {
-        let arrived = reprinted_room_heading(&result.transcript, &snap.name);
+        // The game printed the room's heading again, OR the story's own exit table declares the
+        // direction just typed a fixed exit back into the room the player is standing in (SQ-1773).
+        // The second is the same fact with different evidence: a self-loop that leaves no
+        // reprinted heading (Scott Adams prints none) must not read as a refused move, because `×`
+        // would claim a wall the table says is not there. Both go down the one `arrived` path
+        // below, so a game that does both records the loop once.
+        let declared_loop = mapper.graph.current() == Some(snap.number)
+            && mapper::direction::is_compass_command(command)
+            && parse_direction(command).is_some()
+            && matches!(
+                result.declared_exit,
+                Some(crate::engine::DeclaredExit::Room(r)) if r == snap.number
+            );
+        let arrived = reprinted_room_heading(&result.transcript, &snap.name) || declared_loop;
         // The map's FIRST room, when nothing in the object tree backs it, must be one the
         // STORY ITSELF named: the status line alone is not evidence. A pre-game
         // banner/menu/character-sheet paints a room-shaped status line and prints no matching
@@ -4861,8 +5025,10 @@ const BARE_NON_NAMES: [&str; 5] = ["it", "them", "this", "that", "thing"];
 ///   auto-multiplied brick instances, `"Brick_1"` .. `"Brick_6"`). Verified not a decoding bug on
 ///   Lost Pig specifically: `zvm::objects::printed_name` — the SQ-1372-aware reader that checks
 ///   the Inform `short_name` PROPERTY before falling back to the header — returns the exact same
-///   text, so these objects genuinely provide no player-facing name at all; the header identifier
-///   is all there is.
+///   text, so no STATIC name exists for these objects; the header identifier is all there is. The
+///   bricks' real name is computed by a `short_name` ROUTINE, which `GameSession::with_running_names`
+///   runs before a name ever reaches this filter (SQ-1774); what is left here is the objects that
+///   have no name even then.
 fn printed_name_is_a_non_name(name: &str) -> bool {
     if BARE_NON_NAMES.contains(&name.to_lowercase().as_str()) {
         return true;
@@ -6086,6 +6252,10 @@ impl Engine for GameSession {
         self.output_continued
     }
 
+    fn last_input_style(&self) -> crate::engine::InputStyle {
+        self.echo_style
+    }
+
     fn pending_input(&self) -> InputKind {
         self.pending
     }
@@ -6211,6 +6381,7 @@ impl Engine for GameSession {
         // drain a turn — drop the cached object-word set here as `drain_turn`
         // does, or it keeps answering for the session we just left (SQ-1176).
         self.object_word_set.take();
+        self.running_names.take();
         self.v6_model_memo.take(); // same duty for the memoized screen model (SQ-1191)
         // The restored memory brings NO screen with it — Quetzal archives none by
         // design — so whatever is in the upper window belongs to the moment we
@@ -6270,6 +6441,7 @@ impl Engine for GameSession {
         // Memory was swapped without draining a turn — same duty as in
         // `restore_state` above (SQ-1176).
         self.object_word_set.take();
+        self.running_names.take();
         self.v6_model_memo.take(); // same duty for the memoized screen model (SQ-1191)
         // complete_restore_success lands mid-way through the game's save verb
         // (just past the @save descriptor), not at a read. Run forward to the
@@ -6491,6 +6663,12 @@ impl Engine for GameSession {
         Some(crate::story_text::zmachine_words(&self.machine.mem))
     }
 
+    /// SQ-1765: v1-v3 from the standard status globals, a known v6 release from
+    /// the global its own band prints, an unknown v6 release from the band text.
+    fn score(&self) -> Option<i32> {
+        crate::screen_reader::score(&self.machine, &self.game_identifier(), || self.screen())
+    }
+
     fn advertises_hint_booklet(&self) -> bool {
         crate::story_text::advertises_hint_booklet(&self.machine.mem)
     }
@@ -6585,6 +6763,29 @@ impl GameSession {
             .as_ref()
     }
 
+    /// `objs` with every object whose `short_name` is a ROUTINE renamed to what
+    /// that routine prints right now (SQ-1774): Lost Pig's bricks are
+    /// `Brick_1`..`Brick_17` in the header and "whole brick" / "half brick" to a
+    /// player, depending on the brick. Everything else passes through untouched,
+    /// so a story with no such routine pays one property read per object.
+    ///
+    /// The name is computed on a throwaway machine ([`zvm::objects::NameRunner`]),
+    /// once per object per turn ([`RunningNames`]); the live machine is only read.
+    fn with_running_names(&self, mut objs: Vec<grammar_model::ObjectWords>) -> Vec<grammar_model::ObjectWords> {
+        let mem = &self.machine.mem;
+        let mut cache = self.running_names.borrow_mut();
+        for o in &mut objs {
+            let Ok(obj) = u16::try_from(o.id) else { continue };
+            if zvm::objects::short_name_routine(mem, obj).is_none() {
+                continue;
+            }
+            if let Some(name) = cache.name_of(mem, obj) {
+                o.printed_name = name;
+            }
+        }
+        objs
+    }
+
     /// The story's avatar-candidate pools, derived on first use — see the
     /// [`player_candidates`](Self::player_candidates) field's doc comment.
     pub fn player_candidates(&self) -> &PlayerCandidates {
@@ -6634,7 +6835,8 @@ impl GameSession {
                 nested_room_num = Some(room_num);
                 // The room's own top level. The player object is structurally a child of
                 // whatever room they stand in (SQ-0667's exact hazard) — excluded by id, not name.
-                direct = crate::inventory::list_inventory(&self.machine.mem, names, room_num)
+                direct = self
+                    .with_running_names(crate::inventory::list_inventory(&self.machine.mem, names, room_num))
                     .into_iter()
                     .filter(|o| Some(o.id) != player_obj.map(u32::from))
                     .collect::<Vec<_>>();
@@ -6642,20 +6844,21 @@ impl GameSession {
                 // Everything else the room reveals is nested by construction: it was excluded
                 // from `direct` above, so any object here that isn't in `direct_ids` was reached
                 // only by recursing into a supporter/container/scenery bucket.
-                nested = crate::render::room_info::list_room_objects_excluding(
-                    self.world_model(),
-                    names,
-                    &self.machine.mem,
-                    loc.number,
-                    player_obj.unwrap_or(0),
-                )
-                .into_iter()
+                nested = self
+                    .with_running_names(crate::render::room_info::list_room_objects_excluding(
+                        self.world_model(),
+                        names,
+                        &self.machine.mem,
+                        loc.number,
+                        player_obj.unwrap_or(0),
+                    ))
+                    .into_iter()
                 .filter(|o| !direct_ids.contains(&o.id))
                 .collect();
             }
         }
         let carried: Vec<grammar_model::ObjectWords> = match player_obj {
-            Some(p) => crate::inventory::list_inventory(&self.machine.mem, names, p),
+            Some(p) => self.with_running_names(crate::inventory::list_inventory(&self.machine.mem, names, p)),
             None => Vec::new(),
         };
 
@@ -6717,22 +6920,45 @@ impl GameSession {
     }
 }
 
+/// The per-turn memo behind [`GameSession::with_running_names`] (SQ-1774): the
+/// throwaway machine that runs `short_name` routines, built on first need, and
+/// each object's answer so a routine runs at most once per object per turn however
+/// many panels ask. `None` in the map means the routine ran and produced nothing
+/// usable, which is as much an answer as a name.
+#[derive(Default)]
+struct RunningNames {
+    runner: Option<Option<zvm::objects::NameRunner>>,
+    names: std::collections::HashMap<u16, Option<String>>,
+}
+
+impl RunningNames {
+    fn name_of(&mut self, live: &zvm::memory::Memory, obj: u16) -> Option<String> {
+        if let Some(hit) = self.names.get(&obj) {
+            return hit.clone();
+        }
+        let runner = self.runner.get_or_insert_with(|| zvm::objects::NameRunner::new(live));
+        let name = runner.as_mut().and_then(|r| r.name_of(live, obj));
+        self.names.insert(obj, name.clone());
+        name
+    }
+}
+
 impl Introspect for GameSession {
     fn vocabulary(&self) -> Vec<String> {
         zvm::dictionary::load(&self.machine.mem).words(&self.machine.mem)
     }
 
     fn contents(&self, container: u16) -> Vec<crate::engine::ObjectWords> {
-        crate::inventory::list_inventory(&self.machine.mem, self.parse_names(), container)
+        self.with_running_names(crate::inventory::list_inventory(&self.machine.mem, self.parse_names(), container))
     }
 
     fn room_objects(&self, room: mapper::graph::RoomId) -> Vec<crate::engine::ObjectWords> {
-        crate::render::room_info::list_room_objects(
+        self.with_running_names(crate::render::room_info::list_room_objects(
             self.world_model(),
             self.parse_names(),
             &self.machine.mem,
             room,
-        )
+        ))
     }
 
     fn room_objects_excluding(
@@ -6740,22 +6966,22 @@ impl Introspect for GameSession {
         room: mapper::graph::RoomId,
         exclude: Option<u16>,
     ) -> Vec<crate::engine::ObjectWords> {
-        crate::render::room_info::list_room_objects_excluding(
+        self.with_running_names(crate::render::room_info::list_room_objects_excluding(
             self.world_model(),
             self.parse_names(),
             &self.machine.mem,
             room,
             exclude.unwrap_or(0),
-        )
+        ))
     }
 
     fn visible_contents(&self, container: u16) -> Vec<crate::engine::ObjectWords> {
-        crate::inventory::list_visible_contents(
+        self.with_running_names(crate::inventory::list_visible_contents(
             self.world_model(),
             self.parse_names(),
             &self.machine.mem,
             container,
-        )
+        ))
     }
 
     fn all_object_words(&self) -> Option<Vec<crate::engine::ObjectWords>> {
@@ -8607,6 +8833,70 @@ mod tests {
         assert!(lines[1].starts_with("memory fault: read16 @"), "fault line: {}", lines[1]);
     }
 
+    // ── SQ-1758: the style the story had on at its @read ──────────────────────
+
+    /// A v5 story that runs `prelude` (raw Z-code) and then `aread` into
+    /// buffers at 0x0200/0x0240 before quitting.
+    fn styled_read_story_v5(prelude: &[u8]) -> Vec<u8> {
+        let mut buf = read_char_story_v5();
+        let mut code = prelude.to_vec();
+        code.extend([0xE4, 0x0F, 0x02, 0x00, 0x02, 0x40, 0x10]); // aread 0x0200 0x0240 -> G0
+        code.push(0xBA); // quit
+        buf[0x0040..0x0040 + code.len()].copy_from_slice(&code);
+        buf[0x0200] = 20; // text buffer: max length
+        buf[0x0240] = 4; // parse buffer: max words
+        buf
+    }
+
+    fn input_style_after_read(prelude: &[u8]) -> crate::engine::InputStyle {
+        let mut s = GameSession::new(styled_read_story_v5(prelude), true, false, None).expect("GameSession::new");
+        assert_eq!(s.pending_input(), InputKind::Line, "premise: parked on the aread");
+        let _ = Engine::submit(&mut s, "look");
+        s.last_input_style()
+    }
+
+    #[test]
+    fn roman_default_colour_at_the_read_is_no_opinion() {
+        let st = input_style_after_read(&[]);
+        assert_eq!((st.bits, st.ink), (0, 0));
+    }
+
+    #[test]
+    fn bold_set_before_the_read_is_the_stories_input_style() {
+        // set_text_style 2 (VAR:241)
+        let st = input_style_after_read(&[0xF1, 0x7F, 0x02]);
+        assert_eq!(st.bits, 0x02, "bold");
+        assert_eq!(st.ink, 0);
+    }
+
+    #[test]
+    fn a_colour_set_before_the_read_is_the_stories_input_ink() {
+        // set_colour fg=3 (red), bg=1 (default) (2OP:27 in variable form)
+        let st = input_style_after_read(&[0xDB, 0x5F, 0x03, 0x01]);
+        assert_eq!(st.ink, crate::state::pack_zcolour(zvm::screen::ZColour::Standard(3)));
+        assert_eq!(st.bits, 0);
+    }
+
+    #[test]
+    fn fixed_pitch_alone_is_not_an_emphasis() {
+        // set_text_style 8 (fixed-pitch) says nothing about how input should look.
+        let st = input_style_after_read(&[0xF1, 0x7F, 0x08]);
+        assert_eq!((st.bits, st.ink), (0, 0));
+    }
+
+    #[test]
+    fn the_style_is_captured_at_submit_not_after_the_turn_has_run() {
+        // The story switches to roman AFTER its read returns (set_text_style 0
+        // follows the aread), so a style read back after the turn would be wrong.
+        let mut buf = styled_read_story_v5(&[0xF1, 0x7F, 0x02]);
+        // Replace the trailing quit with set_text_style 0, then quit.
+        let at = 0x0040 + 3 + 7;
+        buf[at..at + 4].copy_from_slice(&[0xF1, 0x7F, 0x00, 0xBA]);
+        let mut s = GameSession::new(buf, true, false, None).expect("GameSession::new");
+        let _ = Engine::submit(&mut s, "look");
+        assert_eq!(s.last_input_style().bits, 0x02, "bold, as it was AT the read");
+    }
+
     #[test]
     fn pending_input_is_char_after_new_on_read_char_story() {
         let story = read_char_story_v5();
@@ -8914,6 +9204,38 @@ mod tests {
             }
             other => panic!("foreign-engine restore must be refused, got {other:?}"),
         }
+    }
+
+    /// SQ-1765: a Version 3 score game answers the second status global
+    /// (ZMSD 8.2.3.1), and a time game answers `None`.
+    #[test]
+    fn score_is_the_second_global_in_a_v3_score_game() {
+        let story = zvm::fixtures::load("minizork.z3").expect("committed fixture");
+        let mut sess = GameSession::new(story, true, false, None).expect("minizork boots");
+        assert_eq!(sess.score(), Some(0));
+        sess.machine.set_global(1, 25);
+        assert_eq!(sess.score(), Some(25));
+        sess.machine.set_global(1, 0xfffe); // signed: the score may go negative
+        assert_eq!(sess.score(), Some(-2));
+        let flags1 = sess.machine.mem.read_byte(0x01);
+        sess.machine.mem.write_byte(0x01, flags1 | 0b10);
+        assert_eq!(sess.score(), None, "Flags 1 bit 1 set: a time game has no score");
+    }
+
+    /// SQ-1763: the engine-neutral word list is the Z-code dictionary with
+    /// each cut-short key spelled out (`lanter` -> `lantern`), same length
+    /// and order, and the raw door still hands back the stored keys.
+    #[test]
+    fn vocabulary_words_is_the_dictionary_spelled_out() {
+        let story = zvm::fixtures::load("minizork.z3").expect("committed fixture");
+        let sess = GameSession::new(story, true, false, None).expect("minizork boots");
+        let raw = sess.dictionary_words();
+        assert_eq!(raw, sess.introspect().unwrap().vocabulary());
+        let words = sess.vocabulary_words();
+        assert_eq!(words.len(), raw.len());
+        assert!(raw.iter().any(|w| w == "lanter"), "premise: stored cut short");
+        assert!(words.iter().any(|w| w == "lantern"), "spelled out");
+        assert!(!words.iter().any(|w| w == "lanter"));
     }
 
     #[test]
@@ -9334,7 +9656,7 @@ mod tests {
         // source that resolves resource #1 to the red 2x2 PNG.
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_2x2_red());
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9342,6 +9664,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9356,6 +9679,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9412,7 +9739,7 @@ mod tests {
 
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_red(320, 200));
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9420,6 +9747,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9434,6 +9762,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9485,7 +9817,7 @@ mod tests {
 
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_2x2_red());
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9493,6 +9825,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9507,6 +9840,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9547,7 +9884,7 @@ mod tests {
         // A 2×2 picture; every draw covers 4×4 unit pixels (V6_ART_SCALE).
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_2x2_red());
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9555,6 +9892,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9569,6 +9907,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9652,7 +9994,7 @@ mod tests {
 
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_2x2_red());
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9660,6 +10002,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9674,6 +10017,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9716,7 +10063,7 @@ mod tests {
 
         let blorb = crate::graphics::test_blorb_with_pict(3, &png_bytes_red(23, 200));
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9724,6 +10071,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9738,6 +10086,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9764,7 +10116,7 @@ mod tests {
 
         let blorb = crate::graphics::test_blorb_with_pict(1, &png_bytes_2x2_red());
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9772,6 +10124,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9786,6 +10139,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9826,7 +10183,7 @@ mod tests {
         machine.screen.v6 = Some(V6Windows::new(windows, 1));
 
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9834,6 +10191,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9848,6 +10206,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9926,7 +10288,7 @@ mod tests {
         machine.screen.v6 = Some(V6Windows::new(windows, 1));
 
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9934,6 +10296,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -9948,6 +10311,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -9984,7 +10351,7 @@ mod tests {
         windows[7] = ZWindow::new(0, 0, 0xFFFF, 0xFFFF);
         machine.screen.v6 = Some(V6Windows::new(windows, 7));
         let mut sess = GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -9992,6 +10359,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -10006,6 +10374,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         };
@@ -10596,7 +10968,7 @@ mod tests {
             &metric,
         );
         GameSession {
-            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false,
+            machine, quit: false, pending: InputKind::Line, strip_prompt: true, pen_before_char: None, output_continued: false, echo_style: Default::default(),
             disasm_cache: std::cell::RefCell::new(None),
             turn_budget: default_turn_budget(),
             world: std::cell::OnceCell::new(),
@@ -10604,6 +10976,7 @@ mod tests {
             player_candidates: std::cell::OnceCell::new(),
             player_hint: None,
             object_word_set: std::cell::RefCell::new(None),
+            running_names: std::cell::RefCell::new(RunningNames::default()),
             v6_model_memo: std::cell::RefCell::new(None),
             last_confirmed_pc: std::cell::Cell::new(None),
             pict_source: None,
@@ -10618,6 +10991,10 @@ mod tests {
             unreplayable: std::collections::HashSet::new(),
             boot_screen_cols: zvm::screen::DEFAULT_SCREEN_COLS as u16,
             pre_restore_screen_cols: None,
+            floor_is_guess: false,
+            width_verdict: None,
+            width_check_tries: 0,
+            story: std::sync::Arc::new(Vec::new()),
             line_preload: String::new(),
             line_preload_seeded: false,
         }
@@ -11345,6 +11722,32 @@ mod inherited_random_pool_tests {
     /// pools name — and reading that as "a direction into a pooled room" would mark every forest
     /// loop random. (`advent.z6` proves the same thing end to end in
     /// `z6_forest_self_loop_directions_are_always_deterministic`.)
+    ///
+    /// SQ-1773: the story's own declared exit is a second piece of evidence for the same loop. A
+    /// declared `Room(here)` records it with no reprinted heading (Scott prints none), exactly
+    /// once when the heading is ALSO reprinted, and an undeclared same-room move records nothing.
+    #[test]
+    fn a_declared_self_loop_is_recorded_once_with_or_without_a_reprinted_heading() {
+        let walk = |declared: Option<crate::engine::DeclaredExit>, heading: bool| {
+            let mut mapper = Mapper::default();
+            let mut death = DeathWatch::default();
+            apply_turn(&mut mapper, "", &TurnResult::observation(snap(2, "Forest")), &mut death);
+            let mut r = TurnResult::observation(snap(2, "Forest"));
+            if heading {
+                r.transcript = "Forest\n\nYou are in a forest.\n".to_string();
+            }
+            r.declared_exit = declared;
+            apply_turn(&mut mapper, "north", &r, &mut death);
+            mapper.graph.self_loops(2)
+        };
+        use crate::engine::DeclaredExit as D;
+        assert_eq!(walk(Some(D::Room(2)), false), vec![Direction::N], "declared, no heading");
+        assert_eq!(walk(Some(D::Room(2)), true), vec![Direction::N], "both: recorded once");
+        assert_eq!(walk(None, true), vec![Direction::N], "heading alone, as before");
+        assert!(walk(None, false).is_empty(), "undeclared and silent: a refused move");
+        assert!(walk(Some(D::Unknown), false).is_empty());
+        assert!(walk(Some(D::Room(3)), false).is_empty(), "a declaration of another room is no loop");
+    }
     #[test]
     fn a_move_that_never_left_the_room_is_not_an_arrival_in_a_pooled_room() {
         let (mut mapper, mut death) = map_with_a_known_pool();

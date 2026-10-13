@@ -379,29 +379,11 @@ pub(crate) fn visible_lines(
     &transcript[start..end]
 }
 
-/// Truncate a status-bar segment to `width` columns the way ZMSD §8.2.2.2 asks:
-/// "If the object's short name exceeds the available room on the status line,
-/// the author suggests that an interpreter should break it at the last space and
-/// append an ellipsis". We use the single-character ellipsis '…' rather than the
-/// spec's three dots so the marker itself costs one column, not three.
-///
-/// Only applied when the text actually overflows — a segment that fits is
-/// returned unchanged, so nothing gains a spurious '…'. A single word longer
-/// than `width` (no space to break at) falls back to a hard character break,
-/// still marked with the ellipsis.
+/// Truncate a status-bar segment to `width` columns. The rule (ZMSD §8.2.2.2:
+/// break at the last space, append an ellipsis) lives in
+/// [`crate::status_text::shorten_status_text`]; this counts one char per column.
 pub(crate) fn truncate_status_text(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let head: String = text.chars().take(width - 1).collect(); // one column for '…'
-    let kept = match head.rfind(' ') {
-        Some(i) => head[..i].trim_end(),
-        None => head.as_str(),
-    };
-    format!("{kept}…")
+    crate::status_text::shorten_status_text(text, |s| s.chars().count() <= width)
 }
 
 /// Truncate `line` to at most `width` characters (not bytes).
@@ -536,7 +518,7 @@ fn rebase_runs(line_runs: Option<&Vec<StyleRun>>, start: usize, end: usize) -> V
         let s = r.start.max(start);
         let e = r.end.min(end);
         if s < e {
-            out.push(StyleRun { start: s - start, end: e - start, bits: r.bits, fg: r.fg, bg: r.bg, link: r.link, glk_style: r.glk_style });
+            out.push(StyleRun { start: s - start, end: e - start, bits: r.bits, fg: r.fg, bg: r.bg, link: r.link, glk_style: r.glk_style, ink: r.ink });
         }
     }
     out
@@ -592,7 +574,7 @@ fn margin_ground_run(runs: &[StyleRun], pad: u16) -> Option<StyleRun> {
         fg: 0,
         bg: prose.bg,
         link: 0,
-        glk_style: 0,
+        glk_style: 0, ink: 0
     })
 }
 
@@ -1528,6 +1510,49 @@ fn draw_str_cells(
     cx.saturating_sub(x)
 }
 
+/// The style of the player's typed command inside a Story line (SQ-1758): the
+/// theme's `transcript_input` over the line's own style, so it reads exactly as the
+/// command-bar mode's `> cmd` line does, unless the story stated an input style of
+/// its own.
+///
+/// * Weight/slope/reverse (`run.bits`) are the story's and apply in both
+///   `honor_game_colours` modes, as every other run's bits do.
+/// * Colour is the story's (`run.ink`) only when `honor` is on; otherwise the
+///   theme's, always.
+/// * A game-coloured prompt line (`run.fg`/`run.bg`, SQ-0269) keeps its BACKGROUND
+///   so the band stays continuous. The chosen input colour is drawn over it unless
+///   the pair is provably hard to read ([`crate::colors::MIN_INPUT_CONTRAST`]), in
+///   which case the game's own prompt ink is used so the command stays legible.
+fn typed_input_style(base_style: Style, run: &StyleRun, ink: crate::render::TextInk) -> Style {
+    use crate::render::{apply_text_style, resolve_zcolour};
+    use crate::state::unpack_zcolour;
+    use crate::typed_input::{typed_input_colours, BgSource, InkSource, Probe};
+    let scheme = ink.colors();
+    let game = |packed: u32| resolve_zcolour(unpack_zcolour(packed), scheme);
+    let mut s = apply_text_style(base_style.patch(ink.typed_input()), run.bits);
+    let (theme_fg, theme_bg) = (s.fg, s.bg);
+    let fg_of = |src: InkSource| match src {
+        InkSource::Theme => theme_fg,
+        InkSource::Game(p) | InkSource::Prompt(p) => Some(game(p)),
+        InkSource::LineBase => base_style.fg,
+    };
+    let bg_of = |src: BgSource| match src {
+        BgSource::Theme => theme_bg,
+        BgSource::Game(p) => Some(game(p)),
+    };
+    let rgb_of = |probe: Probe| {
+        let c = match probe {
+            Probe::Fg(src) => fg_of(src),
+            Probe::Bg(src) => bg_of(src),
+        };
+        c.and_then(crate::colors::known_rgb)
+    };
+    let d = typed_input_colours(run, ink.honor(), base_style.fg.is_some(), rgb_of);
+    s.fg = fg_of(d.fg);
+    s.bg = bg_of(d.bg);
+    s
+}
+
 /// Draw `text` at `(x, y)` applying per-char style: `base_style` plus the bits of
 /// the `StyleRun` covering that char, and its resolved fg/bg colours. When
 /// `search` is `Some((query_lower, highlight_style))`, characters inside a query
@@ -1593,6 +1618,11 @@ pub(crate) fn draw_str_runs(
             search.unwrap().1
         } else {
             let run = runs.iter().find(|r| i >= r.start && i < r.end);
+            // The player's typed command (SQ-1758): its own resolution, not the
+            // Glk-slot path below — it is not a Glk style.
+            if let Some(r) = run.filter(|r| r.glk_style == crate::state::GLK_STYLE_TYPED_INPUT) {
+                typed_input_style(base_style, r, ink)
+            } else {
             let bits = run.map(|r| r.bits).unwrap_or(0);
             let mut s = crate::render::apply_text_style(base_style, bits);
             // Per-channel colour resolution (SQ-0331): game-set run colour (gated
@@ -1642,6 +1672,7 @@ pub(crate) fn draw_str_runs(
                 s = s.add_modifier(ratatui::style::Modifier::UNDERLINED);
             }
             s
+            }
         };
         let w = crate::textwidth::char_cells(ch);
         if w == 0 {
@@ -2112,6 +2143,11 @@ pub fn render_notifications(buf: &mut Buffer, area: Rect, state: &AppState) {
         return;
     }
     let style = state.colors.theme.get("notification").style;
+    let style = if style.add_modifier.contains(Modifier::DIM) {
+        style
+    } else {
+        style.remove_modifier(Modifier::DIM)
+    };
     let animate = state.config.animation.enabled;
     let easing = state.config.animation.easing;
     // A single-bordered box by default (SQ-0176); collapses to a border-less
@@ -2327,6 +2363,29 @@ fn render_input_content(
                 draw_caret(cell, over_text, state.period_look, text_style, game_input);
             }
         }
+    }
+}
+
+/// The ground the prose is read on (see `render_middle`'s long note on it): the
+/// window's own page, else the MACHINE's.
+fn prose_ground(state: &AppState) -> Option<ratatui::style::Color> {
+    state
+        .v6_story_page
+        .get()
+        .map(|(r, g, b)| ratatui::style::Color::Rgb(r, g, b))
+        .or_else(|| crate::render::screen::v6_machine_page(state, Style::default()).bg)
+}
+
+/// Replace a background the period look itself painted with the prose's real page
+/// `ground`; a background anyone else chose is left alone.
+fn reground_on_page(s: Style, ground: Option<ratatui::style::Color>, state: &AppState) -> Style {
+    match (ground, state.period_look) {
+        (Some(ground), Some(look))
+            if s.bg == Some(ratatui::style::Color::Rgb(look.page.0, look.page.1, look.page.2)) =>
+        {
+            s.bg(ground)
+        }
+        _ => s,
     }
 }
 
@@ -2584,21 +2643,8 @@ fn render_middle(
         // which is what makes a fix keyed on one layer alone silently miss the other
         // press. It did: this shipped keyed on the story page and Arthur was still a
         // blue sentence in a grey row.
-        let prose_ground = state
-            .v6_story_page
-            .get()
-            .map(|(r, g, b)| ratatui::style::Color::Rgb(r, g, b))
-            .or_else(|| crate::render::screen::v6_machine_page(state, Style::default()).bg);
-        let reground = |s: Style| -> Style {
-            match (prose_ground, state.period_look) {
-                (Some(ground), Some(look))
-                    if s.bg == Some(ratatui::style::Color::Rgb(look.page.0, look.page.1, look.page.2)) =>
-                {
-                    s.bg(ground)
-                }
-                _ => s,
-            }
-        };
+        let prose_ground = prose_ground(state);
+        let reground = |s: Style| -> Style { reground_on_page(s, prose_ground, state) };
         let transcript_input = reground(state.colors.theme.get("transcript_input").style);
         let transcript_meta = reground(state.colors.theme.get("transcript_meta").style);
         let transcript_warning = reground(state.colors.theme.get("transcript_warning").style);
@@ -2820,6 +2866,10 @@ fn render_middle(
     }
     let cache = state.transcript_wrap.borrow();
     let entry = cache.as_ref().expect("wrap cache populated above");
+    // What a typed command inside a Story line is drawn in (SQ-1758): the same
+    // re-grounded `transcript_input` the Input lines of this frame use.
+    let typed_input =
+        reground_on_page(state.colors.theme.get("transcript_input").style, prose_ground(state), state);
     // Per-frame eviction: bound the inline-image protocol cache to present images,
     // AND to the current cell size / page — a still-live image's variant from
     // BEFORE the last theme flip, font-size change, or page change is otherwise
@@ -2861,7 +2911,9 @@ fn render_middle(
     // are easy to desynchronize when the cache appends or repairs its tail.
     // WrappedRow already carries the filtered transcript kind and is the single
     // coordinate system used below for the rule and dimming.
-    let mut live_command_index = (state.config.command_separator && !state.pager.active)
+    let mut live_command_index = (state.config.command_separator
+        && !state.pager.active
+        && effective_scroll == 0)
         .then(|| {
             // Some host-managed transcripts preserve the visible `>` echo but
             // classify it as Story. Prefer that visible command marker across
@@ -2953,7 +3005,7 @@ fn render_middle(
         let search = has_search.then_some((query_lower.as_str(), search_highlight_style));
         draw_str_runs(
             buf, text_x, row_y, &wr.text, wr.style, &wr.runs, search, body_area,
-            crate::render::TextInk::of_with_game_input(state, game_input),
+            crate::render::TextInk::of_with_game_input(state, game_input).with_typed_input(typed_input),
         );
         // …and, while a reveal is lit, re-style the words on this row that name
         // one of the story's own things (SQ-1107, SQ-1207). A pass OVER the
@@ -3408,6 +3460,86 @@ mod tests {
             prompt.contains(last.text.trim_end()) && last.kind == TranscriptKind::Story,
             "the prompt is still the last thing wrapped: {:?}",
             last.text,
+        );
+    }
+
+    #[test]
+    fn zen_mode_leaves_scrolled_history_untouched() {
+        let machine = minimal_machine();
+        let mut state = AppState::default();
+        state.config.command_separator = true;
+        for i in 0..30 {
+            if i % 2 == 0 {
+                let line = format!("> command {i}");
+                state.push_transcript_kind(&line, TranscriptKind::Input);
+            } else {
+                let line = format!("story line {i}");
+                state.push_transcript_kind(&line, TranscriptKind::Story);
+            }
+        }
+        state.transcript_scroll = 5;
+        assert!(state.effective_transcript_scroll() > 0, "test must scroll into history");
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_transcript(
+            &crate::session::status_model_from_machine(&machine),
+            None,
+            &state,
+            area,
+            &mut buf,
+            None,
+        );
+
+        assert!(
+            (0..area.height).all(|y| {
+                (0..area.width).all(|x| {
+                    !buf
+                        .cell((x, y))
+                        .unwrap()
+                        .style()
+                        .add_modifier
+                        .contains(Modifier::DIM)
+                })
+            }),
+            "scrolling up must not apply Zen Mode dimming to history"
+        );
+    }
+
+    #[test]
+    fn notification_toast_is_not_dimmed_over_zen_mode_transcript() {
+        let machine = minimal_machine();
+        let mut state = AppState::default();
+        state.config.command_separator = true;
+        state.config.animation.enabled = false;
+        state.push_transcript_kind("earlier story", TranscriptKind::Story);
+        state.push_transcript_kind("> look", TranscriptKind::Input);
+        state.set_status("Zen Mode on");
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_transcript(
+            &crate::session::status_model_from_machine(&machine),
+            None,
+            &state,
+            area,
+            &mut buf,
+            None,
+        );
+        render_notifications(&mut buf, area, &state);
+
+        let toast_label = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| buf.cell((x, y)).is_some_and(|cell| cell.symbol() == "Z"))
+            .expect("notification text must be rendered");
+        assert!(
+            !buf
+                .cell(toast_label)
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::DIM),
+            "a toast drawn over the dimmed transcript is not dimmed"
         );
     }
 
@@ -4264,7 +4396,7 @@ mod tests {
         use ratatui::{buffer::Buffer, layout::Rect, style::{Modifier, Style}};
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(area);
-        let runs = vec![StyleRun { start: 2, end: 4, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]; // bold chars 2..4
+        let runs = vec![StyleRun { start: 2, end: 4, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]; // bold chars 2..4
         draw_str_runs(&mut buf, 0, 0, "abcdef", Style::default(), &runs, None, area, crate::render::TextInk::new(false, &crate::colors::ColorScheme::terminal_default()));
         assert!(!buf[(0, 0)].modifier.contains(Modifier::BOLD));
         assert!(buf[(2, 0)].modifier.contains(Modifier::BOLD));
@@ -4280,7 +4412,7 @@ mod tests {
         let mut cs = crate::colors::ColorScheme::terminal_default();
         cs.theme = theme_with_overrides(&[("hyperlink", Color::Magenta)]);
         // chars 2..5 carry link 7 (bold too, to prove the link layers on top).
-        let runs = vec![StyleRun { start: 2, end: 5, bits: 0x02, fg: 0, bg: 0, link: 7, glk_style: 0 }];
+        let runs = vec![StyleRun { start: 2, end: 5, bits: 0x02, fg: 0, bg: 0, link: 7, glk_style: 0, ink: 0 }];
         draw_str_runs(&mut buf, 0, 0, "abcdefgh", Style::default(), &runs, None, area, crate::render::TextInk::new(true, &cs));
         for x in 2..5u16 {
             assert!(buf[(x, 0)].modifier.contains(Modifier::UNDERLINED), "linked cell {x} underlined");
@@ -4328,7 +4460,7 @@ mod tests {
         let machine_ink = Style::new().fg(grey);
         let draw = |base: Style, bits: u8, fg: u32, honor: bool| {
             let mut b = Buffer::empty(area);
-            let runs = vec![StyleRun { start: 0, end: 3, bits, fg, bg: 0, link: 0, glk_style: 0 }];
+            let runs = vec![StyleRun { start: 0, end: 3, bits, fg, bg: 0, link: 0, glk_style: 0, ink: 0 }];
             draw_str_runs(&mut b, 0, 0, "abc", base, &runs, None, area, crate::render::TextInk::new(honor, &cs));
             b[(0, 0)].fg
         };
@@ -4360,7 +4492,7 @@ mod tests {
             let cs = crate::colors::ColorScheme::terminal_default_in(p);
             let ink = crate::render::resolve_zcolour(zvm::screen::ZColour::Standard(9), &cs);
             let mut b = Buffer::empty(area);
-            let runs = vec![StyleRun { start: 0, end: 3, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }];
+            let runs = vec![StyleRun { start: 0, end: 3, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }];
             draw_str_runs(&mut b, 0, 0, "abc", Style::new().fg(ink), &runs, None, area, crate::render::TextInk::new(true, &cs));
             assert_eq!(b[(0, 0)].fg, ink, "{p:?}: bold is the terminal's, not a second colour");
         }
@@ -4378,7 +4510,7 @@ mod tests {
 
         let draw = |glk_style: u8, fg: u32, honor: bool| {
             let mut b = Buffer::empty(area);
-            let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg, bg: 0, link: 0, glk_style }];
+            let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg, bg: 0, link: 0, glk_style, ink: 0 }];
             draw_str_runs(&mut b, 0, 0, "abc", base, &runs, None, area, crate::render::TextInk::new(honor, &cs));
             b[(0, 0)].fg
         };
@@ -4427,7 +4559,7 @@ mod tests {
             let mut b = Buffer::empty(area);
             // The exact run Counterfeit Monkey's echo captures: glk_style 8
             // (Input), no game colour on either channel.
-            let runs = vec![StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 8 }];
+            let runs = vec![StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 8, ink: 0 }];
             draw_str_runs(&mut b, 0, 0, "hint", base, &runs, None, area, ink);
             (b[(0, 0)].fg, b[(0, 0)].bg)
         };
@@ -4469,7 +4601,7 @@ mod tests {
 
         let draw = |glk_style: u8| {
             let mut b = Buffer::empty(area);
-            let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg: 0, bg: 0, link: 0, glk_style }];
+            let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg: 0, bg: 0, link: 0, glk_style, ink: 0 }];
             draw_str_runs(&mut b, 0, 0, "abc", base, &runs, None, area, crate::render::TextInk::new(false, &cs));
             b[(0, 0)].modifier
         };
@@ -4488,7 +4620,7 @@ mod tests {
         let cs = crate::colors::ColorScheme::terminal_default();
 
         let mut b = Buffer::empty(area);
-        let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 3 }];
+        let runs = vec![StyleRun { start: 0, end: 3, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 3, ink: 0 }];
         draw_str_runs(&mut b, 0, 0, "abc", base, &runs, None, area, crate::render::TextInk::new(false, &cs));
         assert!(b[(0, 0)].modifier.contains(Modifier::BOLD), "Header run renders bold");
     }
@@ -4731,11 +4863,11 @@ mod tests {
         let lines = vec!["AAAAA BBBBB".to_string()];
         let kinds = vec![TranscriptKind::Story];
         let styles = vec![Style::default()];
-        let runs = vec![vec![StyleRun { start: 6, end: 11, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]]; // bold "BBBBB"
+        let runs = vec![vec![StyleRun { start: 6, end: 11, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]]; // bold "BBBBB"
         let out = wrap_lines_kinded(&lines, &kinds, &styles, &runs, &[], &[], (1, 1), false, false, 5);
         // row 0 ("AAAAA", 0..5) → no runs; row 1 ("BBBBB", 6..11) → bold 0..5
         assert!(out[0].runs.is_empty());
-        assert_eq!(out[1].runs, vec![StyleRun { start: 0, end: 5, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]);
+        assert_eq!(out[1].runs, vec![StyleRun { start: 0, end: 5, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]);
     }
 
     /// SQ-0827: the margin a left float reserves takes the prose's BACKGROUND and
@@ -4744,21 +4876,21 @@ mod tests {
     fn margin_ground_run_copies_only_the_proses_background() {
         let bg = crate::state::pack_zcolour(zvm::screen::ZColour::Standard(9));
         // A reversed, bold, linked run beside the margin: only its bg travels.
-        let runs = vec![StyleRun { start: 4, end: 9, bits: 0x03, fg: 7, bg, link: 42, glk_style: 3 }];
+        let runs = vec![StyleRun { start: 4, end: 9, bits: 0x03, fg: 7, bg, link: 42, glk_style: 3, ink: 0 }];
         assert_eq!(
             margin_ground_run(&runs, 4),
-            Some(StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0 })
+            Some(StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0, ink: 0 })
         );
         // Prose on the inherited background: nothing to copy, so the margin keeps
         // inheriting too — every non-Amiga frame takes this arm.
-        let plain = vec![StyleRun { start: 4, end: 9, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 0 }];
+        let plain = vec![StyleRun { start: 4, end: 9, bits: 0, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }];
         assert_eq!(margin_ground_run(&plain, 4), None);
         // No margin, or no runs at all: nothing to do.
         assert_eq!(margin_ground_run(&runs, 0), None);
         assert_eq!(margin_ground_run(&[], 4), None);
         // A run that starts PAST the margin (the row's prose begins mid-run) is
         // still the ground the margin abuts, via the `first()` fallback.
-        let later = vec![StyleRun { start: 6, end: 9, bits: 0, fg: 0, bg, link: 0, glk_style: 0 }];
+        let later = vec![StyleRun { start: 6, end: 9, bits: 0, fg: 0, bg, link: 0, glk_style: 0, ink: 0 }];
         assert_eq!(margin_ground_run(&later, 4).map(|r| (r.start, r.end, r.bg)), Some((0, 4, bg)));
     }
 
@@ -4781,7 +4913,7 @@ mod tests {
         let lines = vec![String::new(), "AAAA".to_string()];
         let kinds = vec![TranscriptKind::Story; 2];
         let styles = vec![Style::default(); 2];
-        let runs = vec![vec![], vec![StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0 }]];
+        let runs = vec![vec![], vec![StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0, ink: 0 }]];
         let images = vec![Some(img), None];
         let out = wrap_lines_kinded(&lines, &kinds, &styles, &runs, &[], &images, (1, 1), true, true, 20);
         let row = out.iter().find(|r| r.text.ends_with("AAAA")).expect("prose flows beside the float");
@@ -4789,8 +4921,8 @@ mod tests {
         assert_eq!(
             row.runs,
             vec![
-                StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0 },
-                StyleRun { start: 4, end: 8, bits: 0, fg: 0, bg, link: 0, glk_style: 0 },
+                StyleRun { start: 0, end: 4, bits: 0, fg: 0, bg, link: 0, glk_style: 0, ink: 0 },
+                StyleRun { start: 4, end: 8, bits: 0, fg: 0, bg, link: 0, glk_style: 0, ink: 0 },
             ],
             "the reserved margin carries the prose's own ground"
         );
@@ -4970,7 +5102,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut b = Buffer::empty(area);
         let cs = crate::colors::ColorScheme::terminal_default();
-        let runs = vec![StyleRun { start: 1, end: 2, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }];
+        let runs = vec![StyleRun { start: 1, end: 2, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }];
         draw_str_runs(&mut b, 0, 0, "日本x", Style::default(), &runs, None, area, crate::render::TextInk::new(false, &cs));
         assert!(!b[(0, 0)].modifier.contains(Modifier::BOLD));
         assert!(b[(2, 0)].modifier.contains(Modifier::BOLD), "run lands on 本's own cell");
@@ -5187,14 +5319,14 @@ mod tests {
         let lines = vec!["hi".to_string()];
         let kinds = vec![TranscriptKind::Story];
         let styles = vec![Style::default()];
-        let runs = vec![vec![StyleRun { start: 0, end: 2, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]];
+        let runs = vec![vec![StyleRun { start: 0, end: 2, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]];
         let para = vec![ParaFmt { indent: 0, para_indent: 0, justify: 2, nowrap_from: None }];
         let out = wrap_lines_kinded(&lines, &kinds, &styles, &runs, &para, &[], (1, 1), false, false, 10);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text, "    hi", "text padded to centre");
         // The bold run must move right by the 4 padding columns so selection/copy
         // stays aligned with the drawn text.
-        assert_eq!(out[0].runs, vec![StyleRun { start: 4, end: 6, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]);
+        assert_eq!(out[0].runs, vec![StyleRun { start: 4, end: 6, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]);
     }
 
     #[test]
@@ -5240,7 +5372,7 @@ mod tests {
         let lines = vec!["AAAAA BBBBB".to_string()];
         let kinds = vec![TranscriptKind::Story];
         let styles = vec![Style::default()];
-        let runs = vec![vec![StyleRun { start: 6, end: 11, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0 }]];
+        let runs = vec![vec![StyleRun { start: 6, end: 11, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]];
         let para = vec![ParaFmt::default()];
         let with_para = wrap_lines_kinded(&lines, &kinds, &styles, &runs, &para, &[], (1, 1), false, false, 5);
         let without = wrap_lines_kinded(&lines, &kinds, &styles, &runs, &[], &[], (1, 1), false, false, 5);
@@ -7900,7 +8032,7 @@ mod tests {
         // The inline-prompt echo: the LAST line grows in place. Nothing was
         // appended, so a length co-key cannot see it — `TranscriptEdit::Rewrote`
         // and the tail fingerprint both can.
-        state.append_to_last_transcript_line("!");
+        state.append_to_last_transcript_line("!", Default::default());
         wrap_render(&state, area);
         assert_eq!(
             cached_first_text(&state),
@@ -8051,5 +8183,196 @@ mod tests {
             Some(wrap_product(&state).len()),
             "a second clear with nothing printed since anchors past the last row, still top-anchored"
         );
+    }
+
+    // ── SQ-1758: a typed command stands out from story text ─────────────────
+
+    mod typed_input {
+        use super::*;
+        use crate::engine::InputStyle;
+        use crate::state::{pack_zcolour, GLK_STYLE_TYPED_INPUT};
+        use ratatui::style::Color;
+        use zvm::screen::ZColour;
+
+        fn white() -> u32 { pack_zcolour(ZColour::True24(0x00FF_FFFF)) }
+        fn black() -> u32 { pack_zcolour(ZColour::True24(0)) }
+
+        /// Render a state and return the `(char, style)` cells of the row holding `>look`.
+        fn prompt_row(state: &AppState, command: &str) -> Vec<(char, Style)> {
+            let machine = minimal_machine();
+            let area = Rect::new(0, 0, 40, 8);
+            let mut buf = Buffer::empty(area);
+            render_transcript(&crate::session::status_model_from_machine(&machine), None, state, area, &mut buf, None);
+            let want = format!(">{command}");
+            for y in 0..area.height {
+                let row: String = (0..area.width).map(|x| buf.cell((x, y)).unwrap().symbol().chars().next().unwrap_or(' ')).collect();
+                if row.starts_with(&want) {
+                    return (0..want.chars().count() as u16)
+                        .map(|x| (row.chars().nth(x as usize).unwrap(), buf.cell((x, y)).unwrap().style()))
+                        .collect();
+                }
+            }
+            panic!("no `{want}` row rendered");
+        }
+
+        fn inline_state(honor: bool) -> AppState {
+            let mut state = AppState::default();
+            state.config.honor_game_colours = honor;
+            state.push_transcript_kind("West of House", TranscriptKind::Story);
+            state.push_transcript_kind(">", TranscriptKind::Story);
+            state.append_to_last_transcript_line("look", InputStyle::default());
+            state
+        }
+
+        #[test]
+        fn inline_command_takes_the_transcript_input_colour_and_the_prompt_stays_story_text() {
+            for honor in [true, false] {
+                let row = prompt_row(&inline_state(honor), "look");
+                assert_ne!(row[0].1.fg, Some(Color::Blue), "honor={honor}: the `>` is story text, not input");
+                for (i, (ch, st)) in row.iter().enumerate().skip(1) {
+                    assert_eq!(st.fg, Some(Color::Blue), "honor={honor}: `{ch}` (col {i}) renders as transcript_input, not story text");
+                }
+            }
+        }
+
+        #[test]
+        fn command_bar_mode_input_line_is_unchanged() {
+            for honor in [true, false] {
+                let mut state = AppState::default();
+                state.config.honor_game_colours = honor;
+                state.config.command_bar = true;
+                state.push_transcript_kind("> look", TranscriptKind::Input);
+                let machine = minimal_machine();
+                let area = Rect::new(0, 0, 40, 8);
+                let mut buf = Buffer::empty(area);
+                render_transcript(&crate::session::status_model_from_machine(&machine), None, &state, area, &mut buf, None);
+                let y = (0..area.height)
+                    .find(|&y| buf.cell((0, y)).unwrap().symbol() == ">")
+                    .expect("input line");
+                for x in 0..6 {
+                    assert_eq!(buf.cell((x, y)).unwrap().style().fg, Some(Color::Blue), "honor={honor} col {x}");
+                }
+            }
+        }
+
+        fn run(bits: u8, fg: u32, bg: u32, ink: u32) -> StyleRun {
+            StyleRun { start: 0, end: 4, bits, fg, bg, link: 0, glk_style: GLK_STYLE_TYPED_INPUT, ink }
+        }
+
+        /// The style `draw_str_runs` gives the first char of a 4-char typed run.
+        fn drawn(r: StyleRun, honor: bool, theme_fg: Option<Color>) -> Style {
+            let scheme = crate::colors::ColorScheme::terminal_default();
+            let mut ink = crate::render::TextInk::new(honor, &scheme);
+            if let Some(fg) = theme_fg {
+                ink = ink.with_typed_input(Style::new().fg(fg));
+            }
+            let area = Rect::new(0, 0, 10, 1);
+            let mut buf = Buffer::empty(area);
+            draw_str_runs(&mut buf, 0, 0, "look", Style::default(), &[r], None, area, ink);
+            buf.cell((0, 0)).unwrap().style()
+        }
+
+        #[test]
+        fn the_stories_own_input_colour_wins_only_when_game_colours_are_honoured() {
+            let green = pack_zcolour(ZColour::True24(0x0000_FF00));
+            assert_eq!(drawn(run(0, 0, 0, green), true, None).fg, Some(Color::Rgb(0, 255, 0)));
+            assert_eq!(drawn(run(0, 0, 0, green), false, None).fg, Some(Color::Blue), "false: the theme always applies");
+            assert_eq!(drawn(run(0, 0, 0, 0), true, None).fg, Some(Color::Blue), "no opinion: the theme applies");
+        }
+
+        #[test]
+        fn the_stories_input_weight_applies_and_no_weight_is_not_bold() {
+            for honor in [true, false] {
+                assert!(drawn(run(0x02, 0, 0, 0), honor, None).add_modifier.contains(Modifier::BOLD), "bold hint, honor={honor}");
+                assert!(!drawn(run(0, 0, 0, 0), honor, None).add_modifier.contains(Modifier::BOLD), "weight=0 / roman, honor={honor}");
+                assert!(drawn(run(0x04, 0, 0, 0), honor, None).add_modifier.contains(Modifier::ITALIC));
+                assert!(drawn(run(0x01, 0, 0, 0), honor, None).add_modifier.contains(Modifier::REVERSED));
+            }
+        }
+
+        #[test]
+        fn a_coloured_prompt_keeps_its_background_under_the_input_colour() {
+            // Black-on-white prompt; a dark-blue input colour reads fine on white.
+            let navy = Color::Rgb(0, 0, 160);
+            let st = drawn(run(0, black(), white(), 0), true, Some(navy));
+            assert_eq!(st.bg, Some(Color::Rgb(255, 255, 255)), "the band stays continuous");
+            assert_eq!(st.fg, Some(navy), "the theme's input colour is used where it is legible");
+        }
+
+        #[test]
+        fn a_low_contrast_input_colour_falls_back_to_the_games_prompt_ink() {
+            // A near-white input colour on the game's white page is unreadable.
+            let pale = Color::Rgb(240, 240, 240);
+            let st = drawn(run(0, black(), white(), 0), true, Some(pale));
+            assert_eq!(st.bg, Some(Color::Rgb(255, 255, 255)));
+            assert_eq!(st.fg, Some(Color::Rgb(0, 0, 0)), "falls back to the prompt's own black");
+        }
+
+        #[test]
+        fn declining_game_colours_ignores_the_prompt_colours_for_the_command() {
+            let pale = Color::Rgb(240, 240, 240);
+            let st = drawn(run(0, black(), white(), 0), false, Some(pale));
+            assert_eq!(st.fg, Some(pale), "theme only");
+            assert_ne!(st.bg, Some(Color::Rgb(255, 255, 255)), "the game's page is not painted in false mode");
+        }
+
+        #[test]
+        fn a_coloured_prompt_line_renders_end_to_end_with_a_continuous_band() {
+            let mut state = AppState::default();
+            state.config.honor_game_colours = true;
+            state.push_transcript_runs(
+                ">",
+                TranscriptKind::Story,
+                &[(1, 0, ZColour::True24(0), ZColour::True24(0x00FF_FFFF), 0, ParaFmt::default(), 0, false)],
+            );
+            state.append_to_last_transcript_line("look", InputStyle::default());
+            let row = prompt_row(&state, "look");
+            let white = Some(Color::Rgb(255, 255, 255));
+            assert_eq!(row[0].1.bg, white);
+            for (ch, st) in row.iter().skip(1) {
+                assert_eq!(st.bg, white, "`{ch}` keeps the white band");
+            }
+        }
+
+        #[test]
+        fn restore_then_move_keeps_the_earlier_command_input_styled() {
+            // Persist the transcript the way the archive does (kinds, lines, runs as
+            // JSON), reload it into a fresh state, make ANOTHER move, then assert.
+            let before = inline_state(true);
+            let lines = before.transcript.clone();
+            let runs_json = serde_json::to_string(&before.transcript_runs).unwrap();
+
+            let mut after = AppState::default();
+            after.config.honor_game_colours = true;
+            for (i, l) in lines.iter().enumerate() {
+                after.push_transcript_kind(l, before.transcript_kinds[i]);
+            }
+            after.transcript_runs = serde_json::from_str(&runs_json).unwrap();
+            // The perturbing move: the game answers, prompts again, the player types.
+            after.push_transcript_kind("Opened.", TranscriptKind::Story);
+            after.push_transcript_kind(">", TranscriptKind::Story);
+            after.append_to_last_transcript_line("wait", InputStyle::default());
+            assert!(after.transcript_runs[1].iter().any(|r| r.glk_style == GLK_STYLE_TYPED_INPUT), "non-vacuity: the restored run survived the JSON trip");
+            let row = prompt_row(&after, "look");
+            for (ch, st) in row.iter().skip(1) {
+                assert_eq!(st.fg, Some(Color::Blue), "restored `{ch}` is still input-styled after a further move");
+            }
+        }
+
+        #[test]
+        fn rewind_cut_back_keeps_earlier_commands_styled_and_drops_the_undone_one() {
+            let mut state = inline_state(true);
+            state.push_transcript_kind("Opened.", TranscriptKind::Story);
+            let len_after_turn1 = state.transcript.len();
+            state.push_transcript_kind(">", TranscriptKind::Story);
+            state.append_to_last_transcript_line("wait", InputStyle::default());
+            // A rewind to the second prompt: cut to its line, trim the echoed command.
+            state.truncate_transcript(len_after_turn1 + 1);
+            state.shrink_last_transcript_line(1);
+            assert_eq!(state.transcript.last().unwrap(), ">");
+            assert!(state.transcript_runs.last().unwrap().iter().all(|r| r.end <= 1), "the undone command's run is gone");
+            let first = &state.transcript_runs[1];
+            assert!(first.iter().any(|r| r.glk_style == GLK_STYLE_TYPED_INPUT && (r.start, r.end) == (1, 5)), "turn 1's command is still marked");
+        }
     }
 }

@@ -30,6 +30,12 @@ mod verb_tiers;
 mod border_controls;
 #[path = "suites/return_probe.rs"]
 mod return_probe;
+#[path = "suites/relocation_probe.rs"]
+mod relocation_probe;
+#[path = "suites/chain_probe.rs"]
+mod chain_probe;
+#[path = "suites/exit_scan.rs"]
+mod exit_scan;
 #[path = "suites/declared_exit.rs"]
 mod declared_exit;
 #[path = "suites/room_description.rs"]

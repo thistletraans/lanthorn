@@ -394,6 +394,10 @@ pub static REGISTRY: std::sync::LazyLock<Vec<RegRow>> = std::sync::LazyLock::new
     // tunnels being the specimen. Deliberately not `frontier`: this is a random exit is explored,
     // not unexplored ground, so it defaults to `alert` rather than dimmed out of the way like `·`/`×`.
     row("map.matrix.cell:random", Section::Map, Kind::Style, Some("alert"), Delta::EMPTY),
+    // `»` -- a real exit nobody has walked yet (SQ-1773): an exit scan asked the game and the move
+    // worked. Deliberately not `frontier`: that dim dot is a MAYBE, this one is a yes, so it
+    // takes the `accent` role and reads as a way forward instead of being dimmed out of the way.
+    row("map.matrix.cell:exit", Section::Map, Kind::Style, Some("accent"), Delta::EMPTY),
     row("map.matrix.footnote", Section::Map, Kind::Style, Some("muted"), Delta::EMPTY),
     // ── Honest asymmetric edges in the DRAWN view (SQ-0666). Both default to the current
     // connector appearance, so nothing changes look until someone styles them.
@@ -723,6 +727,15 @@ pub static REGISTRY: std::sync::LazyLock<Vec<RegRow>> = std::sync::LazyLock::new
     // `dialog.list_selected` instead, a fg/bg swap, not REVERSED) and hover is
     // now its only transient highlight — the two must never look the same.
     row("command_panel.quick:hover", Section::Elements, Kind::Style, Some("command_panel.quick"), mods(false, false, false, true)),
+    // What the map knows about a compass/portal direction out of the current room
+    // (SQ-1780); each patches on top of `command_panel.quick`, hover still wins.
+    // Explored and untried read as plain quick; an exit shares the matrix's `»` colour
+    // so a direction looks the same in both places, and blocked is dimmed like the
+    // matrix's frontier cells. Blocked cells stay clickable: a door can open later.
+    row("command_panel.quick:explored", Section::Elements, Kind::Style, Some("command_panel.quick"), Delta::EMPTY),
+    row("command_panel.quick:exit", Section::Elements, Kind::Style, Some("map.matrix.cell:exit"), mods(true, false, false, false)),
+    row("command_panel.quick:blocked", Section::Elements, Kind::Style, Some("map.matrix.cell:frontier"), Delta { dim: Some(true), ..Delta::EMPTY }),
+    row("command_panel.quick:untried", Section::Elements, Kind::Style, Some("command_panel.quick"), Delta::EMPTY),
     // In-column group labels and the "(nothing visible)" placeholder.
     row("command_panel.group_label", Section::Elements, Kind::Style, Some("heading"), Delta::EMPTY),
     // SQ-1135: a noun-column row that came from what the story PRINTED rather
@@ -846,6 +859,7 @@ mod tests {
         "map.matrix.cell:path",
         "map.matrix.cell:frontier",
         "map.matrix.cell:random",
+        "map.matrix.cell:exit",
         "map.matrix.footnote",
         "map.edge:oneway",
         "map.edge:asym",
@@ -995,6 +1009,10 @@ mod tests {
         "command_panel.column_header:active",
         "command_panel.quick",
         "command_panel.quick:hover",
+        "command_panel.quick:explored",
+        "command_panel.quick:exit",
+        "command_panel.quick:blocked",
+        "command_panel.quick:untried",
         "command_panel.group_label",
         // SQ-1135: the printed-word rows in the noun columns
         "command_panel.item:seen",

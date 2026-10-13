@@ -298,8 +298,11 @@ pub fn finish_command_turn(
         state.push_transcript_kind(&format!("> {}", cmd), TranscriptKind::Input);
     } else {
         // Inline mode: the game's own `>` is already the last transcript line;
-        // append the typed command so `>look` persists in scrollback.
-        state.append_to_last_transcript_line(cmd);
+        // append the typed command so `>look` persists in scrollback. It is marked
+        // as typed input (drawn in `transcript_input`, not as story text) and
+        // carries the story's own input style for the renderer to prefer (SQ-1758).
+        let style = state.input_style_against_prompt(session.last_input_style());
+        state.append_to_last_transcript_line(cmd, style);
     }
     let before_push = state.transcript.len();
     if silent {
@@ -441,6 +444,16 @@ pub fn finish_command_turn(
     // for a crossing the map has no return path for, and ends any search a move has outrun.
     crate::return_probe::arm_return_search(state, mapper, &*session, cmd, room_before, &mut turn_save);
 
+    // …and, for a crossing the player made without naming a direction (`climb tree`), ask the
+    // game which direction that was (SQ-1771). Reads the pre-turn snapshot below, so it must run
+    // before that is replaced.
+    crate::relocation_probe::arm_relocation_search(state, mapper, &*session, cmd, room_before);
+
+    // …and a line that CHAINS several commands (`north then east`) is not one crossing at all:
+    // it is replayed a piece at a time in the shadow, and what the replay saw goes on the map in
+    // place of the provisional `?` (SQ-1772). Same pre-turn snapshot, so same place in the order.
+    crate::chain_probe::arm_chain_replay(state, mapper, &*session, cmd, room_before);
+
     // SQ-1257 Phase 2: this move's own edge was minted (or not) already, by `apply_turn` above.
     // Which reseeded shadow this turn earns — a first walk, an upgrade, or a suspicion left
     // pending — is `random_exit_probe`'s own decision, and lives there in ONE place: five real-
@@ -504,9 +517,18 @@ pub fn finish_command_turn(
     // engine besides the Z-machine anyway, so a probe can never fire for one — paying for a
     // snapshot it will never use would be exactly the cost this seam's own laziness elsewhere
     // exists to avoid.
-    state.random_exit_pre_move_save = session
-        .rng_seed()
-        .map(|_| (mapper.graph.current().unwrap_or(0), turn_save.get(&*session)));
+    //
+    // SQ-1771: the relocation search starts from the same moment, for every engine -- a Scott
+    // Adventure has no seed but its snapshot is as cheap as the Z-machine's -- so the gate also
+    // opens when that feature is on.
+    let keeps_pre_move = session.rng_seed().is_some()
+        || ((state.config.return_probe || state.config.scan_exits) && state.probe.is_armed());
+    state.random_exit_pre_move_save = keeps_pre_move
+        .then(|| (mapper.graph.current().unwrap_or(0), turn_save.get(&*session)));
+
+    // SQ-1773: the room the player now stands in is scanned for its exits from that very
+    // moment, on the shadow, behind every search their own moves need.
+    crate::scan_probe::arm_exit_scan(state, mapper, &*session, room_before);
 
     // Background map maintenance: a geometry change (new room/connection) is the
     // ONLY thing that can require re-layout, so all of it runs on a worker thread —
@@ -732,9 +754,15 @@ fn post_turn_bookkeeping(
         // Remember a game-driven clear so a rewind can re-pin it (SQ-1713). The
         // record was pushed a moment ago, so its `Arc` is still unique.
         let mark = crate::history::TranscriptMark::of(state);
+        // The Z-machine screen rides along (SQ-1767) so a rewind can put the
+        // status line back; not for v6, whose windows are repainted elsewhere.
+        let screen = zvm_session_opt(session)
+            .filter(|z| z.machine.screen.v6.is_none())
+            .map(|z| z.machine.screen.clone());
         if let Some(rec) = state.history.last_mut().and_then(std::sync::Arc::get_mut) {
             rec.cleared = crate::history::clear_noted(result.erase_lower, pending_clear);
             rec.note_transcript(mark);
+            rec.screen = screen;
         }
         crate::history::cap_history(&mut state.history, state.config.history_turns);
     }

@@ -21,6 +21,7 @@ Every themeable `style.toml` selector: which role or selector it derives from, a
 | `story_title` | Elements | Style | `heading` |  | |
 | `input_line` | Elements | Style | `line` |  | |
 | `suggestion_line` | Elements | Style | `line` |  | |
+| `zen_mode_separator` | Elements | Style | `line` |  | |
 | `scrollbar` | Elements | Style | `line` |  | |
 | `scrollbar_track` | Elements | Style | `muted` |  | |
 | `transcript_location` | Elements | Style | `accent` |  | |
@@ -93,6 +94,7 @@ Every themeable `style.toml` selector: which role or selector it derives from, a
 | `map.matrix.cell:path` | Map | Style | `accent` | `bold underline` | |
 | `map.matrix.cell:frontier` | Map | Style | `muted` |  | |
 | `map.matrix.cell:random` | Map | Style | `alert` |  | |
+| `map.matrix.cell:exit` | Map | Style | `accent` |  | |
 | `map.matrix.footnote` | Map | Style | `muted` |  | |
 | `map.edge:oneway` | Map | Style | `map.connector` |  | |
 | `map.edge:asym` | Map | Style | `map.connector` |  | |
@@ -229,6 +231,10 @@ Every themeable `style.toml` selector: which role or selector it derives from, a
 | `command_panel.column_header:active` | Elements | Style | `accent` | `bold` | |
 | `command_panel.quick` | Elements | Style | `text` |  | |
 | `command_panel.quick:hover` | Elements | Style | `command_panel.quick` | `reversed` | |
+| `command_panel.quick:explored` | Elements | Style | `command_panel.quick` |  | |
+| `command_panel.quick:exit` | Elements | Style | `map.matrix.cell:exit` | `bold` | |
+| `command_panel.quick:blocked` | Elements | Style | `map.matrix.cell:frontier` | `dim` | |
+| `command_panel.quick:untried` | Elements | Style | `command_panel.quick` |  | |
 | `command_panel.group_label` | Elements | Style | `heading` |  | |
 | `command_panel.item:seen` | Elements | Style | `muted` |  | |
 | `file_browser_cwd` | Elements | Style | `alert` |  | |

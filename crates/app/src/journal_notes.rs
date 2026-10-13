@@ -2,9 +2,76 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{buffer::Buffer, layout::Rect, style::Modifier};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::state::AppState;
+
+const UNDO_HISTORY_LIMIT: usize = 30;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EditKind {
+    Insert,
+    Backspace,
+    Delete,
+    Atomic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EditSnapshot {
+    text: String,
+    cursor: usize,
+    selection: Option<usize>,
+}
+
+fn snapshot(state: &AppState) -> EditSnapshot {
+    EditSnapshot {
+        text: state.journal_notes.clone(),
+        cursor: state.journal_notes_cursor,
+        selection: state.journal_notes_selection,
+    }
+}
+
+fn restore(state: &mut AppState, snapshot: EditSnapshot) {
+    state.journal_notes = snapshot.text;
+    state.journal_notes_cursor = snapshot.cursor;
+    state.journal_notes_selection = snapshot.selection;
+}
+
+fn push_history(history: &mut Vec<EditSnapshot>, snapshot: EditSnapshot) {
+    if history.len() >= UNDO_HISTORY_LIMIT {
+        history.remove(0);
+    }
+    history.push(snapshot);
+}
+
+fn edit(state: &mut AppState, kind: EditKind, change: impl FnOnce(&mut AppState)) {
+    let before = snapshot(state);
+    change(state);
+    if state.journal_notes != before.text {
+        if kind == EditKind::Atomic || state.journal_notes_last_edit != Some(kind) {
+            push_history(&mut state.journal_notes_undo, before);
+        }
+        state.journal_notes_redo.clear();
+        state.journal_notes_last_edit = (kind != EditKind::Atomic).then_some(kind);
+    }
+}
+
+fn undo(state: &mut AppState) {
+    state.journal_notes_last_edit = None;
+    if let Some(previous) = state.journal_notes_undo.pop() {
+        let current = snapshot(state);
+        push_history(&mut state.journal_notes_redo, current);
+        restore(state, previous);
+    }
+}
+
+fn redo(state: &mut AppState) {
+    state.journal_notes_last_edit = None;
+    if let Some(next) = state.journal_notes_redo.pop() {
+        let current = snapshot(state);
+        push_history(&mut state.journal_notes_undo, current);
+        restore(state, next);
+    }
+}
 
 fn byte_at(text: &str, char_index: usize) -> usize {
     text.char_indices()
@@ -15,33 +82,15 @@ fn byte_at(text: &str, char_index: usize) -> usize {
 /// Wrap physical note lines into screen-width rows while retaining their
 /// document character offsets for selection and caret placement.
 fn wrapped_lines(text: &str, width: u16) -> Vec<(usize, usize, String)> {
-    let width = usize::from(width.max(1));
     let physical: Vec<&str> = text.split('\n').collect();
     let mut rows = Vec::new();
     let mut offset = 0usize;
     for (line_index, line) in physical.iter().enumerate() {
-        let mut start = offset;
-        let mut cells = 0usize;
-        let mut chunk = String::new();
-        for grapheme in line.graphemes(true) {
-            let glyph_width = crate::textwidth::str_cells(grapheme).max(1);
-            if cells > 0 && cells + glyph_width > width {
-                rows.push((start, offset, std::mem::take(&mut chunk)));
-                start = offset;
-                cells = 0;
-            }
-            chunk.push_str(grapheme);
-            offset += grapheme.chars().count();
-            cells += glyph_width;
-            if cells >= width {
-                rows.push((start, offset, std::mem::take(&mut chunk)));
-                start = offset;
-                cells = 0;
-            }
+        for (wrapped, start, end) in crate::render::transcript::wrap_line_ranges(line, width.max(1))
+        {
+            rows.push((offset + start, offset + end, wrapped));
         }
-        if !chunk.is_empty() || line.is_empty() {
-            rows.push((start, offset, chunk));
-        }
+        offset += line.chars().count();
         if line_index + 1 < physical.len() {
             offset += 1; // the newline is a caret position in the document
         }
@@ -67,7 +116,19 @@ pub fn copy_selection(state: &AppState) -> Option<String> {
     Some(state.journal_notes[start..end].to_string())
 }
 
+pub fn cut_selection(state: &mut AppState) -> Option<String> {
+    let copied = copy_selection(state)?;
+    replace_selection(state, "");
+    Some(copied)
+}
+
 fn replace_selection(state: &mut AppState, insert: &str) {
+    edit(state, EditKind::Atomic, |state| {
+        replace_selection_inner(state, insert)
+    });
+}
+
+fn replace_selection_inner(state: &mut AppState, insert: &str) {
     let range = selection(state);
     if let Some(range) = range {
         let start = byte_at(&state.journal_notes, range.start);
@@ -97,6 +158,9 @@ fn move_caret(state: &mut AppState, target: usize, extend: bool) {
 pub(crate) fn begin_edit(state: &mut AppState) {
     state.journal_notes_cursor = state.journal_notes.chars().count();
     state.journal_notes_selection = None;
+    state.journal_notes_undo.clear();
+    state.journal_notes_redo.clear();
+    state.journal_notes_last_edit = None;
     state.journal_notes_editing = true;
     state.focus = crate::state::Focus::Map;
 }
@@ -106,7 +170,11 @@ pub fn finish_edit(state: &mut AppState) {
     if !state.journal_notes_editing {
         return;
     }
-    let _ = crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes);
+    if let Err(error) =
+        crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes)
+    {
+        state.set_status(format!("could not save journal notes: {error}"));
+    }
     state.journal_notes_editing = false;
     state.journal_notes_selection = None;
     state.focus = crate::state::Focus::Game;
@@ -114,6 +182,22 @@ pub fn finish_edit(state: &mut AppState) {
 
 /// Handle a key owned by the Notes editor. Escape saves and returns to the game.
 pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
+    let merge_kind = if !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        match key.code {
+            KeyCode::Char(c) if c.is_alphanumeric() => Some(EditKind::Insert),
+            KeyCode::Backspace => Some(EditKind::Backspace),
+            KeyCode::Delete => Some(EditKind::Delete),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if merge_kind.is_none() {
+        state.journal_notes_last_edit = None;
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
     {
@@ -125,8 +209,25 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
     {
-        let _ = crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes);
-        state.set_status("journal notes saved");
+        state.set_status(
+            match crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes)
+            {
+                Ok(()) => "journal notes saved".to_string(),
+                Err(error) => format!("could not save journal notes: {error}"),
+            },
+        );
+        return;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('z') | KeyCode::Char('Z'))
+    {
+        undo(state);
+        return;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'))
+    {
+        redo(state);
         return;
     }
     if key.code == KeyCode::Esc {
@@ -143,7 +244,14 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             let mut buf = [0; 4];
-            replace_selection(state, c.encode_utf8(&mut buf));
+            let kind = if selection(state).is_some() || !c.is_alphanumeric() {
+                EditKind::Atomic
+            } else {
+                EditKind::Insert
+            };
+            edit(state, kind, |state| {
+                replace_selection_inner(state, c.encode_utf8(&mut buf))
+            });
         }
         KeyCode::Enter => replace_selection(state, "\n"),
         KeyCode::Left if cursor > 0 => move_caret(state, cursor - 1, extend),
@@ -191,33 +299,39 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
             );
         }
         KeyCode::Backspace => {
-            if selection(state).is_some() {
-                replace_selection(state, "");
-            } else if cursor > 0 {
-                let start = byte_at(&state.journal_notes, cursor - 1);
-                let end = byte_at(&state.journal_notes, cursor);
-                state.journal_notes.replace_range(start..end, "");
-                state.journal_notes_cursor -= 1;
-            }
+            let kind = if selection(state).is_some() {
+                EditKind::Atomic
+            } else {
+                EditKind::Backspace
+            };
+            edit(state, kind, |state| {
+                if selection(state).is_some() {
+                    replace_selection_inner(state, "");
+                } else if cursor > 0 {
+                    let start = byte_at(&state.journal_notes, cursor - 1);
+                    let end = byte_at(&state.journal_notes, cursor);
+                    state.journal_notes.replace_range(start..end, "");
+                    state.journal_notes_cursor -= 1;
+                }
+            });
         }
         KeyCode::Delete => {
-            if selection(state).is_some() {
-                replace_selection(state, "");
-            } else if cursor < len {
-                let start = byte_at(&state.journal_notes, cursor);
-                let end = byte_at(&state.journal_notes, cursor + 1);
-                state.journal_notes.replace_range(start..end, "");
-            }
+            let kind = if selection(state).is_some() {
+                EditKind::Atomic
+            } else {
+                EditKind::Delete
+            };
+            edit(state, kind, |state| {
+                if selection(state).is_some() {
+                    replace_selection_inner(state, "");
+                } else if cursor < len {
+                    let start = byte_at(&state.journal_notes, cursor);
+                    let end = byte_at(&state.journal_notes, cursor + 1);
+                    state.journal_notes.replace_range(start..end, "");
+                }
+            });
         }
         _ => {}
-    }
-    if matches!(
-        key.code,
-        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete
-    ) {
-        // Keep the sidecar current as the player types, so an application exit
-        // cannot discard an edited note that has not yet left the tab.
-        let _ = crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes);
     }
 }
 
@@ -233,7 +347,6 @@ pub fn paste(state: &mut AppState, text: &str) {
         return;
     }
     replace_selection(state, &clean);
-    let _ = crate::styles::write_per_game_journal_notes(&state.game_dir, &state.journal_notes);
 }
 
 pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -248,13 +361,20 @@ pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
     let muted = state.colors.theme.get("muted").style;
     let accent = state.colors.theme.get("accent").style;
     let hint = if state.journal_notes_editing {
-        "Ctrl+A all · Ctrl+C copy · Ctrl+Shift+V paste"
+        "Ctrl+A all · Ctrl+C copy · Ctrl+X cut · Ctrl+Shift+V paste"
     } else {
         "Shift+Enter or click: edit notes"
     };
     crate::render::draw_str_clipped(buf, area.x, area.y, hint, muted, area);
     if state.journal_notes_editing {
-        crate::render::draw_str_clipped(buf, area.x, area.y.saturating_add(1), "Enter newline · Ctrl+S save · Esc save/exit", muted, area);
+        crate::render::draw_str_clipped(
+            buf,
+            area.x,
+            area.y.saturating_add(1),
+            "Enter newline · Ctrl+Z undo · Ctrl+Y redo · Ctrl+S save · Esc exit",
+            muted,
+            area,
+        );
     }
     let content_top = area.y.saturating_add(2);
     let available = area.bottom().saturating_sub(content_top);
@@ -263,10 +383,14 @@ pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
     let cursor_row = rows
         .iter()
         .enumerate()
-        .rfind(|(_, (start, end, _))| *start <= state.journal_notes_cursor && state.journal_notes_cursor <= *end)
+        .rfind(|(_, (start, end, _))| {
+            *start <= state.journal_notes_cursor && state.journal_notes_cursor <= *end
+        })
         .map_or(0, |(row, _)| row);
     let first_row = if state.journal_notes_editing {
-        cursor_row.saturating_add(1).saturating_sub(available as usize)
+        cursor_row
+            .saturating_add(1)
+            .saturating_sub(available as usize)
     } else {
         0
     };
@@ -336,11 +460,7 @@ mod tests {
     #[test]
     fn shift_arrows_select_and_typing_replaces_selection() {
         let mut state = AppState::default();
-        let game_dir = std::env::temp_dir().join(format!(
-            "lanthorn-journal-notes-input-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&game_dir).unwrap();
+        let game_dir = crate::scratch_dir("journal-notes-input");
         state.game_dir = game_dir.clone();
         state.journal_notes = "notes".into();
         state.journal_notes_cursor = 2;
@@ -354,15 +474,188 @@ mod tests {
             KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
         );
         assert_eq!(state.journal_notes, "noXes");
-        assert_eq!(
-            crate::styles::read_per_game_journal_notes(&game_dir),
-            "noXes"
-        );
+        assert_eq!(crate::styles::read_per_game_journal_notes(&game_dir), "");
         state.focus = crate::state::Focus::Map;
         handle_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(state.focus, crate::state::Focus::Game);
         assert!(!state.journal_notes_editing);
+        assert_eq!(
+            crate::styles::read_per_game_journal_notes(&game_dir),
+            "noXes"
+        );
         let _ = std::fs::remove_dir_all(game_dir);
     }
 
+    #[test]
+    fn wraps_before_a_word_instead_of_splitting_it() {
+        assert_eq!(
+            wrapped_lines("The foobar", 7),
+            vec![(0, 3, "The".into()), (4, 10, "foobar".into())]
+        );
+    }
+
+    #[test]
+    fn cut_copies_and_removes_the_selection() {
+        let mut state = AppState::default();
+        let game_dir = crate::scratch_dir("journal-notes-cut");
+        state.game_dir = game_dir.clone();
+        state.journal_notes = "take the brass key".into();
+        state.journal_notes_cursor = 8;
+        state.journal_notes_selection = Some(4);
+        state.journal_notes_editing = true;
+
+        assert_eq!(cut_selection(&mut state).as_deref(), Some(" the"));
+        assert_eq!(state.journal_notes, "take brass key");
+        assert_eq!(state.journal_notes_cursor, 4);
+        assert_eq!(crate::styles::read_per_game_journal_notes(&game_dir), "");
+        finish_edit(&mut state);
+        assert_eq!(
+            crate::styles::read_per_game_journal_notes(&game_dir),
+            "take brass key"
+        );
+        let _ = std::fs::remove_dir_all(game_dir);
+    }
+
+    #[test]
+    fn undo_and_redo_group_adjacent_typing_and_clear_redo_after_a_new_edit() {
+        let mut state = AppState::default();
+        state.journal_notes = "a".into();
+        state.journal_notes_cursor = 1;
+        state.journal_notes_editing = true;
+
+        for c in ['b', 'c', 'd'] {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "a", "a run of typing is one undo step");
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "abcd");
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "ax", "a new edit clears redo history");
+    }
+
+    #[test]
+    fn undo_and_redo_keep_the_thirty_most_recent_edit_actions() {
+        let mut state = AppState::default();
+        for _ in 0..31 {
+            paste(&mut state, "x");
+        }
+        assert_eq!(state.journal_notes.chars().count(), 31);
+
+        for _ in 0..30 {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+            );
+        }
+        assert_eq!(
+            state.journal_notes, "x",
+            "history retains the last 30 actions"
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            state.journal_notes, "x",
+            "older actions are no longer retained"
+        );
+
+        for _ in 0..30 {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            );
+        }
+        assert_eq!(state.journal_notes.chars().count(), 31);
+    }
+
+    #[test]
+    fn adjacent_backspaces_group_but_caret_movement_starts_a_new_action() {
+        let mut state = AppState::default();
+        state.journal_notes = "word".into();
+        state.journal_notes_cursor = 4;
+        state.journal_notes_editing = true;
+
+        for _ in 0..3 {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(state.journal_notes, "w");
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "word", "backspaces undo as a group");
+
+        for c in [' ', 'n', 'e', 'w'] {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            );
+        }
+        handle_key(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            state.journal_notes, "word new",
+            "caret movement separates adjacent typing into distinct undo actions"
+        );
+    }
+
+    #[test]
+    fn undo_and_redo_restore_selection_and_treat_paste_as_one_edit() {
+        let mut state = AppState::default();
+        state.journal_notes = "hello".into();
+        state.journal_notes_cursor = 5;
+        state.journal_notes_selection = Some(0);
+        state.journal_notes_editing = true;
+
+        paste(&mut state, "world");
+        assert_eq!(state.journal_notes, "world");
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "hello");
+        assert_eq!(state.journal_notes_cursor, 5);
+        assert_eq!(state.journal_notes_selection, Some(0));
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "world");
+        assert_eq!(state.journal_notes_cursor, 5);
+        assert_eq!(state.journal_notes_selection, None);
+    }
 }

@@ -14,19 +14,20 @@ and Scott Adams stories. It is a Rust Cargo workspace; the main TUI package is
 
 Current checkout facts when these notes were written:
 
-- Git remote `origin` points to `https://github.com/sharkusk/lanthorn.git`.
-- The working branch is `codex/live-command-separator-journal-notes`, currently
-  based at `5138c6b3` (`fix(ifdb): ranged requests ask for identity encoding;
-  gzip replies no longer fake a size`). At inspection time this base is also
-  `origin/main`; the feature changes are working-tree edits, not commits yet.
-- Only `origin` is configured; there is no separate `upstream` remote.
-- `origin` points directly at the canonical project, not the user's fork. Do
-  not push feature work there; create a personal GitHub fork and push the
-  feature branch to it if remote backup or sharing is wanted.
-- Feature changes are uncommitted. Preserve them before switching branches,
-  rebasing, or merging. `.vs/` is untracked local editor content; leave it
-  alone and do not stage it. `docs/PROJECT-UNDERSTANDING.md` is also currently
-  untracked and needs an explicit add if the user wants it committed.
+- Git remote `origin` points to the user's fork,
+  `https://github.com/thistletraans/lanthorn.git`. No `upstream` remote is
+  configured in this worktree.
+- The working branch is `thistletraans-notepad-zen-fixes`. Its current `HEAD`
+  includes local feature commit `b9fd2c28` (`feat(app): finish Zen Mode and
+  Journal Notes`). The work was based on the newer locally available Lanthorn
+  tree, rather than the older Notes branch.
+- The user has explicitly requested a PR into the fork's
+  `codex/Zen-Mode&Notes` branch. That target was at `e4ef0f55` when checked and
+  has one commit not present in the feature branch, while the feature branch
+  has 41 commits not present in the target. Those 41 include the newer project
+  history and the finished feature. The branches overlap in Notes and Zen
+  files, so reconcile and verify the combined tree before pushing or opening
+  the PR. Do not assume the target branch has already been updated.
 
 ## Read these first
 
@@ -48,6 +49,8 @@ Current checkout facts when these notes were written:
 - `crates/app/src/state.rs`: application and transcript state.
 - `crates/app/src/render/`: transcript and screen renderers.
 - `crates/app/src/journal.rs`: Journal tab model and shared tab-bar drawing.
+- `crates/app/src/journal_notes.rs`: per-story Notes editor, wrapping,
+  selection, clipboard operations, persistence hooks, and edit history.
 - `crates/app/src/slash.rs`: slash-command registry and dispatch.
 - `crates/app/src/config.rs`, `config_template.rs`: global configuration,
   defaults, and generated config reference.
@@ -81,7 +84,8 @@ responsibilities across these boundaries.
   also have a template/reference; keep these in sync.
 - Do not stage blindly (`git add .`), commit, push, publish, or cut a release
   unless explicitly requested. Inspect `git status` first and stage named
-  files only.
+  files only. The user explicitly requested the PR described above, superseding
+  an earlier instruction not to create one.
 - `CLAUDE.md` notes that buildinfo embeds Git state and commits invalidate
   build fingerprints. Verify before committing when practical, to avoid
   paying for a full relink twice.
@@ -115,20 +119,21 @@ Linux build. The official release workflow is the reference for cross-platform
 archives, checksums, and publication. A local ZIP is just a portable bundle,
 not an official project release.
 
+For a development run, specify the TUI binary explicitly because the package
+also provides `lanthorn-mapgen`:
+
+```powershell
+cargo run -p lanthorn --bin lanthorn -- "C:\path\to\story-file.z5"
+```
+
 ### Preserve and update this checkout
 
-Keep this clone in its current folder and use the existing feature branch; a
-second clone is unnecessary. First inspect `git status` and review the diff,
-then stage only the files intended for the feature and commit them on
-`codex/live-command-separator-journal-notes`. Do not use `git add .`: it would
-also pick up unrelated local files such as `.vs/`. For a durable off-machine
-backup, create a personal GitHub fork, add it as a second remote (for example
-`fork`), and push the feature branch there. Keep `origin` pointed at the
-creator's repository for fetching official updates. Once the feature is
-committed, update later by fetching `origin`, reviewing the new commits, and
-rebasing or merging the feature branch onto the chosen official base; then
-resolve conflicts and verify the combined tree. Avoid doing this while the
-feature edits are still only uncommitted working-tree changes.
+Work in this existing worktree and branch; the user has already tested this
+local build successfully. Before any commit, inspect both staged and unstaged
+diffs and stage only explicitly intended paths. A future upstream refresh needs
+a separately configured canonical remote (the current `origin` is the user's
+fork), a fetch, review of the new commits, and a deliberate merge or rebase; do
+not infer that the local `origin/main` ref is current on GitHub.
 
 `cargo-nextest` is not installed in the current Windows environment. If it is
 installed later, use the exact `nextest` commands and suite filters in
@@ -137,87 +142,93 @@ runs can be much slower with Cargo's runner.
 
 ## Current feature work in this checkout
 
-The requested implementation adds:
+The local change set brings the Notes and Zen Mode work forward onto the
+newer Lanthorn tree available in this checkout and fixes the usability issues
+reported during testing.
 
-1. Optional Zen Mode, toggled by `/toggle-zen-mode`, dims earlier transcript
-   rows and draws a rule before the latest visible command. The rule is the
-   `zen_mode_separator` element, whose default parent is the `line` role and
-   whose parent can be changed independently in `[elements]` in `style.toml`.
-   The persisted `command_separator` setting defaults off. The rule is
-   suppressed while paginating or scrolled away from the live bottom.
-2. A framed Notes tab in the Journal, matching the other tab panels. Notes are
-   multiline, per-story text stored in the story's `config.toml` sidecar; edits
-   persist as the player types. Shift+Enter or a click in Notes starts editing;
-   Esc or a click outside saves and returns game focus. There is no separate
-   Notes command-palette entry.
-3. Alt+Left/Right traverses Journal tabs. Shift+Arrow remains available to map,
-   Documents, Hints, and Notes navigation instead of being repurposed for tabs.
-4. Notes supports multiline editing, selection, copy/paste, and soft wrapping;
-   its per-story content is saved in the story's config sidecar.
-5. Command/config docs, player instructions, interface notes, and this handoff.
+### Zen Mode
 
-Main implementation files are `journal.rs`, new `journal_notes.rs`,
-`state.rs`, `styles.rs`, `startup.rs`, `input.rs`, `main.rs`,
-`render/transcript.rs`, `config.rs`, `config_template.rs`, and `slash.rs`.
-The Journal model and slash-command registry have tests that pin their tab and
-command counts, so add new rows/variants to those tests. Generated reference
-docs should be checked against `docs_reference` after registry changes.
+- `/toggle-zen-mode` toggles the persisted `command_separator` setting.
+- At the live transcript bottom, earlier transcript rows are dimmed and a
+  themed separator is drawn immediately above the latest command. Scrollback
+  and pager views are not transformed.
+- `zen_mode_separator` is a theme element, defaulting to the shared `line`
+  role; theme configuration is described in `docs/reference/style.md` and
+  `style.example.toml`.
+- Notification toasts drawn over a dimmed transcript do not inherit DIM
+  unless their own style explicitly requests it. The old troubleshooting
+  “ZEN MODE” footer reminder was removed.
+- Config persistence errors for the toggle are shown to the player.
+
+### Journal Notes
+
+- Notes is a Journal tab and stores multiline player-authored text in the
+  story's `config.toml` sidecar. It does not write after each keystroke:
+  Ctrl+S, leaving Notes, or quitting saves, avoiding the latency of repeatedly
+  rewriting the sidecar during typing or paste. Save errors are surfaced in
+  the status notification.
+- Select the Notes tab, then Shift+Enter or click inside it to edit. Esc saves
+  and exits editing. Clicking outside also exits; Alt+Left/Right changes
+  Journal tabs and saves Notes as it leaves the editor.
+- Shift+Arrow selects text; Ctrl+C copies, Ctrl+X cuts, and terminal
+  bracketed paste inserts text. Wrapping reuses
+  `render::transcript::wrap_line_ranges`, preserving words when they fit on a
+  subsequent row.
+- Ctrl+Z and Ctrl+Y undo/redo up to 30 edit actions. Adjacent word-character
+  typing and adjacent backspaces group together; a paste or selection
+  replacement is one action. Moving the caret separates typing groups.
+  History is in-memory for the current editing session and is cleared when
+  editing begins again; it is not persisted to disk.
+
+Relevant implementation is in `journal_notes.rs`, `journal.rs`, `state.rs`,
+`styles.rs`, `startup.rs`, `input.rs`, `main.rs`, `render/transcript.rs`,
+`config.rs`, `config_template.rs`, and `slash.rs`. Player-facing details are
+in `docs/guide/playing.md`; generated command/config/style references should
+be validated via the `docs_reference` tests when their registries/templates
+change.
 
 ## Verification status for this feature
 
-Verification status at the latest handoff update:
+Latest checks after Notes undo grouping and the 30-action history change:
 
-- The user confirmed Zen Mode's visible dimming and separator in a real
-  Mini-Zork session. The dedicated `zen_mode_separator` theme selector was
-  added afterward; it defaults to the shared `line` role and has passed a
-  compile check, but its custom-parent behavior has not yet been visually
-  checked.
-- `cargo check -p lanthorn --bin lanthorn --features t-all` passed after the
-  latest source edits. It emitted existing unused import/dead-code warnings
-  in `term_colors.rs` and watchdog code in `main.rs`.
-- These feature changes remain uncommitted on
-  `codex/live-command-separator-journal-notes`; do not treat the current
-  executable or a copied ZIP as a durable source backup.
+- `cargo test -p lanthorn --lib --features t-input journal_notes`: 7 passed.
+- Notes shortcut routing and Alt+Left save-on-leave routing tests passed
+  individually; the latter verifies the sidecar contains the Notes text after
+  the tab changes.
+- `cargo check -p lanthorn --bin lanthorn` passed during this work, and the
+  full binary check also passed after the Notes editor was added. Cargo emits
+  existing unused/dead-code warnings, especially in `term_colors.rs` and
+  terminal-watchdog code in `main.rs`.
+- `docs_reference` passed all 5 checks after regenerating the command
+  reference.
+- `git diff --check` and `rustfmt --check` for the Notes editor passed.
+- The user manually launched the local Anchorhead build and reported that it
+  worked. This is a user smoke test, not an exhaustive test of every story or
+  terminal.
+- Two `cargo test --workspace --all-features` runs were attempted with
+  `LANTHORN_FIXTURES_REQUIRED=1`. Both stop at the same failing test in
+  `lanthorn-gvm-cli`: `glulxercise_all_groups_pass`, whose bundled Glulx math
+  test reports `pow(2, -1075)` as the smallest positive subnormal instead of
+  zero. This test and its math implementation are outside the Notes/Zen
+  changes; the workspace gate is not green.
+- Strict `cargo clippy -p lanthorn --all-targets --all-features -- -D
+  warnings` fails on pre-existing unused/dead-code warnings in
+  `term_colors.rs` and an unnecessary cast in transcript code. The cast was
+  restored to its original form because changing it was unrelated; rerunning
+  with those existing warning classes allowed completed successfully. This
+  is not a clean strict Clippy pass.
+- `cargo-nextest` is not installed in this Windows environment; use Cargo's
+  built-in `cargo test` for focused validation unless nextest is installed.
 
-Earlier verification in this environment:
-
-- `cargo check -p lanthorn --lib --tests --features t-all` succeeded after
-  fixing two compile issues (Notes renderer visibility and the updated tab
-  assertion in `journal_hints_tab`). It emitted unrelated warnings in
-  `term_colors.rs`, `startup.rs`, and `main.rs`.
-- Earlier focused tests passed for Notes editor selection, per-story Notes
-  persistence, command-separator config persistence, and slash registry
-  completeness. The revised Notes click/Shift+Enter and Alt+Arrow tab routing
-  have regression tests in the source but have not yet been run.
-- `git diff --check` passed; `rustfmt --check --edition 2021` passed for the
-  new Notes editor file.
-- The project's `scripts/fixtures.manifest` was fetched for local tests:
-  46 ignored fixture files were downloaded and verified by byte count and
-  SHA-256 into `crates/app/tests/fixtures/stories/`. They are deliberately not
-  tracked or redistributed. The documented Bash script was unavailable in
-  this sandbox, so an equivalent one-off fetch read the manifest, verified
-  every result, and left no archive cache behind.
-- After fixture fetch, `cargo test -p lanthorn --lib --bins --features t-all`
-  reported 4,027 library tests passed, 1 failed, and 16 ignored. The remaining
-  failure is `documents_tab::tests::the_folder_header_is_an_osc8_link`: on
-  this Windows environment the buffer contains the clipped `Folder:` path
-  text but not the OSC8 marker that the test expects. It reproduces when run
-  alone and is outside this feature's changed files. The binary test target
-  passed separately: 210 passed, none failed.
-- A focused Notes editor test initially wrote to a relative `config.toml`
-  because its default `AppState` had an empty game directory. The test now
-  uses a dedicated temporary story directory, checks the persisted text, and
-  removes it. The updated focused test passed. The full library suite was run
-  before this test-only cleanup edit; rerun it if another full local pass is
-  needed.
-- Earlier Cargo dependency fetching failed with Windows Schannel
-  `SEC_E_NO_CREDENTIALS`; it later succeeded, so that was a transient
-  environment/download problem rather than a source compile error.
+The feature changes are committed locally on `thistletraans-notepad-zen-fixes`
+in `b9fd2c28`. The requested PR targets `codex/Zen-Mode&Notes`; push only after
+the combined tree has been resolved and checked. Do not claim the workspace
+test gate or strict Clippy is clean.
 
 ## When the official repository changes
 
-The current remote is already named `origin` and points at the project's
-canonical GitHub repository. Before integrating an official update:
+The current `origin` remote points at the user's fork, not the canonical
+repository. Before integrating a later official update:
 
 1. Check `git status`, save this uncommitted work on a dedicated branch or
    another recoverable snapshot, and leave `.vs/` and other unrelated

@@ -35,7 +35,10 @@ one-click quick actions.
 Those quick actions draw as a compass rose when the band is wide enough, with
 the map's own portal glyphs — `↑` `◉` `◎` `↓` for up, in, out and down —
 clustered beside it. Each is a single click that submits at once, no `Enter`
-needed. Typing always wins over the band: letters and Backspace go straight
+needed. The compass also reads the map: from the room you are standing in, a
+way you have already walked looks as normal, an exit the map has found but you
+haven't taken stands out in the map's exit colour, and a direction that goes
+nowhere is dimmed (still clickable, since a door can open later). Typing always wins over the band: letters and Backspace go straight
 to the prompt whether the band is open or not, and the band only claims
 column navigation (`Tab`/`Shift-Tab` to move between columns, `↑`/`↓` to
 highlight a row).
@@ -49,6 +52,10 @@ it, then press `Shift+Enter` or click inside the Notes panel to edit. `Ctrl+S`
 saves, and `Esc` saves and returns to the game. Clicking the game or another
 Journal tab saves and exits Notes editing. `Alt+Left` and `Alt+Right` move across
 Journal tabs; Shift+Arrow keeps its map, Documents, and Notes navigation meaning.
+In Notes, select text with Shift+Arrow, then use `Ctrl+C` to copy or `Ctrl+X` to
+cut it; paste with your terminal's bracketed-paste shortcut. `Ctrl+Z` undoes
+and `Ctrl+Y` redoes. Adjacent word-character typing and backspaces group
+together; undo and redo retain the 30 most recent edit actions.
 
 ## The word reveal
 

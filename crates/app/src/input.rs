@@ -184,6 +184,8 @@ pub enum Action {
     JournalNotesKey(KeyEvent),
     /// Copy the current Notes selection through the terminal clipboard protocol.
     CopyNotesSelection,
+    /// Cut the current Notes selection through the terminal clipboard protocol.
+    CutNotesSelection,
     /// Toggle honoring the Z-machine's timed-input (`read`/`read_char` timers).
     ToggleTimedInput,
     /// Toggle audio playback (config.enable_sound).
@@ -578,8 +580,25 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
     if ctrl && key.code == KeyCode::Char('c') && state.journal_notes_editing {
         return KeyResolve::Action(Action::CopyNotesSelection);
     }
+    if ctrl && key.code == KeyCode::Char('x') && state.journal_notes_editing {
+        return KeyResolve::Action(Action::CutNotesSelection);
+    }
     if ctrl && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('c')) {
         return KeyResolve::Action(Action::Quit);
+    }
+
+    // Leave Notes editing through the same journal-tab shortcut. Applying the
+    // action changes tabs via AppState::set_journal_tab, which saves Notes first.
+    if state.journal_notes_editing
+        && state.layout == crate::state::Layout::Split
+        && state.debug.is_none()
+        && key.modifiers == KeyModifiers::ALT
+    {
+        match key.code {
+            KeyCode::Left => return KeyResolve::Action(Action::JournalStepTab(false)),
+            KeyCode::Right => return KeyResolve::Action(Action::JournalStepTab(true)),
+            _ => {}
+        }
     }
 
     if state.journal_notes_editing {
@@ -2798,14 +2817,22 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::ToggleStatusBar => state.show_status_bar = !state.show_status_bar,
         Action::ToggleZenMode => {
             state.config.command_separator = !state.config.command_separator;
-            let _ = crate::config::write_config_file(&state.config);
-            state.set_status(if state.config.command_separator { "Zen Mode on" } else { "Zen Mode off" });
+            let label = if state.config.command_separator {
+                "Zen Mode on"
+            } else {
+                "Zen Mode off"
+            };
+            state.set_status(match crate::config::write_config_file(&state.config) {
+                Ok(()) => label.to_string(),
+                Err(error) => format!("{label}, but saving the setting failed: {error}"),
+            });
         }
         Action::EditJournalNotes => {
             crate::journal_notes::begin_edit(state);
         }
         Action::JournalNotesKey(key) => crate::journal_notes::handle_key(state, key),
         Action::CopyNotesSelection => {}
+        Action::CutNotesSelection => {}
         Action::ToggleTimedInput => {
             state.config.honor_timed_input = !state.config.honor_timed_input;
             state.set_status(if state.config.honor_timed_input { "timed input on" } else { "timed input off" });
@@ -5153,6 +5180,7 @@ fn config_toggle_or_edit(selected: usize, state: &mut AppState) {
         28 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.guidance_probe = !cs.working.guidance_probe; } }
         29 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.hide_adult_words = !cs.working.hide_adult_words; } }
         30 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.return_probe = !cs.working.return_probe; } }
+        31 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.scan_exits = !cs.working.scan_exits; } }
         _ => {}
     }
 }
@@ -5256,6 +5284,7 @@ fn config_cycle(working: &mut crate::config::Config, row: usize, delta: i32) {
         28 => working.guidance_probe = !working.guidance_probe,
         29 => working.hide_adult_words = !working.hide_adult_words,
         30 => working.return_probe = !working.return_probe,
+        31 => working.scan_exits = !working.scan_exits,
         _ => {}
     }
 }
@@ -6673,6 +6702,48 @@ mod tests {
         s.journal_notes_editing = true;
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
         assert_eq!(key_to_action(&s, right), Action::JournalNotesKey(right));
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
+            Action::JournalStepTab(false)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
+            Action::JournalStepTab(true)
+        );
+        assert_eq!(
+            key_to_action(
+                &s,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+            ),
+            Action::CutNotesSelection
+        );
+        for key in ['z', 'y'] {
+            let event = KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL);
+            assert_eq!(key_to_action(&s, event), Action::JournalNotesKey(event));
+        }
+    }
+
+    #[test]
+    fn alt_journal_tab_shortcut_saves_notes_before_leaving_editor() {
+        let mut s = AppState::default();
+        let game_dir = crate::scratch_dir("journal-notes-alt-tab");
+        s.game_dir = game_dir.clone();
+        s.layout = crate::state::Layout::Split;
+        s.journal_tab = crate::journal::JournalTab::Notes;
+        s.journal_notes = "remember the brass key".into();
+        s.journal_notes_editing = true;
+
+        let action = key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(action, Action::JournalStepTab(false));
+        apply_action(action, &mut s, &mut Mapper::default());
+
+        assert_eq!(s.journal_tab, crate::journal::JournalTab::Documents);
+        assert!(!s.journal_notes_editing);
+        assert_eq!(
+            crate::styles::read_per_game_journal_notes(&game_dir),
+            "remember the brass key"
+        );
+        let _ = std::fs::remove_dir_all(game_dir);
     }
 
     /// The dock is NOT an overlay (SQ-0692). It reserves its own rows instead of

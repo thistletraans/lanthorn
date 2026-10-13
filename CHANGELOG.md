@@ -6,7 +6,7 @@ All notable changes to lanthorn are recorded here.
 [`.github/workflows/release.yml`](.github/workflows/release.yml)). A tag whose
 name contains a hyphen — `v0.1.0-beta.1`, `v0.2.0-rc.1` — is published as a
 **pre-release**; a bare `vMAJOR.MINOR.PATCH` is a full release. The workspace
-version in `Cargo.toml` (currently `0.9.3`) versions every crate and every
+version in `Cargo.toml` (currently `0.9.5`) versions every crate and every
 binary's `--version` at once, and carries any pre-release suffix so a build
 identifies itself without reading its git hash.
 
@@ -27,16 +27,119 @@ goes into the README in place, at its normal destination, marked with the
 visible tag `*Next release:*`. `release.yml` refuses to cut a release
 while any such tag, or this Unreleased section, still exists.*
 
+- **The command panel's compass shows what the map knows.** Each way out of the room you are
+  standing in is dressed by the map: ways you have explored look as before, exits waiting to be
+  walked stand out in the map's exit colour, and directions that go nowhere are dimmed (they stay
+  clickable). The up, down, in and out glyphs follow suit. Restyle them with the
+  `command_panel.quick:explored`, `:exit`, `:blocked` and `:untried` selectors.
+
+## v0.9.5 — 2026-10-12
+
+### Highlights
+
+- **The map shows a room's real exits before you walk them.** The first time you
+  stand in a room, the ways out are marked (`»`), even ones the description never
+  mentions, without revealing what lies beyond.
+- **Rooms reached by `climb tree` or `jump in river` now land in the right place
+  on the map**, and `north then east` maps each step you actually walked.
+- **Scott Adams games now complete your words as you type**, like Z-machine and
+  Glulx stories.
+- **Disk and CD images open much faster**, especially from a network drive.
+
+### Added
+
+- **The map now places rooms reached by `climb tree`, `jump in river` and the like.** When a command that names no direction moves you, the game is quietly asked which direction leads there, and the room snaps into place on the map as Up, East and so on. Moves that no direction reproduces stay unplaced. Rooms you go into or out of (`enter window`, `out`) now line up with the rest of the map when a compass direction also leads there.
+- **The map now shows which exits are real before you walk them.** The first time you stand in a room, the game is quietly asked which directions work, and the map marks those exits (`»` in the matrix and room card) instead of treating every direction you haven't typed as a maybe. It finds exits the room description never mentions, asks again on a later visit about the ways that were refused (a door may have opened), and never shows or names the room on the far side until you walk there. Turn it off with `scan_exits = false`.
+- **Scott Adams games now complete your words as you type.** The game's own verbs and nouns are offered by autocomplete, as they already were for Z-machine and Glulx stories. (Adventure databases store only the first few letters of each word, so where the game's own text names the whole word, `lam` is offered as `lamp`.)
+
+### Fixed
+
+- **Restoring a save in a narrower window no longer breaks Zork I's score and
+  moves.** After a few turns the status line used to wrap onto a second row or
+  scramble the room name; lanthorn now checks whether the game re-lays its status
+  line out for the new width and only keeps the saved width when it does not.
+- **An empty `~/.lanthorn` folder no longer hides your settings.** A leftover `~/.lanthorn` with nothing real in it used to make lanthorn ignore the settings and saves in its standard folders, so everything looked reset. It is now ignored unless it holds a config, saves or other players. When both locations hold your files, lanthorn asks which to use before it starts and offers to rename the other (nothing is deleted); in a script or container it uses the standard folders and says so on stderr.
+- **Typing several moves on one line now maps each step.** `north then east` used to draw one passage north that does not exist; the map now follows the rooms you actually walked through, and a step the game refuses records nothing.
+- **Rewinding to an earlier turn now shows that turn's status line straight away.** On Z-machine games with a status bar, going back used to leave the bar blank until you typed your next command.
+- **Games on disk images open faster, and CD images much faster — especially from a network drive.** Starting a game used to read the whole image file several times over, once per step of the launch; now it is read once and shared. A CD image goes further and is read only where the game needs it: starting a game off the 354 MB *Classic Text Adventure Masterpieces of Infocom* disc used to read the full 354 MB several times over, and now reads about 27 MB in all.
+- **Details fetched from IFDB for a `.zblorb` game now show up on that game.** They used to be saved under the file's name instead of the game's, so the library row never found them.
+- **Items whose names change as you play now show their full names in the inventory.** Lost Pig's food bricks used to appear as just "whole" and "half" in the inventory panel and the carried-things column; they now read "brick" and "half brick", exactly as the game itself lists them, and update the moment you break one. The same goes for Glulx games, such as King of Shreds and Patches, whose item names the game works out as you play.
+- **A game you have in two formats now shows its IFDB details on both straight after a fetch.** When the same game sits in your library twice (say as a `.z3` and as an Amiga disk image), only the first copy picked up the fetched title and author until you reopened the picker.
+
+## v0.9.4 — 2026-10-10
+
+### Highlights
+
+- **The commands you type now stand out from the story text** in the default
+  inline-prompt mode, drawn in their own colour and honouring a game's own
+  input styling.
+- **IFDB search notices games you already have**, even in a library subfolder,
+  and shows the true average rating.
+- **Maps are right from the first room.** Inform 7 Glulx games know the opening
+  room's contents before your first move, Dialog games map again, and a character
+  name on a status line is no longer mistaken for a room.
+- **Rewind keeps the transcript intact**, including text printed after a
+  "press any key" pause.
+
+### Changed
+
+- **The commands you type now stand out from the story text.** In the default
+  inline-prompt mode your command used to blend into the game's own prose; it is
+  now drawn in its own colour (the `transcript_input` style, the same one the
+  command bar uses), while the `>` prompt stays story-coloured. If a game styles
+  its own input line, lanthorn honours that too: a Glulx game's input colour,
+  weight and slant, and a Z-machine game's bold, italic or colour switched on for
+  your command specifically (colours only while game colours are on). A game that
+  merely colours all its text, like Photopia, is not treated as styling your
+  input. On a page the game has coloured, your command keeps the game's
+  background and switches to the game's own ink if your theme's colour would be
+  hard to read there.
 - **IFDB search now notices games you already have in a subfolder.** If the game
   you pick is already somewhere in your library, even tucked away in a folder like
   `infocom/` or `glulx/`, the download chooser says so at the top with where it
-  lives, instead of letting you fetch a duplicate.
+  lives, and marks each file you already have in a subfolder (`✓ in glulx/`),
+  instead of letting you fetch a duplicate.
+- **IFDB search results show the true average rating**, to one decimal like the
+  story list, rather than a rounded half-star value.
+- **Hint programs that read the screen width now lay themselves out to the
+  hints panel**, instead of assuming an 80x24 screen.
+
+### Fixed
+
 - **A document on a host that compresses its downloads now shows its real size
   and previews.** The documents chooser used to show the compressed size (a
   295 KB page read as 44 KB), and previewing it failed with a bogus "Too large to
   download (over 100 MB)". Sizes are now the file's true size, shown blank when a
   host will not say, and a too-large message names the limit that was actually
   hit.
+- **Photopia clears its page properly.** When a Glulx game wipes the screen by
+  closing its story window, the old scene no longer stays in view above the new
+  text on a tall pane.
+- **Dialog games get maps again.** The Impossible Bottle and similar Dialog
+  stories had lost their automap; only menu-driven Version 6 games such as
+  Journey are left unmapped.
+- **The first room is mapped and saved correctly.** A save made before your
+  first move now records your location, and resuming, restoring or restarting no
+  longer maps a status line that is not a room. Beyond Zork's character
+  sheet, which shows your character's name (Frank Booth by default) on the status
+  line, is no longer mistaken for a room, on the map or in the status and save
+  summaries.
+- **Inform 7 Glulx games know their opening room.** Room contents and item
+  sightings are available before your first move, games whose rooms have no exits
+  (like Toby's Nose) are recognised, and a room's objects are listed by the word
+  the room text used (carpet, sofa, door) without the scent, kind and person
+  scaffolding Inform keeps internally. "He" and "him" style placeholders are no
+  longer listed as room contents.
+- **Word reveal no longer lights up direction words and pronouns** such as
+  "up", "out", "north" or "he" on Inform games.
+- **Scott Adams map labels are shorter.** Rooms described by a sentence such as
+  "I'm on the shore of a lake" are labelled on the map as "shore of a lake".
+- **Hints panel:** a "type HINT" suggestion no longer appears over a running hint
+  companion, or for a game whose HINT command only advertises Infocom's printed
+  InvisiClues booklet (Beyond Zork).
+- **Rewind keeps your transcript.** Rewinding used to rebuild the transcript from
+  your commands and lose text printed after a "press any key" pause and any
+  styling; it now cuts the real transcript back to the earlier turn.
 
 ## v0.9.3 — 2026-10-07
 

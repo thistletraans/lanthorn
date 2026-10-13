@@ -1172,8 +1172,7 @@ fn draw_frame(
             };
             format!("Resize [{t}] | Tab: pane | arrows: adjust | 0: reset | Esc: done")
         } else {
-            let zen_hint = if state.config.command_separator { " | ZEN MODE" } else { "" };
-            let leader_hint = format!("{}: menu{}", state.hotkeys.prefix.label(), zen_hint);
+            let leader_hint = format!("{}: menu", state.hotkeys.prefix.label());
             // Reserve room for the leader hint + " | " separator so the composed
             // row doesn't overflow help_row.width (mirrors the tidy_anim branch).
             let w = (pane_layout.help_row.width as usize).saturating_sub(leader_hint.chars().count() + 3);
@@ -2168,6 +2167,7 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
         // every tick, so a take/drop moves an object between *here* and
         // *carried* on the very next frame (SQ-0664).
         needs_redraw |= loop_tick::refresh_command_band(&mut state, &*session);
+        needs_redraw |= app::render::command_band::refresh_dir_states(&mut state, &mapper.graph);
         // The Inventory tab's clickable words are LIVE too, and independent of
         // the command band (SQ-1244): the tab cannot piggyback on the band's own
         // object refresh.
@@ -3879,6 +3879,7 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
             // ── Caller-handled actions ─────────────────────────────────────────
 
             Action::Quit => {
+                app::journal_notes::finish_edit(&mut state);
                 // Ctrl-Q/Ctrl-C outside Notes (the Notes editor owns Ctrl-C for
                 // copying a selection) resolves like every other way the run can end:
                 // back to the library when one exists, Exit otherwise (SQ-1258).
@@ -3901,6 +3902,18 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
                     let _ = out.write_all(seq.as_bytes());
                     let _ = out.flush();
                     state.set_status(format!("Copied {} chars from Notes", text.chars().count()));
+                }
+                continue;
+            }
+
+            Action::CutNotesSelection => {
+                if let Some(text) = app::journal_notes::cut_selection(&mut state) {
+                    use std::io::Write;
+                    let seq = app::clipboard::osc52_copy_sequence(&text);
+                    let mut out = std::io::stdout();
+                    let _ = out.write_all(seq.as_bytes());
+                    let _ = out.flush();
+                    state.set_status(format!("Cut {} chars from Notes", text.chars().count()));
                 }
                 continue;
             }

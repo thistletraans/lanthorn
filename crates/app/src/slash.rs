@@ -589,7 +589,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "export-transcript [file]", description: "export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead)",
         dispatch: |a| SlashOutcome::Export(a.first().map(|s| s.to_string())) },
     CommandSpec { name: "toggle-zen-mode", category: Category::Transcript, context: Context::Global,
-        usage: "toggle-zen-mode", description: "dim earlier transcript and mark your latest command (persisted)",
+        usage: "toggle-zen-mode", description: "at the live bottom, dim earlier transcript lines and mark your latest command; scrollback is unchanged (persisted)",
         dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleZenMode) },
 
     // ── Style ─────────────────────────────────────────────────────────────
