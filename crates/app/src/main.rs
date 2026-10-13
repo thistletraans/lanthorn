@@ -1891,6 +1891,7 @@ fn main() {
                 &ctx.cfg,
                 &ctx.roots,
                 picker_position.as_ref(),
+                &ctx.term_default_colors,
             ) {
                 Some(p) => {
                     picker_position = Some(p.position);
