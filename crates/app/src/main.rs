@@ -1099,6 +1099,9 @@ fn draw_frame(
                         JournalTab::Documents => {
                             app::documents_tab::draw(state, pane_layout.journal_body, buf);
                         }
+                        JournalTab::Notes => {
+                            app::journal_notes::draw(state, pane_layout.journal_body, buf);
+                        }
                     }
 
                     // Map pane is NEVER dimmed (always full brightness).
@@ -1169,7 +1172,8 @@ fn draw_frame(
             };
             format!("Resize [{t}] | Tab: pane | arrows: adjust | 0: reset | Esc: done")
         } else {
-            let leader_hint = format!("{}: menu", state.hotkeys.prefix.label());
+            let zen_hint = if state.config.command_separator { " | ZEN MODE" } else { "" };
+            let leader_hint = format!("{}: menu{}", state.hotkeys.prefix.label(), zen_hint);
             // Reserve room for the leader hint + " | " separator so the composed
             // row doesn't overflow help_row.width (mirrors the tidy_anim branch).
             let w = (pane_layout.help_row.width as usize).saturating_sub(leader_hint.chars().count() + 3);
@@ -2517,7 +2521,11 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
         // text field currently owns typing and does NOT submit — the user reads it
         // back and presses Enter.
         if let Event::Paste(text) = &event {
-            app::input::apply_paste(&mut state, text);
+            if state.journal_notes_editing {
+                app::journal_notes::paste(&mut state, text);
+            } else {
+                app::input::apply_paste(&mut state, text);
+            }
             continue;
         }
 
@@ -3418,6 +3426,20 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
                 }
             }
             Event::Mouse(m) => {
+                if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                    let point = ratatui::layout::Position { x: m.column, y: m.row };
+                    let notes_body = last_panes.pane_layout.journal_body;
+                    if state.journal_notes_editing && !notes_body.contains(point) {
+                        app::journal_notes::finish_edit(&mut state);
+                    } else if !state.journal_notes_editing
+                        && state.journal_tab == app::journal::JournalTab::Notes
+                        && !state.any_modal_overlay_open()
+                        && notes_body.contains(point)
+                    {
+                        apply_action(Action::EditJournalNotes, &mut state, &mut mapper);
+                        continue 'event_loop;
+                    }
+                }
                 // Glk mouse input: a left-Down inside a mouse-watching Glulx window
                 // is delivered to the game as an Evtype_MouseInput, not a UI action.
                 // Only left-Down is diverted (Glk mouse is click-only, so the Drag/Up
@@ -3857,8 +3879,8 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
             // ── Caller-handled actions ─────────────────────────────────────────
 
             Action::Quit => {
-                // Ctrl-Q/Ctrl-C (the only route to this action — `input.rs`'s
-                // hardwired step 1) resolves like every other way the run can end:
+                // Ctrl-Q/Ctrl-C outside Notes (the Notes editor owns Ctrl-C for
+                // copying a selection) resolves like every other way the run can end:
                 // back to the library when one exists, Exit otherwise (SQ-1258).
                 // Set it explicitly so a superseded `/quit-to-library` can't leave
                 // a stale target behind.
@@ -3869,6 +3891,18 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
                 } else {
                     break 'event_loop state.exit_target.into();
                 }
+            }
+
+            Action::CopyNotesSelection => {
+                if let Some(text) = app::journal_notes::copy_selection(&state) {
+                    use std::io::Write;
+                    let seq = app::clipboard::osc52_copy_sequence(&text);
+                    let mut out = std::io::stdout();
+                    let _ = out.write_all(seq.as_bytes());
+                    let _ = out.flush();
+                    state.set_status(format!("Copied {} chars from Notes", text.chars().count()));
+                }
+                continue;
             }
 
             // Story-pane selection released: copy the text extracted by render from

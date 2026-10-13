@@ -3625,6 +3625,14 @@ pub struct AppState {
     /// Which tab the Journal shows (SQ-1684). The Journal itself is on screen
     /// whenever `layout` is `Split`; this is which of its tabs is up.
     pub journal_tab: crate::journal::JournalTab,
+    /// Per-story player-authored notes (stored in that story's config sidecar).
+    pub journal_notes: String,
+    /// Character index of the Notes editor caret while editing.
+    pub journal_notes_cursor: usize,
+    /// Shift-selection anchor in the Notes editor.
+    pub journal_notes_selection: Option<usize>,
+    /// Whether the Notes tab currently owns keyboard input for editing.
+    pub journal_notes_editing: bool,
     /// The Journal's Documents tab: the game's documents folder and its viewer (SQ-1681).
     pub documents_tab: crate::documents_tab::DocumentsTab,
     /// The Journal's Hints tab: whether its session has started, why not, and the
@@ -4094,6 +4102,10 @@ impl Default for AppState {
             game_dir: std::path::PathBuf::new(),
             data_roots: None,
             journal_tab: crate::journal::JournalTab::default(),
+            journal_notes: String::new(),
+            journal_notes_cursor: 0,
+            journal_notes_selection: None,
+            journal_notes_editing: false,
             documents_tab: crate::documents_tab::DocumentsTab::default(),
             hints_tab: crate::hints_tab::HintsTab::default(),
             player_obj: None,
@@ -4243,6 +4255,9 @@ impl AppState {
     /// apart from that reveal.
     pub fn set_journal_tab(&mut self, tab: crate::journal::JournalTab) {
         use crate::journal::JournalTab;
+        if self.journal_notes_editing && tab != JournalTab::Notes {
+            crate::journal_notes::finish_edit(self);
+        }
         if self.journal_tab == JournalTab::Documents && tab != JournalTab::Documents {
             // The image view's upload is freed while its tab is away; the
             // re-draw re-places it when the tab is back.

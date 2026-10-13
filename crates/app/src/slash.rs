@@ -521,12 +521,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         usage: "toggle-focus", description: "switch focus between panes",
         dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleFocus) },
     CommandSpec { name: "journal-tab", category: Category::View, context: Context::Global,
-        usage: "journal-tab <map|room|inventory|hints|documents>", description: "show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story",
+        usage: "journal-tab <map|room|inventory|hints|documents|notes>", description: "show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story",
         dispatch: |a| match a.first().copied() {
-            None => err("journal-tab: a tab name is required (map | room | inventory | hints | documents)".to_string()),
+            None => err("journal-tab: a tab name is required (map | room | inventory | hints | documents | notes)".to_string()),
             Some(name) => match crate::journal::JournalTab::from_name(name) {
                 Some(tab) => SlashOutcome::Action(crate::input::Action::SetJournalTab(tab)),
-                None => err(format!("journal-tab: '{name}' is not a tab (map | room | inventory | hints | documents)")),
+                None => err(format!("journal-tab: '{name}' is not a tab (map | room | inventory | hints | documents | notes)")),
             },
         } },
     CommandSpec { name: "journal-next-tab", category: Category::View, context: Context::Global,
@@ -588,6 +588,9 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: "export-transcript", category: Category::Transcript, context: Context::Global,
         usage: "export-transcript [file]", description: "export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead)",
         dispatch: |a| SlashOutcome::Export(a.first().map(|s| s.to_string())) },
+    CommandSpec { name: "toggle-zen-mode", category: Category::Transcript, context: Context::Global,
+        usage: "toggle-zen-mode", description: "dim earlier transcript and mark your latest command (persisted)",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleZenMode) },
 
     // ── Style ─────────────────────────────────────────────────────────────
     CommandSpec { name: "open-settings", category: Category::Style, context: Context::Global,
@@ -1282,7 +1285,7 @@ mod tests {
         // `scroll-document` for the Journal's Documents tab, and made
         // `create-documents-folder` a second command both worlds share.
         // SQ-1707 added `set-glk-fit`: stretch/aspect fit for design-size Glulx games.
-        assert_eq!(COMMANDS.len(), 101, "registry must match the spec's Full command table");
+        assert_eq!(COMMANDS.len(), 102, "registry must match the spec's Full command table");
     }
 
     /// SQ-1237 unified the panel vocabulary — `command band` became `command

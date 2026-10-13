@@ -1629,6 +1629,10 @@ pub struct Config {
     /// the inline story-text prompt. Default false: the inline prompt.
     #[serde(default)]
     pub command_bar: bool,
+    /// Mark the most recently entered command in the live transcript. Opt-in
+    /// so existing sessions retain their current appearance by default.
+    #[serde(default)]
+    pub command_separator: bool,
     /// When true (default) and auto_save is off, prompt the user to save on quit.
     #[serde(default = "default_true")]
     pub prompt_save_on_quit: bool,
@@ -2459,6 +2463,7 @@ impl Default for Config {
             mouse_wheel_invert: false,
             mouse: true,
             command_bar: false,
+            command_separator: false,
             prompt_save_on_quit: true,
             prompt_load_on_launch: true,
             record_turn_history: false,
@@ -2808,6 +2813,7 @@ fn resolve_config_layers(
             cfg.mouse_wheel_invert = from_file.mouse_wheel_invert;
             cfg.mouse = from_file.mouse;
             cfg.command_bar = from_file.command_bar;
+            cfg.command_separator = from_file.command_separator;
             cfg.prompt_save_on_quit = from_file.prompt_save_on_quit;
             cfg.prompt_load_on_launch = from_file.prompt_load_on_launch;
             cfg.record_turn_history = from_file.record_turn_history;
@@ -3108,6 +3114,7 @@ pub fn write_config_at(config_path: &std::path::Path, cfg: &Config) -> std::io::
     doc.put("mouse_wheel_invert", cfg.mouse_wheel_invert.into(), cfg.mouse_wheel_invert == def.mouse_wheel_invert);
     doc.put("mouse", cfg.mouse.into(), cfg.mouse == def.mouse);
     doc.put("command_bar", cfg.command_bar.into(), cfg.command_bar == def.command_bar);
+    doc.put("command_separator", cfg.command_separator.into(), cfg.command_separator == def.command_separator);
     doc.put("prompt_save_on_quit", cfg.prompt_save_on_quit.into(), cfg.prompt_save_on_quit == def.prompt_save_on_quit);
     doc.put("prompt_load_on_launch", cfg.prompt_load_on_launch.into(), cfg.prompt_load_on_launch == def.prompt_load_on_launch);
     doc.put("background_tidy", cfg.background_tidy.key().into(), cfg.background_tidy == def.background_tidy);
@@ -4472,6 +4479,7 @@ use_defaults = false
             mouse_wheel_invert: false,
             mouse: true,
             command_bar: false,
+            command_separator: false,
             prompt_save_on_quit: true,
             prompt_load_on_launch: true,
             record_turn_history: false,
@@ -4696,6 +4704,21 @@ use_defaults = false
         // Explicit opt-in is honored.
         let on: Config = toml::from_str("command_bar = true\n").unwrap();
         assert!(on.command_bar, "command_bar = true must enable the command bar");
+    }
+
+    #[test]
+    fn command_separator_defaults_off_and_persists() {
+        let mut cfg = Config::default();
+        assert!(!cfg.command_separator);
+        cfg.command_separator = true;
+        let dir = std::env::temp_dir().join(format!("lanthorn-command-separator-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        cfg.user_dir = dir.clone();
+        write_config(&dir, &cfg).unwrap();
+        let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert_eq!(text.parse::<toml_edit::DocumentMut>().unwrap()["command_separator"].as_bool(), Some(true));
+        assert!(toml::from_str::<Config>(&text).unwrap().command_separator);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

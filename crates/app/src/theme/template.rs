@@ -187,6 +187,7 @@ fn role_line(name: &str) -> String {
 /// `paneframe::parse_border_style`.
 fn enum_hint(row: &RegRow) -> &'static str {
     match row.name {
+        "zen_mode_separator" => "   # divider above the latest command when Zen Mode is on",
         "map.box_style" => "   # rounded | thick | double | solid | super-thick | ascii | borderless",
         "map.ghost_box_style" => "   # dashed | dotted | ascii   (the broken border of a room on ANOTHER layer)",
         "map.arrow_set" => "   # filled | line | nerdfont | nf-bold | nf-box | nf-chevron | nf-circle | nf-outline | nf-thick | nf-wind | nf-thin",

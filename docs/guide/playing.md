@@ -44,6 +44,12 @@ What you're carrying lives in the Journal's **Inventory** tab, beside the map
 (see [the map](the-map.md)) — and an item there clicks onto the prompt exactly
 the way a command panel object does.
 
+The Journal's **Notes** tab keeps your own notes with the current story. Select
+it, then press `Shift+Enter` or click inside the Notes panel to edit. `Ctrl+S`
+saves, and `Esc` saves and returns to the game. Clicking the game or another
+Journal tab saves and exits Notes editing. `Alt+Left` and `Alt+Right` move across
+Journal tabs; Shift+Arrow keeps its map, Documents, and Notes navigation meaning.
+
 ## The word reveal
 
 Press the `◈` control (or `/reveal-words`) and every word already on screen

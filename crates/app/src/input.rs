@@ -176,6 +176,14 @@ pub enum Action {
     /// Toggle room-number (#id) visibility in Boxes-zoom room boxes.
     ToggleRoomNumbers,
     ToggleStatusBar,
+    /// Toggle the live transcript separator and persist the global preference.
+    ToggleZenMode,
+    /// Start editing the Journal's per-story Notes.
+    EditJournalNotes,
+    /// A key delivered to the active Journal Notes editor.
+    JournalNotesKey(KeyEvent),
+    /// Copy the current Notes selection through the terminal clipboard protocol.
+    CopyNotesSelection,
     /// Toggle honoring the Z-machine's timed-input (`read`/`read_char` timers).
     ToggleTimedInput,
     /// Toggle audio playback (config.enable_sound).
@@ -567,8 +575,25 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     // 1. Quit always wins — even while a prompt is active.
+    if ctrl && key.code == KeyCode::Char('c') && state.journal_notes_editing {
+        return KeyResolve::Action(Action::CopyNotesSelection);
+    }
     if ctrl && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('c')) {
         return KeyResolve::Action(Action::Quit);
+    }
+
+    if state.journal_notes_editing {
+        return KeyResolve::Action(Action::JournalNotesKey(key));
+    }
+
+    // Notes has no safe use for plain Enter at the game prompt, so require the
+    // explicit Shift+Enter chord to begin editing while its tab is visible.
+    if state.journal_tab == crate::journal::JournalTab::Notes
+        && !state.any_modal_overlay_open()
+        && key.modifiers == KeyModifiers::SHIFT
+        && key.code == KeyCode::Enter
+    {
+        return KeyResolve::Action(Action::EditJournalNotes);
     }
 
     // 2. The text-entry / confirm-delete modals are intercepted in the run loop
@@ -653,6 +678,19 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
     }
     if state.overlays.hotkey_dialog {
         return hotkey_dialog_key_to_action(state, key);
+    }
+
+    // Journal tab traversal uses Alt+Left/Right so Shift+Arrow remains available
+    // to the map, Documents list/viewer, and Notes selection/navigation.
+    if state.layout == crate::state::Layout::Split
+        && state.debug.is_none()
+        && key.modifiers == KeyModifiers::ALT
+    {
+        match key.code {
+            KeyCode::Left => return KeyResolve::Action(Action::JournalStepTab(false)),
+            KeyCode::Right => return KeyResolve::Action(Action::JournalStepTab(true)),
+            _ => {}
+        }
     }
 
     // 6.4. Documents tab (SQ-1681): Esc closes an open document and returns to the
@@ -2758,6 +2796,16 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::TogglePortalLabels => state.show_portal_labels = !state.show_portal_labels,
         Action::ToggleRoomNumbers => state.show_room_numbers = !state.show_room_numbers,
         Action::ToggleStatusBar => state.show_status_bar = !state.show_status_bar,
+        Action::ToggleZenMode => {
+            state.config.command_separator = !state.config.command_separator;
+            let _ = crate::config::write_config_file(&state.config);
+            state.set_status(if state.config.command_separator { "Zen Mode on" } else { "Zen Mode off" });
+        }
+        Action::EditJournalNotes => {
+            crate::journal_notes::begin_edit(state);
+        }
+        Action::JournalNotesKey(key) => crate::journal_notes::handle_key(state, key),
+        Action::CopyNotesSelection => {}
         Action::ToggleTimedInput => {
             state.config.honor_timed_input = !state.config.honor_timed_input;
             state.set_status(if state.config.honor_timed_input { "timed input on" } else { "timed input off" });
@@ -6599,11 +6647,32 @@ mod tests {
         let mut s = AppState::default();
         let mut m = Mapper::default();
         apply_action(Action::JournalStepTab(false), &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Documents, "back from Map wraps to the last tab");
+        assert_eq!(s.journal_tab, JournalTab::Notes, "back from Map wraps to the last tab");
         apply_action(Action::JournalStepTab(true), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Map, "forward from the last tab wraps to Map");
         apply_action(Action::JournalStepTab(true), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Room);
+    }
+
+    #[test]
+    fn journal_shortcuts_do_not_steal_shift_arrows_from_map_or_documents() {
+        let mut s = AppState::default();
+        s.focus = Focus::Map;
+        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)), Action::JournalStepTab(true));
+        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)), Action::JournalStepTab(false));
+        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)), Action::MatrixPanColumns(1));
+        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)), Action::MatrixMove(-1));
+
+        s.journal_tab = crate::journal::JournalTab::Documents;
+        s.focus = Focus::Game;
+        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)), Action::DocTabSelect(1));
+
+        s.journal_tab = crate::journal::JournalTab::Notes;
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(key_to_action(&s, enter), Action::EditJournalNotes);
+        s.journal_notes_editing = true;
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        assert_eq!(key_to_action(&s, right), Action::JournalNotesKey(right));
     }
 
     /// The dock is NOT an overlay (SQ-0692). It reserves its own rows instead of

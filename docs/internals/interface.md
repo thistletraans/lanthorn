@@ -73,14 +73,18 @@ inspecting the machine, and firing commands — without ever leaving the story.
 - **The Journal** (SQ-1684) — the tabbed panel on the right, `journal.rs` and
   `layout.rs`'s `journal`/`journal_tabs`/`journal_body` rects. A one-row tab bar
   (styleable as `journal.tabbar`, `journal.tab`, `journal.tab:active`) sits over
-  the active tab's body: **Map**, **Room**, **Inventory**. `/journal-tab
-  <map|room|inventory>`, `/journal-next-tab`, `/journal-prev-tab`, a click on a
-  label, **Alt+1/2/3**, and the leader panel's `j`/`k`/`i` all select a tab
+  the active tab's body: **Map**, **Room**, **Inventory**, **Hints**,
+  **Documents**, and player-authored **Notes**. `/journal-tab <name>`,
+  `/journal-next-tab`, `/journal-prev-tab`, a click on a label, **Alt+1/2/3**,
+  and the leader panel's `j`/`k`/`i` select a tab
   (`Action::SetJournalTab`), revealing the Journal if `/toggle-map` had hidden
   it. At narrow widths the bar abbreviates its labels and then shows only the
   active tab between `‹` `›` markers. The active tab is remembered per story
-  (`journal_tab` in the per-game sidecar); the width is `split_ratio`. Adding a
-  tab is one `JournalTab` variant plus one arm in `main.rs`'s Journal draw.
+  (`journal_tab` in the per-game sidecar); the width is `split_ratio`. Notes
+  text is stored in that sidecar too. `Alt+Left`/`Alt+Right` traverse Journal
+  tabs. Notes editing starts with `Shift+Enter` or a click in its body; `Esc` or
+  a click outside saves and exits. Shift+Arrow remains available to the map,
+  Documents, Hints, and Notes editor.
 - **The Room tab** — one panel describing one room. It has two
   bodies:
   - **Room** — the room's notes, its [exit card](mapping.md#room-card) in the
@@ -108,10 +112,9 @@ inspecting the machine, and firing commands — without ever leaving the story.
   a further **Esc** on the Room tab returns to the Map tab. It is not a modal, so
   it costs you nothing to leave up: it never takes the keyboard and it never hides
   the prompt.
-- **The map never takes the keyboard.** Every keystroke goes to the story, so a
-  key always means the same thing — you never have to look at which pane is
-  "active" before pressing an arrow. The map is driven alongside your typing
-  instead: `Shift+Arrow` pans, the mouse pans/zooms/selects, and zoom and
+- **The map and Journal follow focus.** `Alt+Left`/`Alt+Right` traverse Journal
+  tabs without taking Shift+Arrow from pane navigation. Shift+Up/Down pan the map,
+  and the mouse pans/zooms/selects. Zoom and
   centring live on the `Ctrl+P` leader panel's **Map** group. **Tab** / **Shift-Tab** are only
   live when the debug inspector is open, where they step through its windows.
   Show or hide the map entirely with `/toggle-map`.
@@ -712,9 +715,11 @@ know which side you're on).
   forward to the end, and `Ctrl+W` deletes the word behind the caret — the same
   shortcuts your shell uses. Only live while you're actually typing a command
   (not mid-`read_char` prompt), so they never steal a keystroke the game expects.
-- **Keyboard map navigation** — **Shift+Arrow pans the map** without leaving the
-  command line, and keeps panning *during the tidy animation*, where
-  the plain arrows step through the layout stages instead. Zoom (`+`/`-`)
+- **Keyboard map navigation** — **Shift+Up/Down pan the map** without leaving the
+  command line, including *during the tidy animation*. `Alt+Left`/`Alt+Right`
+  traverse Journal tabs while preserving each tab's Shift+Arrow navigation. The plain
+  horizontal arrows
+  step through the layout stages instead. Zoom (`+`/`-`)
   and centring (`0`) are on the `Ctrl+P` leader panel's **Map** group. During that animation
   `Ctrl+←`/`Ctrl+→` jump a whole stage at a time. `Ctrl+Q` (or `Ctrl+C`) quits
   from anywhere, even mid-prompt.

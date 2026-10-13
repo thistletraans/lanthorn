@@ -14,7 +14,7 @@ pub fn per_game_style_path(game_dir: &Path) -> PathBuf {
 /// The per-game NON-style config sidecar: `<game_dir>/config.toml` — i.e. inside
 /// the story's SAVE directory, beside its saves and aux data, not beside the
 /// story file. Holds per-game overrides that are not part of the style schema
-/// (`honor_game_colours`, `borderless_windows`, `show_map`, `pictures`,
+/// (`honor_game_colours`, `borderless_windows`, `show_map`, `pictures`, `journal_notes`,
 /// `interpreter_number`, `v6_pixel_lock`, `guidance`, `v6_render`,
 /// `panel`, `return_probe`), kept separate from `style.toml` so the style parser/writer
 /// stays a pure style document.
@@ -79,6 +79,8 @@ pub struct PerGameConfig {
     /// `map` / `room` / `inventory`. `None` = no override, so the Journal opens
     /// on the Map tab.
     pub journal_tab: Option<crate::journal::JournalTab>,
+    /// Player-authored Notes text for this story. Empty text clears the key.
+    pub journal_notes: Option<String>,
     /// Whether the return probe runs for this story (SQ-0785).
     pub return_probe: Option<bool>,
     /// ScottFree's `-y`/`YOUARE` option for this Scott Adams story (SQ-1413):
@@ -141,6 +143,7 @@ impl PerGameConfig {
         "guidance",
         "panel",
         "journal_tab",
+        "journal_notes",
         "return_probe",
         "pictures",
         "v6_render",
@@ -189,6 +192,7 @@ impl PerGameConfig {
             v6_render: s("v6_render"),
             panel: s("panel").as_deref().and_then(crate::state::SidePanel::from_key),
             journal_tab: s("journal_tab").as_deref().and_then(crate::journal::JournalTab::from_name),
+            journal_notes: v.get("journal_notes").and_then(|x| x.as_str()).map(str::to_string),
             return_probe: b("return_probe"),
             scott_you_are: b("scott_you_are"),
             scott_light: b("scott_light"),
@@ -222,6 +226,7 @@ impl PerGameConfig {
             put_bool(doc, "guidance", self.guidance);
             put_str(doc, "panel", self.panel.map(|p| p.key()));
             put_str(doc, "journal_tab", self.journal_tab.map(|t| t.name()));
+            put_str(doc, "journal_notes", self.journal_notes.as_deref().filter(|s| !s.is_empty()));
             put_bool(doc, "return_probe", self.return_probe);
             put_str(doc, "pictures", self.pictures.as_deref());
             put_str(doc, "v6_render", self.v6_render.as_deref());
@@ -684,6 +689,16 @@ pub fn write_per_game_journal_tab(
     edit(game_dir, |c| c.journal_tab = value)
 }
 
+/// Read the Notes text saved for one story.
+pub fn read_per_game_journal_notes(game_dir: &Path) -> String {
+    PerGameConfig::read(game_dir).journal_notes.unwrap_or_default()
+}
+
+/// Persist Notes in the per-story sidecar, preserving every sibling key.
+pub fn write_per_game_journal_notes(game_dir: &Path, value: &str) -> std::io::Result<()> {
+    edit(game_dir, |c| c.journal_notes = (!value.is_empty()).then(|| value.to_string()))
+}
+
 /// Persist (or clear) the per-game `quick` override (SQ-1552), preserving
 /// every sibling key. `None` clears it back to inheriting the global list.
 pub fn write_per_game_quick(game_dir: &Path, value: Option<Vec<String>>) -> std::io::Result<()> {
@@ -723,6 +738,19 @@ mod tests {
         assert!(!per_game_config_path(&dir).exists());
         // Clearing when already absent is a no-op, not an error.
         write_per_game_honor(&dir, None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn per_game_journal_notes_roundtrip_multiline_and_clear() {
+        let dir = tmp("journal-notes");
+        let notes = "take brass key\nask the curator about the clock";
+        write_per_game_journal_notes(&dir, notes).unwrap();
+        assert_eq!(read_per_game_journal_notes(&dir), notes);
+        write_per_game_show_map(&dir, Some(false)).unwrap();
+        assert_eq!(read_per_game_journal_notes(&dir), notes, "other sidecar edits preserve notes");
+        write_per_game_journal_notes(&dir, "").unwrap();
+        assert_eq!(read_per_game_journal_notes(&dir), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -768,6 +796,7 @@ mod tests {
             v6_render: Some("raster".into()),
             panel: Some(crate::state::SidePanel::Command),
             journal_tab: Some(crate::journal::JournalTab::Room),
+            journal_notes: Some("room clue\nsecond line".into()),
             return_probe: Some(true),
             scott_you_are: Some(true),
             scott_light: Some(true),

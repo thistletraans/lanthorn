@@ -119,7 +119,7 @@ fn click_inside_window(st: &mut AppState) -> Option<HintMouse> {
 fn hints_is_the_fourth_tab_on_alt_4_and_journal_tab_hints() {
     assert_eq!(
         JournalTab::ALL,
-        [JournalTab::Map, JournalTab::Room, JournalTab::Inventory, JournalTab::Hints, JournalTab::Documents]
+        [JournalTab::Map, JournalTab::Room, JournalTab::Inventory, JournalTab::Hints, JournalTab::Documents, JournalTab::Notes]
     );
     let st = AppState::default();
     let alt4 = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT);
