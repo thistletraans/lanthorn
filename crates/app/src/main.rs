@@ -3346,7 +3346,16 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
         let action = match event {
             Event::Key(k) if k.kind == KeyEventKind::Press => {
                 match key_to_command(&state, k) {
-                    KeyResolve::Action(a) => a,
+                    KeyResolve::Action(a) => {
+                        if let Action::JournalNotesKey(_) = &a {
+                            state.journal_notes_wrap_width = app::journal_notes::content_width(
+                                last_panes.pane_layout.journal_body,
+                                &state.colors,
+                            )
+                            .max(1);
+                        }
+                        a
+                    }
                     KeyResolve::Command(s, ctx) => {
                         let close_leader = state.overlays.hotkey_dialog;
                         // A palette-resolved command closes the palette after it runs.
@@ -3427,19 +3436,67 @@ fn run_event_loop(boot: startup::BootResult, launched_from_library: bool) -> Run
                 }
             }
             Event::Mouse(m) => {
-                if m.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
-                    let point = ratatui::layout::Position { x: m.column, y: m.row };
-                    let notes_body = last_panes.pane_layout.journal_body;
-                    if state.journal_notes_editing && !notes_body.contains(point) {
+                use crossterm::event::{MouseButton, MouseEventKind};
+                let notes_outer = last_panes.pane_layout.journal_body;
+                let point = ratatui::layout::Position { x: m.column, y: m.row };
+                match m.kind {
+                    MouseEventKind::Down(MouseButton::Left) if state.journal_notes_editing => {
+                        if notes_outer.contains(point) {
+                            state.journal_notes_mouse_selecting = false;
+                            state.journal_notes_wrap_width =
+                                app::journal_notes::content_width(notes_outer, &state.colors).max(1);
+                            if let Some(target) = app::journal_notes::mouse_target_at(
+                                &state,
+                                notes_outer,
+                                m.column,
+                                m.row,
+                            ) {
+                                app::journal_notes::set_mouse_cursor(&mut state, target, false);
+                            }
+                            continue 'event_loop;
+                        }
                         app::journal_notes::finish_edit(&mut state);
-                    } else if !state.journal_notes_editing
-                        && state.journal_tab == app::journal::JournalTab::Notes
-                        && !state.any_modal_overlay_open()
-                        && notes_body.contains(point)
+                    }
+                    MouseEventKind::Down(MouseButton::Left)
+                        if !state.journal_notes_editing
+                            && state.journal_tab == app::journal::JournalTab::Notes
+                            && !state.any_modal_overlay_open()
+                            && notes_outer.contains(point) =>
                     {
+                        state.journal_notes_wrap_width =
+                            app::journal_notes::content_width(notes_outer, &state.colors).max(1);
                         apply_action(Action::EditJournalNotes, &mut state, &mut mapper);
+                        let target = app::journal_notes::mouse_target_at(
+                            &state,
+                            notes_outer,
+                            m.column,
+                            m.row,
+                        );
+                        if let Some(target) = target {
+                            app::journal_notes::set_mouse_cursor(&mut state, target, false);
+                        }
                         continue 'event_loop;
                     }
+                    MouseEventKind::Drag(MouseButton::Left)
+                        if state.journal_notes_editing && state.journal_notes_mouse_selecting =>
+                    {
+                        if let Some(target) = app::journal_notes::mouse_target_drag(
+                            &state,
+                            notes_outer,
+                            m.column,
+                            m.row,
+                        ) {
+                            app::journal_notes::set_mouse_cursor(&mut state, target, true);
+                        }
+                        continue 'event_loop;
+                    }
+                    MouseEventKind::Up(MouseButton::Left)
+                        if state.journal_notes_editing && state.journal_notes_mouse_selecting =>
+                    {
+                        app::journal_notes::finish_mouse_selection(&mut state);
+                        continue 'event_loop;
+                    }
+                    _ => {}
                 }
                 // Glk mouse input: a left-Down inside a mouse-watching Glulx window
                 // is delivered to the game as an Evtype_MouseInput, not a UI action.

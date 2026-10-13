@@ -3685,6 +3685,12 @@ pub struct AppState {
     pub journal_notes_cursor: usize,
     /// Shift-selection anchor in the Notes editor.
     pub journal_notes_selection: Option<usize>,
+    /// Preferred display column while moving between wrapped Notes rows.
+    pub(crate) journal_notes_vertical_goal: Option<usize>,
+    /// Whether a left-button drag is extending a Notes selection.
+    pub journal_notes_mouse_selecting: bool,
+    /// Current wrapped text width, refreshed from the visible Notes pane.
+    pub journal_notes_wrap_width: u16,
     /// Up to 30 recent note edit actions, for Ctrl+Z and Ctrl+Y.
     pub(crate) journal_notes_undo: Vec<crate::journal_notes::EditSnapshot>,
     pub(crate) journal_notes_redo: Vec<crate::journal_notes::EditSnapshot>,
@@ -4171,6 +4177,9 @@ impl Default for AppState {
             journal_notes: String::new(),
             journal_notes_cursor: 0,
             journal_notes_selection: None,
+            journal_notes_vertical_goal: None,
+            journal_notes_mouse_selecting: false,
+            journal_notes_wrap_width: 80,
             journal_notes_undo: Vec::new(),
             journal_notes_redo: Vec::new(),
             journal_notes_last_edit: None,

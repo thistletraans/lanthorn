@@ -2830,7 +2830,10 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::EditJournalNotes => {
             crate::journal_notes::begin_edit(state);
         }
-        Action::JournalNotesKey(key) => crate::journal_notes::handle_key(state, key),
+        Action::JournalNotesKey(key) => {
+            let width = state.journal_notes_wrap_width.max(1);
+            crate::journal_notes::handle_key_with_width(state, key, width);
+        }
         Action::CopyNotesSelection => {}
         Action::CutNotesSelection => {}
         Action::ToggleTimedInput => {

@@ -86,16 +86,84 @@ fn wrapped_lines(text: &str, width: u16) -> Vec<(usize, usize, String)> {
     let mut rows = Vec::new();
     let mut offset = 0usize;
     for (line_index, line) in physical.iter().enumerate() {
-        for (wrapped, start, end) in crate::render::transcript::wrap_line_ranges(line, width.max(1))
-        {
-            rows.push((offset + start, offset + end, wrapped));
+        let wrap_width = width.saturating_sub(1).max(1) as usize;
+        let mut remaining: &str = line;
+        let mut line_offset = 0usize;
+        while !remaining.is_empty() {
+            let br = crate::textwidth::row_break(remaining, wrap_width);
+            let Some(overflow) = br.overflow else {
+                let end = line_offset + remaining.chars().count();
+                rows.push((offset + line_offset, offset + end, remaining.to_string()));
+                line_offset = end;
+                break;
+            };
+            if br.last_space == Some(overflow) {
+                // Move a boundary space to the next visual row. Notes reserve
+                // one cell for the caret, so the separator itself starts the
+                // next row instead of landing under or beyond the cursor.
+                let head = &remaining[..overflow];
+                if !head.is_empty() {
+                    let count = head.chars().count();
+                    rows.push((
+                        offset + line_offset,
+                        offset + line_offset + count,
+                        head.to_string(),
+                    ));
+                    line_offset += count;
+                }
+                remaining = &remaining[overflow..];
+                continue;
+            }
+            if let Some(space) = br.last_space {
+                let head = &remaining[..space];
+                let count = head.chars().count();
+                rows.push((
+                    offset + line_offset,
+                    offset + line_offset + count,
+                    head.to_string(),
+                ));
+                let next = space + ' '.len_utf8();
+                line_offset += count + 1;
+                remaining = &remaining[next..];
+            } else {
+                let mut split = overflow;
+                if split == 0 {
+                    split = remaining.chars().next().map_or(0, char::len_utf8);
+                }
+                let head = &remaining[..split];
+                let count = head.chars().count();
+                rows.push((
+                    offset + line_offset,
+                    offset + line_offset + count,
+                    head.to_string(),
+                ));
+                line_offset += count;
+                remaining = &remaining[split..];
+            }
         }
-        offset += line.chars().count();
+        if line.is_empty() {
+            rows.push((offset, offset, String::new()));
+        }
+        debug_assert_eq!(line_offset, line.chars().count());
+        let line_len = line.chars().count();
+        offset += line_len;
         if line_index + 1 < physical.len() {
             offset += 1; // the newline is a caret position in the document
         }
     }
     rows
+}
+
+fn caret_position(rows: &[(usize, usize, String)], cursor: usize) -> (usize, usize) {
+    let Some((row, (start, _, text))) = rows
+        .iter()
+        .enumerate()
+        .rfind(|(_, (start, end, _))| *start <= cursor && cursor <= *end)
+    else {
+        return (0, 0);
+    };
+    let before: String = text.chars().take(cursor.saturating_sub(*start)).collect();
+    (row, crate::textwidth::str_cells(&before))
 }
 
 fn selection(state: &AppState) -> Option<std::ops::Range<usize>> {
@@ -140,6 +208,7 @@ fn replace_selection_inner(state: &mut AppState, insert: &str) {
         let at = byte_at(&state.journal_notes, state.journal_notes_cursor);
         state.journal_notes.insert_str(at, insert);
         state.journal_notes_cursor += insert.chars().count();
+        state.journal_notes_selection = None;
     }
 }
 
@@ -154,6 +223,83 @@ fn move_caret(state: &mut AppState, target: usize, extend: bool) {
     state.journal_notes_cursor = target.min(state.journal_notes.chars().count());
 }
 
+fn content_area(area: Rect, colors: &crate::colors::ColorScheme) -> Rect {
+    let mut scratch = Buffer::empty(area);
+    crate::journal::frame_body(&mut scratch, area, "Notes", colors, false)
+}
+
+pub fn content_width(area: Rect, colors: &crate::colors::ColorScheme) -> u16 {
+    content_area(area, colors).width
+}
+
+fn text_area(area: Rect, colors: &crate::colors::ColorScheme) -> Rect {
+    content_area(area, colors)
+}
+
+fn mouse_target(state: &AppState, area: Rect, x: u16, y: u16, clamp: bool) -> Option<usize> {
+    let target_area = text_area(area, &state.colors);
+    if target_area.width == 0 || target_area.height == 0 {
+        return None;
+    }
+    let position = if clamp {
+        ratatui::layout::Position {
+            x: x.clamp(target_area.x, target_area.right().saturating_sub(1)),
+            y: y.clamp(target_area.y, target_area.bottom().saturating_sub(1)),
+        }
+    } else {
+        ratatui::layout::Position { x, y }
+    };
+    if !target_area.contains(position) {
+        return None;
+    }
+
+    let width = target_area.width.max(1);
+    let rows = wrapped_lines(&state.journal_notes, width);
+    let (cursor_row, _) = caret_position(&rows, state.journal_notes_cursor);
+    let first_row = if state.journal_notes_editing {
+        cursor_row
+            .saturating_add(1)
+            .saturating_sub(target_area.height as usize)
+    } else {
+        0
+    };
+    let row_index = first_row
+        .saturating_add(position.y.saturating_sub(target_area.y) as usize)
+        .min(rows.len().saturating_sub(1));
+    let (start, _, line) = &rows[row_index];
+    let column = position.x.saturating_sub(target_area.x) as usize;
+    Some(*start + crate::textwidth::col_to_char_idx(line, column))
+}
+
+pub fn set_mouse_cursor(state: &mut AppState, target: usize, extend: bool) {
+    state.journal_notes_last_edit = None;
+    state.journal_notes_vertical_goal = None;
+    if extend {
+        state
+            .journal_notes_selection
+            .get_or_insert(state.journal_notes_cursor);
+    } else {
+        state.journal_notes_selection = None;
+    }
+    state.journal_notes_cursor = target.min(state.journal_notes.chars().count());
+    state.journal_notes_mouse_selecting = true;
+}
+
+pub fn mouse_target_at(state: &AppState, area: Rect, x: u16, y: u16) -> Option<usize> {
+    mouse_target(state, area, x, y, false)
+}
+
+pub fn mouse_target_drag(state: &AppState, area: Rect, x: u16, y: u16) -> Option<usize> {
+    mouse_target(state, area, x, y, true)
+}
+
+pub fn finish_mouse_selection(state: &mut AppState) {
+    state.journal_notes_mouse_selecting = false;
+    if selection(state).is_none() {
+        state.journal_notes_selection = None;
+    }
+}
+
 /// Start editing the currently displayed Notes tab.
 pub(crate) fn begin_edit(state: &mut AppState) {
     state.journal_notes_cursor = state.journal_notes.chars().count();
@@ -161,6 +307,8 @@ pub(crate) fn begin_edit(state: &mut AppState) {
     state.journal_notes_undo.clear();
     state.journal_notes_redo.clear();
     state.journal_notes_last_edit = None;
+    state.journal_notes_vertical_goal = None;
+    state.journal_notes_mouse_selecting = false;
     state.journal_notes_editing = true;
     state.focus = crate::state::Focus::Map;
 }
@@ -177,17 +325,25 @@ pub fn finish_edit(state: &mut AppState) {
     }
     state.journal_notes_editing = false;
     state.journal_notes_selection = None;
+    state.journal_notes_mouse_selecting = false;
+    state.journal_notes_vertical_goal = None;
     state.focus = crate::state::Focus::Game;
 }
 
 /// Handle a key owned by the Notes editor. Escape saves and returns to the game.
-pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
+#[cfg(all(test, feature = "t-input"))]
+fn handle_key(state: &mut AppState, key: KeyEvent) {
+    handle_key_with_width(state, key, state.journal_notes_wrap_width.max(1));
+}
+
+pub(crate) fn handle_key_with_width(state: &mut AppState, key: KeyEvent, width: u16) {
+    state.journal_notes_mouse_selecting = false;
     let merge_kind = if !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
     {
         match key.code {
-            KeyCode::Char(c) if c.is_alphanumeric() => Some(EditKind::Insert),
+            KeyCode::Char(_) => Some(EditKind::Insert),
             KeyCode::Backspace => Some(EditKind::Backspace),
             KeyCode::Delete => Some(EditKind::Delete),
             _ => None,
@@ -198,12 +354,16 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
     if merge_kind.is_none() {
         state.journal_notes_last_edit = None;
     }
+    if merge_kind.is_some() {
+        state.journal_notes_vertical_goal = None;
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
     {
         let len = state.journal_notes.chars().count();
         state.journal_notes_selection = (len > 0).then_some(0);
         state.journal_notes_cursor = len;
+        state.journal_notes_vertical_goal = None;
         return;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -244,59 +404,42 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) {
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             let mut buf = [0; 4];
-            let kind = if selection(state).is_some() || !c.is_alphanumeric() {
-                EditKind::Atomic
-            } else {
-                EditKind::Insert
-            };
-            edit(state, kind, |state| {
+            edit(state, EditKind::Insert, |state| {
                 replace_selection_inner(state, c.encode_utf8(&mut buf))
             });
         }
         KeyCode::Enter => replace_selection(state, "\n"),
-        KeyCode::Left if cursor > 0 => move_caret(state, cursor - 1, extend),
-        KeyCode::Right if cursor < len => move_caret(state, cursor + 1, extend),
+        KeyCode::Left if cursor > 0 => {
+            state.journal_notes_vertical_goal = None;
+            move_caret(state, cursor - 1, extend);
+        }
+        KeyCode::Right if cursor < len => {
+            state.journal_notes_vertical_goal = None;
+            move_caret(state, cursor + 1, extend);
+        }
         KeyCode::Home | KeyCode::End => {
-            let line_start = state.journal_notes[..byte_at(&state.journal_notes, cursor)]
-                .rfind('\n')
-                .map_or(0, |i| state.journal_notes[..=i].chars().count());
+            let rows = wrapped_lines(&state.journal_notes, width);
+            let (row, _) = caret_position(&rows, cursor);
             let target = if key.code == KeyCode::Home {
-                line_start
+                rows[row].0
             } else {
-                line_start
-                    + state.journal_notes[byte_at(&state.journal_notes, line_start)..]
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .count()
+                rows[row].1
             };
+            state.journal_notes_vertical_goal = None;
             move_caret(state, target, extend);
         }
         KeyCode::Up | KeyCode::Down => {
-            let before = &state.journal_notes[..byte_at(&state.journal_notes, cursor)];
-            let current_start = before
-                .rfind('\n')
-                .map_or(0, |i| before[..=i].chars().count());
-            let col = cursor - current_start;
-            let lines: Vec<&str> = state.journal_notes.split('\n').collect();
-            let line = state.journal_notes[..byte_at(&state.journal_notes, cursor)]
-                .matches('\n')
-                .count();
-            let target_line = if key.code == KeyCode::Up {
-                line.saturating_sub(1)
+            let rows = wrapped_lines(&state.journal_notes, width);
+            let (row, col) = caret_position(&rows, cursor);
+            let goal = *state.journal_notes_vertical_goal.get_or_insert(col);
+            let target_row = if key.code == KeyCode::Up {
+                row.saturating_sub(1)
             } else {
-                (line + 1).min(lines.len() - 1)
+                (row + 1).min(rows.len().saturating_sub(1))
             };
-            let target_start: usize = lines[..target_line]
-                .iter()
-                .map(|s| s.chars().count() + 1)
-                .sum();
-            move_caret(
-                state,
-                target_start + col.min(lines[target_line].chars().count()),
-                extend,
-            );
+            let (start, _, line) = &rows[target_row];
+            let target = *start + crate::textwidth::col_to_char_idx(line, goal);
+            move_caret(state, target, extend);
         }
         KeyCode::Backspace => {
             let kind = if selection(state).is_some() {
@@ -358,35 +501,17 @@ pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
         return;
     }
     let body = state.colors.theme.get("journal.docs.row").style;
-    let muted = state.colors.theme.get("muted").style;
-    let accent = state.colors.theme.get("accent").style;
-    let hint = if state.journal_notes_editing {
-        "Ctrl+A all · Ctrl+C copy · Ctrl+X cut · Ctrl+Shift+V paste"
-    } else {
-        "Shift+Enter or click: edit notes"
-    };
-    crate::render::draw_str_clipped(buf, area.x, area.y, hint, muted, area);
-    if state.journal_notes_editing {
-        crate::render::draw_str_clipped(
-            buf,
-            area.x,
-            area.y.saturating_add(1),
-            "Enter newline · Ctrl+Z undo · Ctrl+Y redo · Ctrl+S save · Esc exit",
-            muted,
-            area,
-        );
-    }
-    let content_top = area.y.saturating_add(2);
-    let available = area.bottom().saturating_sub(content_top);
+    let muted = state
+        .colors
+        .theme
+        .get("muted")
+        .style
+        .add_modifier(Modifier::DIM);
+    let content_top = area.y;
+    let available = area.height;
     let selected = selection(state);
     let rows = wrapped_lines(&state.journal_notes, area.width);
-    let cursor_row = rows
-        .iter()
-        .enumerate()
-        .rfind(|(_, (start, end, _))| {
-            *start <= state.journal_notes_cursor && state.journal_notes_cursor <= *end
-        })
-        .map_or(0, |(row, _)| row);
+    let (cursor_row, cursor_col) = caret_position(&rows, state.journal_notes_cursor);
     let first_row = if state.journal_notes_editing {
         cursor_row
             .saturating_add(1)
@@ -431,20 +556,47 @@ pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
                 x = x.saturating_add(crate::textwidth::str_cells(&selected_text) as u16);
             }
             crate::render::draw_str_clipped(buf, x, y, &suffix, body, area);
-            if state.journal_notes_cursor >= *start && state.journal_notes_cursor <= *end {
-                let caret_col = state.journal_notes_cursor - *start;
-                let before: String = line.chars().take(caret_col).collect();
-                let cx = area.x.saturating_add(
-                    (crate::textwidth::str_cells(&before) as u16).min(area.width.saturating_sub(1)),
-                );
-                if cx < area.right() {
-                    if let Some(cell) = buf.cell_mut((cx, y)) {
-                        cell.set_symbol("▏").set_style(accent);
-                    }
-                }
-            }
         } else {
             crate::render::draw_str_clipped(buf, area.x, y, line, body, area);
+        }
+    }
+    if state.journal_notes_editing && cursor_row >= first_row {
+        let caret_y = content_top.saturating_add((cursor_row - first_row) as u16);
+        if caret_y < area.bottom() {
+            let line = &rows[cursor_row].2;
+            let line_width = crate::textwidth::str_cells(line);
+            let caret_col = if cursor_col < area.width as usize {
+                if cursor_col < line_width {
+                    crate::textwidth::cols_of_chars(
+                        line,
+                        crate::textwidth::col_to_char_idx(line, cursor_col),
+                    )
+                } else {
+                    cursor_col
+                }
+            } else {
+                crate::textwidth::cols_of_chars(
+                    line,
+                    crate::textwidth::col_to_char_idx(line, area.width.saturating_sub(1) as usize),
+                )
+            };
+            let caret_x = area
+                .x
+                .saturating_add(caret_col.min(area.width.saturating_sub(1) as usize) as u16);
+            if let Some(cell) = buf.cell_mut((caret_x, caret_y)) {
+                if cell.symbol() == " " || cell.symbol().is_empty() {
+                    cell.set_symbol("▏")
+                        .set_style(state.colors.theme.get("accent").style);
+                } else {
+                    let accent = state.colors.theme.get("accent").style;
+                    let style = accent
+                        .fg
+                        .map(|fg| cell.style().fg(fg))
+                        .unwrap_or_else(|| cell.style())
+                        .add_modifier(Modifier::UNDERLINED);
+                    cell.set_style(style);
+                }
+            }
         }
     }
     if state.journal_notes.is_empty() && !state.journal_notes_editing && available > 0 {
@@ -492,6 +644,49 @@ mod tests {
             wrapped_lines("The foobar", 7),
             vec![(0, 3, "The".into()), (4, 10, "foobar".into())]
         );
+    }
+
+    #[test]
+    fn notes_wrap_before_the_caret_column() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut state = AppState::default();
+        state.journal_notes_editing = true;
+        let mut buf = Buffer::empty(area);
+        let body = crate::journal::frame_body(&mut buf, area, "Notes", &state.colors, false);
+        state.journal_notes = format!("{} ", "x".repeat(body.width.saturating_sub(2) as usize));
+        state.journal_notes_cursor = state.journal_notes.chars().count();
+
+        draw(&state, area, &mut buf);
+
+        let content_top = body.y;
+        let text_last = buf.cell((body.right() - 3, content_top)).unwrap();
+        let trailing_space = buf.cell((body.right() - 2, content_top)).unwrap();
+        let caret = buf.cell((body.right() - 1, content_top)).unwrap();
+        assert_eq!(text_last.symbol(), "x");
+        assert_eq!(trailing_space.symbol(), " ");
+        assert_eq!(caret.symbol(), "▏");
+        assert!(!text_last
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED));
+        assert_eq!(buf.cell((body.x, content_top + 1)).unwrap().symbol(), " ");
+    }
+
+    #[test]
+    fn cursor_on_a_trailing_empty_line_stays_at_the_bottom_of_the_visible_text() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut state = AppState::default();
+        state.journal_notes = "line one\n".into();
+        state.journal_notes_cursor = state.journal_notes.chars().count();
+        state.journal_notes_editing = true;
+        let mut buf = Buffer::empty(area);
+        let body = content_area(area, &state.colors);
+        let text_top = body.y;
+
+        draw(&state, area, &mut buf);
+
+        assert!(body.bottom() - text_top > 1);
+        assert_eq!(buf.cell((body.x, text_top + 1)).unwrap().symbol(), "▏");
     }
 
     #[test]
@@ -657,5 +852,182 @@ mod tests {
         assert_eq!(state.journal_notes, "world");
         assert_eq!(state.journal_notes_cursor, 5);
         assert_eq!(state.journal_notes_selection, None);
+    }
+
+    #[test]
+    fn up_and_down_navigate_soft_wrapped_rows_and_keep_the_column() {
+        let mut state = AppState::default();
+        state.journal_notes = "one two three".into();
+        state.journal_notes_cursor = 1;
+        state.journal_notes_editing = true;
+        state.journal_notes_wrap_width = 8;
+
+        handle_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.journal_notes_cursor, 8);
+        handle_key(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.journal_notes_cursor, 1);
+
+        handle_key(&mut state, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(state.journal_notes_cursor, 7);
+        handle_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.journal_notes_cursor, 7);
+    }
+
+    #[test]
+    fn mouse_click_places_caret_and_drag_selects_text() {
+        let area = Rect::new(0, 0, 30, 10);
+        let mut state = AppState::default();
+        state.journal_notes = "alpha beta".into();
+        state.journal_notes_editing = true;
+        let body = content_area(area, &state.colors);
+        let text_y = text_area(area, &state.colors).y;
+
+        let start = mouse_target_at(&state, area, body.x + 1, text_y).unwrap();
+        set_mouse_cursor(&mut state, start, false);
+        let end = mouse_target_drag(&state, area, body.x + 6, text_y).unwrap();
+        set_mouse_cursor(&mut state, end, true);
+        finish_mouse_selection(&mut state);
+
+        assert_eq!(start, 1);
+        assert_eq!(end, 6);
+        assert_eq!(copy_selection(&state).as_deref(), Some("lpha "));
+    }
+
+    #[test]
+    fn clicking_sets_a_plain_caret_and_drag_from_it_starts_selection() {
+        let area = Rect::new(0, 0, 30, 10);
+        let mut state = AppState::default();
+        state.journal_notes = "alpha".into();
+        state.journal_notes_editing = true;
+        let body = content_area(area, &state.colors);
+
+        let click_target = mouse_target_at(&state, area, body.x + 2, body.y).unwrap();
+        set_mouse_cursor(&mut state, click_target, false);
+        assert_eq!(state.journal_notes_selection, None);
+
+        let drag_target = mouse_target_drag(&state, area, body.x + 4, body.y).unwrap();
+        set_mouse_cursor(&mut state, drag_target, true);
+        finish_mouse_selection(&mut state);
+        assert_eq!(copy_selection(&state).as_deref(), Some("ph"));
+    }
+
+    #[test]
+    fn shift_selection_is_highlighted_without_replacing_the_selected_glyph() {
+        let area = Rect::new(0, 0, 30, 10);
+        let mut state = AppState::default();
+        state.journal_notes = "notes".into();
+        state.journal_notes_cursor = 1;
+        state.journal_notes_selection = Some(4);
+        state.journal_notes_editing = true;
+        let mut buf = Buffer::empty(area);
+        let body = content_area(area, &state.colors);
+        let y = body.y;
+
+        draw(&state, area, &mut buf);
+
+        let selected = buf.cell((body.x + 1, y)).unwrap();
+        assert_eq!(selected.symbol(), "o");
+        assert!(selected.style().add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn mouse_click_maps_to_a_soft_wrapped_row() {
+        let area = Rect::new(0, 0, 12, 12);
+        let mut state = AppState::default();
+        state.journal_notes = "one two three".into();
+        let body = content_area(area, &state.colors);
+        let text_area = text_area(area, &state.colors);
+        let target = mouse_target_at(&state, area, body.x + 2, text_area.y + 1).unwrap();
+        assert_eq!(target, 10);
+    }
+
+    #[test]
+    fn notes_pane_has_no_shortcut_instructions() {
+        let area = Rect::new(0, 0, 24, 12);
+        let mut state = AppState::default();
+        state.journal_notes_editing = true;
+        state.journal_notes = "notes".into();
+        let mut buf = Buffer::empty(area);
+
+        draw(&state, area, &mut buf);
+
+        let body = content_area(area, &state.colors);
+        let mut content = String::new();
+        for y in body.y..body.bottom() {
+            for x in body.x..body.right() {
+                content.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(!content.contains("Ctrl+"));
+        assert!(!content.contains("Enter newline"));
+        assert!(content.contains("notes"));
+    }
+
+    #[test]
+    fn trailing_wrap_space_moves_to_the_next_row_without_an_extra_row_patch() {
+        let mut state = AppState::default();
+        state.journal_notes = "123456".into();
+        state.journal_notes_wrap_width = 7;
+        state.journal_notes_cursor = state.journal_notes.chars().count();
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        let width = state.journal_notes_wrap_width;
+        assert_eq!(state.journal_notes, "123456 ");
+        state.journal_notes_cursor = state.journal_notes.chars().count();
+        let rows = wrapped_lines(&state.journal_notes, width);
+
+        assert_eq!(rows, vec![(0, 6, "123456".into()), (6, 7, " ".into())]);
+        assert_eq!(caret_position(&rows, 7), (1, 1));
+    }
+
+    #[test]
+    fn undo_recovers_text_after_selection_delete_and_a_long_paste() {
+        let mut state = AppState::default();
+        state.journal_notes = "the original note".into();
+        state.journal_notes_cursor = state.journal_notes.chars().count();
+        state.journal_notes_editing = true;
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        let long_text = "a long replacement pasted into the notes pane ".repeat(25);
+        paste(&mut state, &long_text);
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            state.journal_notes.is_empty(),
+            "the paste undoes as one action"
+        );
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes, "the original note");
+    }
+
+    #[test]
+    fn adjacent_character_input_including_spaces_and_punctuation_is_one_undo_action() {
+        let mut state = AppState::default();
+        state.journal_notes_editing = true;
+        for ch in "A sentence, with spaces.".chars() {
+            handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+        assert!(state.journal_notes.is_empty());
     }
 }
