@@ -2143,6 +2143,11 @@ pub fn render_notifications(buf: &mut Buffer, area: Rect, state: &AppState) {
         return;
     }
     let style = state.colors.theme.get("notification").style;
+    let style = if style.add_modifier.contains(Modifier::DIM) {
+        style
+    } else {
+        style.remove_modifier(Modifier::DIM)
+    };
     let animate = state.config.animation.enabled;
     let easing = state.config.animation.easing;
     // A single-bordered box by default (SQ-0176); collapses to a border-less
@@ -2896,8 +2901,50 @@ fn render_middle(
     // (SQ-1661) knows whether THIS frame is showing a top-anchored view in
     // full, without reaching into the wrap cache itself.
     let top_anchored_fits = top_anchor_fits(entry.anchor_row, entry.rows.len(), transcript_rows, effective_scroll);
-    let (lines, total_rows, first_abs_row) =
+    let (mut lines, total_rows, mut first_abs_row) =
         window_wrapped_rows(&entry.rows, entry.anchor_row, transcript_rows, effective_scroll);
+    // Live command treatment is a view-only projection over wrapped rows. The
+    // transcript, styles and command history remain untouched; scrollback and
+    // the [more] pager always see the original rows.
+    // Find the command in the rows that will actually be painted, rather than
+    // translating through the wrap cache's source-line offsets. Those offsets
+    // are easy to desynchronize when the cache appends or repairs its tail.
+    // WrappedRow already carries the filtered transcript kind and is the single
+    // coordinate system used below for the rule and dimming.
+    let mut live_command_index = (state.config.command_separator
+        && !state.pager.active
+        && effective_scroll == 0)
+        .then(|| {
+            // Some host-managed transcripts preserve the visible `>` echo but
+            // classify it as Story. Prefer that visible command marker across
+            // kinds; only fall back to the semantic Input kind when no echo is
+            // present in this viewport.
+            lines.iter().rposition(|row| row.text.starts_with('>') && row.text.len() > 1)
+                .or_else(|| lines.iter().rposition(|row| row.kind == TranscriptKind::Input))
+        })
+        .flatten();
+    // A separator consumes one display row. When the viewport is full, trim one
+    // older wrapped row from the top so the command and newest output stay visible.
+    if let Some(index) = live_command_index {
+        if transcript_rows > 0 && lines.len() >= transcript_rows as usize && index > 0 {
+            lines.remove(0);
+            first_abs_row = first_abs_row.saturating_add(1);
+            live_command_index = Some(index - 1);
+        }
+    }
+    if let Some(index) = live_command_index {
+        if index < lines.len() {
+            let y = transcript_top.saturating_add(index as u16);
+            // Use the shared line selector so players can tune the divider in
+            // style.toml alongside pane borders and other rules.
+            let line_style = state.colors.theme.get("zen_mode_separator").style;
+            for x in body_area.x..body_area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_symbol("─").set_style(line_style.add_modifier(Modifier::BOLD));
+                }
+            }
+        }
+    }
     // Search highlight style, themed via the `transcript_search_highlight`
     // selector (SQ-0643; default reproduces the old hardcoded black-on-yellow).
     let search_highlight_style = state.colors.theme.get("transcript_search_highlight").style;
@@ -2915,7 +2962,10 @@ fn render_middle(
     let warning_marker = state.colors.theme.get("warning_marker").style;
 
     for (i, wr) in lines.iter().enumerate() {
-        let row_y = transcript_top + i as u16;
+        // Shift the command and following output down to leave a dedicated rule
+        // row immediately above it.
+        let row_shift = live_command_index.is_some_and(|command_index| i >= command_index);
+        let row_y = transcript_top + i as u16 + u16::from(row_shift);
         if row_y >= transcript_bottom {
             break;
         }
@@ -3036,6 +3086,23 @@ fn render_middle(
         }
     }
 
+    // Add the dim modifier after drawing so per-run foreground/background,
+    // underline, bold and other meaningful story formatting stay intact.
+    if let Some(command_index) = live_command_index {
+        let dim_rows = command_index.min(lines.len());
+        let muted_fg = Some(
+            state.colors.theme.get("muted").style.fg.unwrap_or(ratatui::style::Color::DarkGray),
+        );
+        for y in transcript_top..transcript_top.saturating_add(dim_rows as u16).min(transcript_bottom) {
+            for x in body_area.x..body_area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    let style = cell.style().add_modifier(Modifier::DIM);
+                    cell.set_style(muted_fg.map_or(style, |fg| style.fg(fg)));
+                }
+            }
+        }
+    }
+
     // ── Inline live input (command_bar off) ──────────────────────────────────
     // Draw the typed command + block cursor flush after the last transcript row
     // (the game's kept `>` prompt), so scrollback and the live line read as one
@@ -3065,7 +3132,7 @@ fn render_middle(
         {
             last_i -= 1;
         }
-        let row_y = transcript_top + last_i as u16;
+        let row_y = transcript_top + last_i as u16 + u16::from(live_command_index.is_some_and(|i| last_i >= i));
         let last = &lines[last_i];
         // Only draw when the true last wrapped row is the one visible at the
         // bottom, it fits inside the transcript region, and it is a text row
@@ -3393,6 +3460,86 @@ mod tests {
             prompt.contains(last.text.trim_end()) && last.kind == TranscriptKind::Story,
             "the prompt is still the last thing wrapped: {:?}",
             last.text,
+        );
+    }
+
+    #[test]
+    fn zen_mode_leaves_scrolled_history_untouched() {
+        let machine = minimal_machine();
+        let mut state = AppState::default();
+        state.config.command_separator = true;
+        for i in 0..30 {
+            if i % 2 == 0 {
+                let line = format!("> command {i}");
+                state.push_transcript_kind(&line, TranscriptKind::Input);
+            } else {
+                let line = format!("story line {i}");
+                state.push_transcript_kind(&line, TranscriptKind::Story);
+            }
+        }
+        state.transcript_scroll = 5;
+        assert!(state.effective_transcript_scroll() > 0, "test must scroll into history");
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_transcript(
+            &crate::session::status_model_from_machine(&machine),
+            None,
+            &state,
+            area,
+            &mut buf,
+            None,
+        );
+
+        assert!(
+            (0..area.height).all(|y| {
+                (0..area.width).all(|x| {
+                    !buf
+                        .cell((x, y))
+                        .unwrap()
+                        .style()
+                        .add_modifier
+                        .contains(Modifier::DIM)
+                })
+            }),
+            "scrolling up must not apply Zen Mode dimming to history"
+        );
+    }
+
+    #[test]
+    fn notification_toast_is_not_dimmed_over_zen_mode_transcript() {
+        let machine = minimal_machine();
+        let mut state = AppState::default();
+        state.config.command_separator = true;
+        state.config.animation.enabled = false;
+        state.push_transcript_kind("earlier story", TranscriptKind::Story);
+        state.push_transcript_kind("> look", TranscriptKind::Input);
+        state.set_status("Zen Mode on");
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_transcript(
+            &crate::session::status_model_from_machine(&machine),
+            None,
+            &state,
+            area,
+            &mut buf,
+            None,
+        );
+        render_notifications(&mut buf, area, &state);
+
+        let toast_label = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| buf.cell((x, y)).is_some_and(|cell| cell.symbol() == "Z"))
+            .expect("notification text must be rendered");
+        assert!(
+            !buf
+                .cell(toast_label)
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::DIM),
+            "a toast drawn over the dimmed transcript is not dimmed"
         );
     }
 
@@ -5645,6 +5792,51 @@ mod tests {
         let input_y = (1u16..9).find(|&y| row_text(y).starts_with("> go north"))
             .expect("input line must render at column 0");
         assert_eq!(buf.cell((0, input_y)).unwrap().style().fg, Some(Color::Blue)); // transcript_input
+    }
+
+    #[test]
+    fn zen_mode_marks_latest_command_and_dims_earlier_transcript() {
+        let machine = minimal_machine();
+        let mut state = AppState::default();
+        state.config.command_separator = true;
+        state.push_transcript_kind("earlier story", TranscriptKind::Story);
+        state.push_transcript_kind("> look", TranscriptKind::Input);
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_transcript(
+            &crate::session::status_model_from_machine(&machine),
+            None,
+            &state,
+            area,
+            &mut buf,
+            None,
+        );
+
+        let row_text = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buf.cell((x, y)).map(|cell| cell.symbol().chars().next().unwrap_or(' ')).unwrap_or(' '))
+                .collect()
+        };
+        assert!((0..area.height).any(|y| row_text(y).contains('─')), "Zen Mode rule is visible");
+        let command_y = (0..area.height)
+            .find(|&y| row_text(y).contains("> look"))
+            .expect("latest command remains visible");
+        assert!(
+            command_y > 0 && row_text(command_y - 1).contains('─'),
+            "Zen Mode rule sits immediately above the latest command"
+        );
+        let earlier_y = (0..area.height)
+            .find(|&y| row_text(y).contains("earlier"))
+            .expect("earlier transcript remains visible");
+        assert!(
+            (0..area.width).any(|x| buf.cell((x, earlier_y)).unwrap().style().add_modifier.contains(Modifier::DIM)),
+            "older transcript is dimmed"
+        );
+        assert!(
+            (0..area.width).any(|x| buf.cell((x, command_y)).unwrap().symbol() == ">"),
+            "latest command prompt remains visible"
+        );
     }
 
     /// SQ-1045: on screen an assist is identified by its MARK and by nothing

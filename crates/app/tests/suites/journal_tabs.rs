@@ -93,7 +93,7 @@ fn narrow_bars_abbreviate_then_show_only_the_active_tab_with_step_markers() {
     let colors = st.colors.clone();
 
     // Wide enough for abbreviations only.
-    let r = Rect::new(0, 0, 26, 1);
+    let r = Rect::new(0, 0, 36, 1);
     let mut buf = Buffer::empty(r);
     draw_tab_bar(r, JournalTab::Map, false, &colors, &mut buf);
     let row = text_in(&buf, r);

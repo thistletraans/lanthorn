@@ -208,6 +208,7 @@ const INTERFACE: &[Row] = &[
         ],
     ),
     d("command_prefix", "\"/\"", &["The character that routes a line to a slash command."]),
+    d("command_separator", "false", &["Zen Mode: at the live bottom, dim earlier lines and mark the latest command with a LINE-coloured rule. Scrollback is unchanged. Toggle with /toggle-zen-mode."]),
     d(
         "guidance",
         "true",

@@ -21,6 +21,7 @@ Every themeable `style.toml` selector: which role or selector it derives from, a
 | `story_title` | Elements | Style | `heading` |  | |
 | `input_line` | Elements | Style | `line` |  | |
 | `suggestion_line` | Elements | Style | `line` |  | |
+| `zen_mode_separator` | Elements | Style | `line` |  | |
 | `scrollbar` | Elements | Style | `line` |  | |
 | `scrollbar_track` | Elements | Style | `muted` |  | |
 | `transcript_location` | Elements | Style | `accent` |  | |

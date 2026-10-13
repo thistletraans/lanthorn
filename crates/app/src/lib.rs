@@ -123,6 +123,7 @@ pub mod keymap;
 pub mod launch_options;
 pub mod native_sound;
 pub mod journal;
+pub mod journal_notes;
 pub mod layout;
 pub mod list_scroll;
 pub mod map_card;

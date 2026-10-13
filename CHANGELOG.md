@@ -283,8 +283,8 @@ while any such tag, or this Unreleased section, still exists.*
   re-wraps on resize; pictures are shown in place; PDFs open in your system
   viewer. Files named like a walkthrough or hint sheet are marked as spoilers
   and ask before they open. Reach it with a click, `Alt+5` or
-  `/journal-tab documents`; Shift+Up/Down and Shift+Left/Right move through it
-  without touching the command line. A file's kind is judged by what is in it,
+  `/journal-tab documents`; Shift+Up/Down navigate its list or viewer, while
+  Alt+Left/Right move between Journal tabs. A file's kind is judged by what is in it,
   not its name, so a transcript called `zorkI.step1` shows as text.
 - **Fetch documents from IFDB.** Press `Shift+D` on a story (or use the story
   menu's **Download documents from IFDB…**, the **Download documents…** button in

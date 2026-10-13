@@ -37,6 +37,7 @@ version = 1   # style schema version — do not remove; lets lanthorn flag an ou
 # story_title = { parent = "heading" }
 # input_line = { parent = "line" }
 # suggestion_line = { parent = "line" }
+# zen_mode_separator = { parent = "line" }   # divider above the latest command when Zen Mode is on
 # scrollbar = { parent = "line" }
 # scrollbar_track = { parent = "muted" }
 # transcript_location = { parent = "accent" }

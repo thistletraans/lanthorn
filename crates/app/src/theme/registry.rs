@@ -219,6 +219,7 @@ pub static REGISTRY: std::sync::LazyLock<Vec<RegRow>> = std::sync::LazyLock::new
     row("story_title", Section::Elements, Kind::Style, Some("heading"), Delta::EMPTY),
     row("input_line", Section::Elements, Kind::Style, Some("line"), Delta::EMPTY),
     row("suggestion_line", Section::Elements, Kind::Style, Some("line"), Delta::EMPTY),
+    row("zen_mode_separator", Section::Elements, Kind::Style, Some("line"), Delta::EMPTY),
     // The scrollbar is two BACKGROUND fills, no glyphs (SQ-0782): `scrollbar`
     // colours the thumb, `scrollbar_track` the dim channel it runs in. Each
     // selector's FG is its fill, so an existing `scrollbar = { fg = … }` still
@@ -781,6 +782,7 @@ mod tests {
         "story_title",
         "input_line",
         "suggestion_line",
+        "zen_mode_separator",
         "scrollbar",
         "scrollbar_track",
         "transcript_location",

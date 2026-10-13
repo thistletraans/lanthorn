@@ -41,7 +41,7 @@ Every slash command, grouped the way `/help` groups them. Type any of these afte
 | Map | `toggle-portal-labels` | toggle portal labels |
 | View | `toggle-map` | show or hide the Journal (the map's panel); persisted per-game |
 | View | `toggle-focus` | switch focus between panes |
-| View | `journal-tab <map|room|inventory|hints|documents>` | show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story |
+| View | `journal-tab <map|room|inventory|hints|documents|notes>` | show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story |
 | View | `journal-next-tab` | show the Journal's next tab, wrapping |
 | View | `journal-prev-tab` | show the Journal's previous tab, wrapping |
 | View | `filter-items [query]` | filter the Journal's Inventory tab (both Carrying and Elsewhere) to items matching query; no query clears the filter |
@@ -55,6 +55,7 @@ Every slash command, grouped the way `/help` groups them. Type any of these afte
 | Transcript | `search-transcript [query]` | search the transcript; no query repeats the last search |
 | Transcript | `filter-transcript story|meta|both` | filter the transcript by category |
 | Transcript | `export-transcript [file]` | export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead) |
+| Transcript | `toggle-zen-mode` | at the live bottom, dim earlier transcript lines and mark your latest command; scrollback is unchanged (persisted) |
 | Style | `open-settings` | open the global settings screen |
 | Style | `reload-style` | reload style.toml from disk |
 | Style | `toggle-watch` | toggle live style-file watching |

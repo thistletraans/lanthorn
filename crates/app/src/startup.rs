@@ -1006,6 +1006,8 @@ pub(crate) fn boot_story(
         }
     };
 
+    state.journal_notes = app::styles::read_per_game_journal_notes(&game_dir);
+
     // SQ-1086: this story came off a URL, so offer to keep it. Raised BEFORE the
     // resume prompt below so that prompt's `dialog_focus = 0` wins while it is
     // up — it sits above this one in the ladder and has to be answered first.

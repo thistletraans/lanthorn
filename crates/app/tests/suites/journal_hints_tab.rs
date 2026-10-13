@@ -119,7 +119,14 @@ fn click_inside_window(st: &mut AppState) -> Option<HintMouse> {
 fn hints_is_the_fourth_tab_on_alt_4_and_journal_tab_hints() {
     assert_eq!(
         JournalTab::ALL,
-        [JournalTab::Map, JournalTab::Room, JournalTab::Inventory, JournalTab::Hints, JournalTab::Documents]
+        [
+            JournalTab::Map,
+            JournalTab::Room,
+            JournalTab::Inventory,
+            JournalTab::Hints,
+            JournalTab::Documents,
+            JournalTab::Notes,
+        ]
     );
     let st = AppState::default();
     let alt4 = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::ALT);
@@ -135,8 +142,18 @@ fn hints_is_the_fourth_tab_on_alt_4_and_journal_tab_hints() {
 fn the_bar_names_hints_between_inventory_and_documents_and_degrades() {
     let wide = tab_bar_cells(60, JournalTab::Map);
     let text: Vec<&str> = wide.iter().map(|c| c.text.as_str()).collect();
-    assert_eq!(text, [" Map ", " Room ", " Inventory ", " Hints ", " Documents "]);
-    let short = tab_bar_cells(26, JournalTab::Map);
+    assert_eq!(
+        text,
+        [
+            " Map ",
+            " Room ",
+            " Inventory ",
+            " Hints ",
+            " Documents ",
+            " Notes ",
+        ]
+    );
+    let short = tab_bar_cells(36, JournalTab::Map);
     assert_eq!(short[3].text, " Hint ");
     let narrow = tab_bar_cells(10, JournalTab::Hints);
     assert!(narrow.iter().any(|c| c.hit == TabBarHit::Tab(JournalTab::Hints)), "the active tab always shows");
