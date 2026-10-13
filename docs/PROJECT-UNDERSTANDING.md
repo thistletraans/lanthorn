@@ -18,16 +18,16 @@ Current checkout facts when these notes were written:
   `https://github.com/thistletraans/lanthorn.git`. No `upstream` remote is
   configured in this worktree.
 - The working branch is `thistletraans-notepad-zen-fixes`. Its current `HEAD`
-  is `2b7eec138269efbe8722d46a9630ebebcd58548d`, and the local
-  `origin/main` reference points to that same commit. This is the base that
-  was available locally during the work; fetch the canonical repository
-  separately before claiming it is still current there.
-- The feature work is uncommitted. `git status` shows both staged and
-  unstaged changes, including pre-existing changes made while preparing this
-  feature; inspect the full staged and unstaged diffs before staging or
-  committing anything. Do not discard either set.
-- The user explicitly said never to create a pull request. Do not create one.
-  No commit or push has been requested or made in this session.
+  includes local feature commit `b9fd2c28` (`feat(app): finish Zen Mode and
+  Journal Notes`). The work was based on the newer locally available Lanthorn
+  tree, rather than the older Notes branch.
+- The user has explicitly requested a PR into the fork's
+  `codex/Zen-Mode&Notes` branch. That target was at `e4ef0f55` when checked and
+  has one commit not present in the feature branch, while the feature branch
+  has 41 commits not present in the target. Those 41 include the newer project
+  history and the finished feature. The branches overlap in Notes and Zen
+  files, so reconcile and verify the combined tree before pushing or opening
+  the PR. Do not assume the target branch has already been updated.
 
 ## Read these first
 
@@ -84,7 +84,8 @@ responsibilities across these boundaries.
   also have a template/reference; keep these in sync.
 - Do not stage blindly (`git add .`), commit, push, publish, or cut a release
   unless explicitly requested. Inspect `git status` first and stage named
-  files only. Never create a pull request for this work.
+  files only. The user explicitly requested the PR described above, superseding
+  an earlier instruction not to create one.
 - `CLAUDE.md` notes that buildinfo embeds Git state and commits invalidate
   build fingerprints. Verify before committing when practical, to avoid
   paying for a full relink twice.
@@ -129,11 +130,10 @@ cargo run -p lanthorn --bin lanthorn -- "C:\path\to\story-file.z5"
 
 Work in this existing worktree and branch; the user has already tested this
 local build successfully. Before any commit, inspect both staged and unstaged
-diffs and stage only explicitly intended paths. The user has said not to make
-a pull request. A future upstream refresh needs a separately configured
-canonical remote (the current `origin` is the user's fork), a fetch, review of
-the new commits, and a deliberate merge or rebase; do not infer that the local
-`origin/main` ref is current on GitHub.
+diffs and stage only explicitly intended paths. A future upstream refresh needs
+a separately configured canonical remote (the current `origin` is the user's
+fork), a fetch, review of the new commits, and a deliberate merge or rebase; do
+not infer that the local `origin/main` ref is current on GitHub.
 
 `cargo-nextest` is not installed in the current Windows environment. If it is
 installed later, use the exact `nextest` commands and suite filters in
@@ -142,8 +142,9 @@ runs can be much slower with Cargo's runner.
 
 ## Current feature work in this checkout
 
-The local change set brings Notes and Zen Mode work onto the current local
-upstream base and fixes the usability issues reported during testing.
+The local change set brings the Notes and Zen Mode work forward onto the
+newer Lanthorn tree available in this checkout and fixes the usability issues
+reported during testing.
 
 ### Zen Mode
 
@@ -219,9 +220,10 @@ Latest checks after Notes undo grouping and the 30-action history change:
 - `cargo-nextest` is not installed in this Windows environment; use Cargo's
   built-in `cargo test` for focused validation unless nextest is installed.
 
-All feature changes remain uncommitted on `thistletraans-notepad-zen-fixes`.
-The user has asked not to create a PR. Do not claim the workspace test gate or
-strict Clippy is clean.
+The feature changes are committed locally on `thistletraans-notepad-zen-fixes`
+in `b9fd2c28`. The requested PR targets `codex/Zen-Mode&Notes`; push only after
+the combined tree has been resolved and checked. Do not claim the workspace
+test gate or strict Clippy is clean.
 
 ## When the official repository changes
 
