@@ -168,10 +168,12 @@ reported during testing.
   rewriting the sidecar during typing or paste. Save errors are surfaced in
   the status notification.
 - Select the Notes tab, then Shift+Enter or click inside it to edit. Esc saves
-  and exits editing. Clicking outside also exits; Alt+Left/Right changes
-  Journal tabs and saves Notes as it leaves the editor.
+  and exits editing. Clicking outside also exits; Ctrl+Left/Right changes
+  Journal tabs and saves Notes as it leaves the editor when Notes is not being
+  edited.
 - Shift+Arrow selects text; Ctrl+C copies, Ctrl+X cuts, and terminal
-  bracketed paste inserts text. Wrapping reuses
+  bracketed paste inserts text. Ctrl+Left/Right moves by word and
+  Ctrl+Shift+Left/Right selects by word. Wrapping reuses
   `render::transcript::wrap_line_ranges`, preserving words when they fit on a
   subsequent row.
 - Ctrl+Z and Ctrl+Y undo/redo up to 30 edit actions. Adjacent word-character
@@ -192,9 +194,8 @@ change.
 Latest checks after Notes undo grouping and the 30-action history change:
 
 - `cargo test -p lanthorn --lib --features t-input journal_notes`: 7 passed.
-- Notes shortcut routing and Alt+Left save-on-leave routing tests passed
-  individually; the latter verifies the sidecar contains the Notes text after
-  the tab changes.
+- Notes shortcut routing and save-on-leave tests passed individually; the latter
+  verifies the sidecar contains the Notes text after the tab changes.
 - `cargo check -p lanthorn --bin lanthorn` passed during this work, and the
   full binary check also passed after the Notes editor was added. Cargo emits
   existing unused/dead-code warnings, especially in `term_colors.rs` and

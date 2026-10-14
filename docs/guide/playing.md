@@ -47,14 +47,21 @@ What you're carrying lives in the Journal's **Inventory** tab, beside the map
 (see [the map](the-map.md)) — and an item there clicks onto the prompt exactly
 the way a command panel object does.
 
+**Hints** and **Documents** share the Journal's **Files** tab. Use its two
+subtabs to switch between the game's hint companion and its manuals, maps, and
+other documents.
+`Shift+Up` and `Shift+Down` scroll the Room and Inventory tabs; on Map they pan
+the map, and in Files they move through the document list or viewer.
+
 The Journal's **Notes** tab keeps your own notes with the current story. Select
 it, then press `Shift+Enter` or click inside the Notes panel to edit. `Ctrl+S`
 saves, and `Esc` saves and returns to the game. Clicking the game or another
-Journal tab saves and exits Notes editing. `Alt+Left` and `Alt+Right` move across
-Journal tabs; Shift+Arrow keeps its map, Documents, and Notes navigation meaning.
-In Notes, select text with Shift+Arrow, then use `Ctrl+C` to copy or `Ctrl+X` to
-cut it; paste with your terminal's bracketed-paste shortcut. `Ctrl+Z` undoes
-and `Ctrl+Y` redoes. Adjacent word-character typing and backspaces group
+Journal tab saves and exits Notes editing. `Ctrl+Left` and `Ctrl+Right` move
+across Journal tabs; `Ctrl+Shift+Left` and `Ctrl+Shift+Right` switch Room views
+or Files subtabs. In Notes, `Ctrl+Left` and `Ctrl+Right` move by word, and adding Shift
+selects by word. Plain Shift+Arrow selects text; use `Ctrl+C` to copy or `Ctrl+X`
+to cut it, and paste with your terminal's bracketed-paste shortcut. `Ctrl+Z`
+undoes and `Ctrl+Y` redoes. Adjacent word-character typing and backspaces group
 together; undo and redo retain the 30 most recent edit actions.
 
 ## The word reveal
@@ -127,17 +134,18 @@ format other interpreters use, so a script recorded elsewhere replays here.
 
 ## Hints
 
-`/open-hints` (or **Alt+4**) shows the Journal's **Hints** tab, which runs a
+`/open-hints` (or **Alt+4**) opens **Files → Hints** in the Journal, which runs a
 companion *InvisiClues* file beside the story — its own topic menu on top, the
 clue text below, driven with the arrow keys and whatever it prompts for once you
-click into it. lanthorn looks first in the game's **documents folder** — drop a
+click into it. In Files, `Ctrl+Shift+Left`/`Ctrl+Shift+Right` switch between
+Hints and Documents. lanthorn looks first in the game's **documents folder** — drop a
 hint file there and it is this game's hints whatever the file is called, in every
 release and disk image of the game — and then beside the story. You can also fetch
 one for free, from the story picker before you even start playing (see
 [Getting started](getting-started.md)) or with the tab's **Download hints…**
 button (`/download-hints`) in the game; a game linked to IFDB gets it saved in its
-documents folder, any other beside the story. A hint file in the Documents tab is
-listed as a *hint program* and opens in the Hints tab. If several hint files could
+documents folder, any other beside the story. A hint file in the Documents
+subtab is listed as a *hint program* and opens in the Hints subtab. If several hint files could
 be the game's, the tab lists them and asks you to pick; it remembers your pick. The
 tab and how the keyboard moves in and out of it are described in
 [the map](the-map.md).

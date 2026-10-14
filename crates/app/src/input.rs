@@ -37,7 +37,6 @@ use mapper::mapper::Mapper;
 use crate::keymap::{Context, KeySpec};
 use crate::state::{AppState, Focus, TextEntryDialog, TextEntryKind};
 
-
 // ── ResizeNavKind ─────────────────────────────────────────────────────────────
 
 /// Navigation kind for `Action::ResizeNav`.
@@ -240,7 +239,9 @@ pub enum Action {
     /// Open the command palette popup (SQ-0419). `from_hotkey` = promoted from the
     /// leader dialog by pressing `/` (Esc returns there); otherwise promoted from
     /// the story prompt or opened cold in a modal/debug view.
-    OpenCommandPalette { from_hotkey: bool },
+    OpenCommandPalette {
+        from_hotkey: bool,
+    },
     /// Move the palette selection by `delta` rows, wrapping at the ends.
     PaletteNav(i32),
     /// Append a character to the palette input line.
@@ -316,6 +317,8 @@ pub enum Action {
     /// Step the Journal to the next (`true`) or previous (`false`) tab,
     /// wrapping — `journal-next-tab` / `journal-prev-tab`.
     JournalStepTab(bool),
+    /// Switch between Hints and Documents inside the Files tab.
+    JournalStepFilesSubtab,
     /// Open a confirmation prompt to reset the game to its opening state (keeps map).
     ResetGame,
     /// Open the bottom command band (its object columns fill from the engine's
@@ -587,20 +590,6 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
         return KeyResolve::Action(Action::Quit);
     }
 
-    // Leave Notes editing through the same journal-tab shortcut. Applying the
-    // action changes tabs via AppState::set_journal_tab, which saves Notes first.
-    if state.journal_notes_editing
-        && state.layout == crate::state::Layout::Split
-        && state.debug.is_none()
-        && key.modifiers == KeyModifiers::ALT
-    {
-        match key.code {
-            KeyCode::Left => return KeyResolve::Action(Action::JournalStepTab(false)),
-            KeyCode::Right => return KeyResolve::Action(Action::JournalStepTab(true)),
-            _ => {}
-        }
-    }
-
     if state.journal_notes_editing {
         return KeyResolve::Action(Action::JournalNotesKey(key));
     }
@@ -693,22 +682,38 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
         // else: fall through — the story input is live, so the key is handled normally.
     }
     if state.overlays.config_screen.is_some() {
-        return KeyResolve::Action(config_screen_key_to_action(key, state.overlays.dialog_focus));
+        return KeyResolve::Action(config_screen_key_to_action(
+            key,
+            state.overlays.dialog_focus,
+        ));
     }
     if state.overlays.hotkey_dialog {
         return hotkey_dialog_key_to_action(state, key);
     }
 
-    // Journal tab traversal uses Alt+Left/Right so Shift+Arrow remains available
-    // to the map, Documents list/viewer, and Notes selection/navigation.
-    if state.layout == crate::state::Layout::Split
-        && state.debug.is_none()
-        && key.modifiers == KeyModifiers::ALT
-    {
-        match key.code {
-            KeyCode::Left => return KeyResolve::Action(Action::JournalStepTab(false)),
-            KeyCode::Right => return KeyResolve::Action(Action::JournalStepTab(true)),
-            _ => {}
+    // Ctrl+Left/Right traverses Journal tabs. Ctrl+Shift+Left/Right stays inside
+    // the active two-view tab: Room's Info/Diagnostics or Files' subtabs.
+    if state.layout == crate::state::Layout::Split && state.debug.is_none() {
+        if key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::Left | KeyCode::Right => match state.journal_tab.top_level() {
+                    crate::journal::JournalTab::Room => {
+                        return KeyResolve::Action(Action::ToggleRoomDiagnostics)
+                    }
+                    crate::journal::JournalTab::Files => {
+                        return KeyResolve::Action(Action::JournalStepFilesSubtab)
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        if key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Left => return KeyResolve::Action(Action::JournalStepTab(false)),
+                KeyCode::Right => return KeyResolve::Action(Action::JournalStepTab(true)),
+                _ => {}
+            }
         }
     }
 
@@ -743,15 +748,16 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
         || state.selected_room.is_some()
         || !state.room_path.is_empty())
         && key.modifiers == KeyModifiers::NONE
-        && matches!(key.code, KeyCode::Esc) {
-            return KeyResolve::Action(if !state.room_path.is_empty() {
-                Action::ClearRoomPath
-            } else if state.room_dock_pinned() {
-                Action::UnpinRoomDock
-            } else {
-                Action::CloseRoomDock
-            });
-        }
+        && matches!(key.code, KeyCode::Esc)
+    {
+        return KeyResolve::Action(if !state.room_path.is_empty() {
+            Action::ClearRoomPath
+        } else if state.room_dock_pinned() {
+            Action::UnpinRoomDock
+        } else {
+            Action::CloseRoomDock
+        });
+    }
 
     // [more] pager (SQ-0404): while it's showing, keypresses page the transcript
     // instead of reaching the game. Space/PgDn/↓/Enter advance one screen; any
@@ -790,7 +796,9 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
     // half-page-up, which is the meaning readline's kill-line has nothing to
     // contest on an empty line.
     if key.modifiers == KeyModifiers::CONTROL
-        && state.focus == Focus::Game && !state.char_mode && !state.event_wait
+        && state.focus == Focus::Game
+        && !state.char_mode
+        && !state.event_wait
     {
         match key.code {
             KeyCode::Char('a') => return KeyResolve::Action(Action::CursorHome),
@@ -831,7 +839,8 @@ pub fn key_to_command(state: &AppState, key: KeyEvent) -> KeyResolve {
     if key.modifiers == KeyModifiers::CONTROL && state.focus == Focus::Game {
         let half_page_down = key.code == KeyCode::Char('d');
         let half_page_up = key.code == KeyCode::Char('u') && state.input.is_empty();
-        if (half_page_down || half_page_up) && state.keymap.lookup(&spec, Context::Global).is_none() {
+        if (half_page_down || half_page_up) && state.keymap.lookup(&spec, Context::Global).is_none()
+        {
             let dir = if half_page_down { -1 } else { 1 };
             return KeyResolve::Action(Action::TranscriptScrollHalfPage(dir));
         }
@@ -962,7 +971,9 @@ fn room_at_screen(
 ) -> Option<mapper::graph::RoomId> {
     room_rects
         .iter()
-        .find(|(_, rect)| col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom())
+        .find(|(_, rect)| {
+            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+        })
         .map(|(id, _)| *id)
 }
 
@@ -995,9 +1006,10 @@ pub fn room_dock_mouse_action(
         return None;
     }
     if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
-        if let Some(&(view, _)) = tabs.iter().find(|(_, r)| {
-            r.width > 0 && r.height > 0 && hit(*r, m.column, m.row)
-        }) {
+        if let Some(&(view, _)) = tabs
+            .iter()
+            .find(|(_, r)| r.width > 0 && r.height > 0 && hit(*r, m.column, m.row))
+        {
             return Some(Action::SetRoomDockView(view));
         }
     }
@@ -1027,9 +1039,9 @@ fn config_dialog_action(
     for (id, rect) in &rects.buttons {
         if hit(*rect, col, row) {
             return Some(match id {
-                ButtonId::Save   => Action::ConfigSave,
+                ButtonId::Save => Action::ConfigSave,
                 ButtonId::Cancel => Action::ConfigCancel,
-                _                => Action::None,
+                _ => Action::None,
             });
         }
     }
@@ -1057,7 +1069,7 @@ fn saves_dialog_action(
         if hit(*rect, col, row) {
             return Some(match id {
                 ButtonId::Done => Action::SavesClose,
-                _              => Action::None,
+                _ => Action::None,
             });
         }
     }
@@ -1085,7 +1097,7 @@ fn filebrowser_dialog_action(
         if hit(*rect, col, row) {
             return Some(match id {
                 ButtonId::Done => Action::FbClose,
-                _              => Action::None,
+                _ => Action::None,
             });
         }
     }
@@ -1112,7 +1124,7 @@ fn tidy_dialog_action(
         if hit(*rect, col, row) {
             return Some(match id {
                 ButtonId::Ok => Action::AnimExit,
-                _            => Action::None,
+                _ => Action::None,
             });
         }
     }
@@ -1140,7 +1152,7 @@ fn hotkeys_dialog_action(
         if hit(*rect, col, row) {
             return Some(match id {
                 ButtonId::Done => Action::CloseHotkeyDialog,
-                _              => Action::None,
+                _ => Action::None,
             });
         }
     }
@@ -1240,7 +1252,8 @@ pub fn mouse_to_action(
             // But if a centered modal is also open (stacked on top), it takes
             // priority and must swallow all outside clicks.
             let centered_open = state.overlays.config_screen.is_some()
-                || state.overlays.saves.is_some() || state.overlays.file_browser.is_some()
+                || state.overlays.saves.is_some()
+                || state.overlays.file_browser.is_some()
                 || state.overlays.hotkey_dialog;
             let is_corner_overlay = !centered_open && state.tidy_anim.is_some();
 
@@ -1277,7 +1290,8 @@ pub fn mouse_to_action(
             // For non-left-click events (wheel/drag): swallow unless a corner overlay
             // is active and no centered modal is stacked on top.
             let centered_open = state.overlays.config_screen.is_some()
-                || state.overlays.saves.is_some() || state.overlays.file_browser.is_some()
+                || state.overlays.saves.is_some()
+                || state.overlays.file_browser.is_some()
                 || state.overlays.hotkey_dialog;
             let is_corner_overlay = !centered_open && state.tidy_anim.is_some();
             if !is_corner_overlay {
@@ -1288,12 +1302,18 @@ pub fn mouse_to_action(
 
     // ── Normal routing (no dialog open) ──────────────────────────────────────
 
-    let in_map = map.width > 0 && map.height > 0
-        && col >= map.x && col < map.right()
-        && row >= map.y && row < map.bottom();
-    let in_story = story.width > 0 && story.height > 0
-        && col >= story.x && col < story.right()
-        && row >= story.y && row < story.bottom();
+    let in_map = map.width > 0
+        && map.height > 0
+        && col >= map.x
+        && col < map.right()
+        && row >= map.y
+        && row < map.bottom();
+    let in_story = story.width > 0
+        && story.height > 0
+        && col >= story.x
+        && col < story.right()
+        && row >= story.y
+        && row < story.bottom();
 
     match kind {
         // ── Left-down in story with a completion showing: accept it (SQ-1326) ──
@@ -1317,14 +1337,13 @@ pub fn mouse_to_action(
         // Must precede the story arm below: the input line sits inside the story pane, so a click
         // on it would otherwise start a text selection instead of moving the caret (SQ-0354).
         MouseEventKind::Down(MouseButton::Left)
-            if matches!(state.focus, Focus::Game | Focus::Hints) && state.input_click_index(col, row).is_some() =>
+            if matches!(state.focus, Focus::Game | Focus::Hints)
+                && state.input_click_index(col, row).is_some() =>
         {
             Action::CursorToClick(col, row)
         }
         // ── Left-down in story: activate game pane + begin text selection ─────
-        MouseEventKind::Down(MouseButton::Left) if in_story => {
-            Action::StartSelection(col, row)
-        }
+        MouseEventKind::Down(MouseButton::Left) if in_story => Action::StartSelection(col, row),
         // ── Left-drag while a map drag-pan is pending: pan, not select (SQ-1325) ─
         // Must precede the generic story-selection drag arm below: a left-drag
         // that began on the map (`BeginMapDrag`, any target) reaches this arm
@@ -1335,20 +1354,14 @@ pub fn mouse_to_action(
             Action::DragPanTo(col, row)
         }
         // ── Left-drag: extend an in-progress story selection ──────────────────
-        MouseEventKind::Drag(MouseButton::Left) => {
-            Action::ExtendSelection(col, row)
-        }
+        MouseEventKind::Drag(MouseButton::Left) => Action::ExtendSelection(col, row),
         // ── Left-up while a map drag-pan is pending: end it (SQ-1325) ──────────
         // Resolves to the SAME `EndDragPan` the middle button uses; it replays
         // the deferred `MapClick` from `BeginMapDrag` when the pointer never
         // moved, or just clears the drag when it did.
-        MouseEventKind::Up(MouseButton::Left) if state.drag.is_some() => {
-            Action::EndDragPan
-        }
+        MouseEventKind::Up(MouseButton::Left) if state.drag.is_some() => Action::EndDragPan,
         // ── Left-up: finish a story selection (copy on release) ───────────────
-        MouseEventKind::Up(MouseButton::Left) => {
-            Action::EndSelection
-        }
+        MouseEventKind::Up(MouseButton::Left) => Action::EndSelection,
         // ── Left-down in map: begin a click-or-drag-pan gesture (SQ-1325) ──────
         // A plain press-release still pins/unpins exactly as before (SQ-0692) —
         // opening the dock on a room, keeping whichever body was last shown
@@ -1382,15 +1395,9 @@ pub fn mouse_to_action(
             }
         }
         // ── Middle-button: drag-pan ───────────────────────────────────────────
-        MouseEventKind::Down(MouseButton::Middle) if in_map => {
-            Action::BeginDragPan(col, row)
-        }
-        MouseEventKind::Drag(MouseButton::Middle) => {
-            Action::DragPanTo(col, row)
-        }
-        MouseEventKind::Up(MouseButton::Middle) => {
-            Action::EndDragPan
-        }
+        MouseEventKind::Down(MouseButton::Middle) if in_map => Action::BeginDragPan(col, row),
+        MouseEventKind::Drag(MouseButton::Middle) => Action::DragPanTo(col, row),
+        MouseEventKind::Up(MouseButton::Middle) => Action::EndDragPan,
         // ── Wheel in map: pan or zoom ─────────────────────────────────────────
         MouseEventKind::ScrollUp if in_map => {
             if ctrl {
@@ -1491,9 +1498,13 @@ pub fn v6_mouse_outcome(
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             match (v6_click_read(read, line_terminator), hit) {
-                (Some(read), Some(game_px)) => V6MouseOutcome::DeferAndRoute(
-                    crate::state::PendingV6Click { game_px, cell: (m.column, m.row), read },
-                ),
+                (Some(read), Some(game_px)) => {
+                    V6MouseOutcome::DeferAndRoute(crate::state::PendingV6Click {
+                        game_px,
+                        cell: (m.column, m.row),
+                        read,
+                    })
+                }
                 // Not a click the game can take (a Journey line read, a press in
                 // the margin): the story pane gets it, and any older deferral —
                 // a release this app never saw — goes with it.
@@ -1567,7 +1578,9 @@ fn hotkey_dialog_key_to_action(state: &AppState, key: KeyEvent) -> KeyResolve {
     // before the leader-letter lookup below, which would otherwise treat '/' as an
     // unbound letter and just close the dialog.
     if let KeyCode::Char('/') = key.code {
-        if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) {
+        if !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
             return KeyResolve::Action(Action::OpenCommandPalette { from_hotkey: true });
         }
     }
@@ -1592,7 +1605,9 @@ fn hotkey_dialog_key_to_action(state: &AppState, key: KeyEvent) -> KeyResolve {
     // closes the dialog. This gives tmux-style one-shot semantics: exactly
     // one keypress always resolves the dialog.
     if let KeyCode::Char(c) = key.code {
-        if !key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) {
+        if !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
             return match state.hotkeys.leader_command(c) {
                 // Gate against the LIVE context (SQ-1536), not the bound
                 // command's own declared context — the same fix as SQ-1535's
@@ -1692,10 +1707,15 @@ fn room_menu_key_to_command(
         KeyCode::Esc => KeyResolve::Action(Action::CloseRoomMenu),
         KeyCode::Up => KeyResolve::Action(Action::RoomMenuNav(-1)),
         KeyCode::Down => KeyResolve::Action(Action::RoomMenuNav(1)),
-        KeyCode::Enter => KeyResolve::Command(ROOM_MENU[menu.cursor].command.to_string(), Context::Map),
+        KeyCode::Enter => {
+            KeyResolve::Command(ROOM_MENU[menu.cursor].command.to_string(), Context::Map)
+        }
         _ => {
             let pressed = KeySpec::from_key_event(key);
-            match ROOM_MENU.iter().find(|it| km.first_key(Context::Map, it.command) == Some(pressed)) {
+            match ROOM_MENU
+                .iter()
+                .find(|it| km.first_key(Context::Map, it.command) == Some(pressed))
+            {
                 Some(it) => KeyResolve::Command(it.command.to_string(), Context::Map),
                 None => KeyResolve::None,
             }
@@ -1813,7 +1833,10 @@ fn command_band_intercept(key: KeyEvent, state: &AppState) -> Option<Action> {
     // App chords (Ctrl+S, Alt+…) always fall through — including Ctrl+↑/↓,
     // which reach command history instead (SQ-0677 restored it once plain
     // ↑/↓ moved to column row navigation here).
-    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
         return None;
     }
     let plain = key.modifiers == KeyModifiers::NONE;
@@ -1853,7 +1876,11 @@ fn command_band_intercept(key: KeyEvent, state: &AppState) -> Option<Action> {
 /// past it — routine since SQ-0676, where typing goes to this very line), the
 /// new text is APPENDED instead of clobbering whatever they wrote: a pick
 /// never destroys text the player typed themselves.
-fn sync_band_phrase_to_input(input: &mut crate::text_field::TextField, old_text: &str, new_text: &str) {
+fn sync_band_phrase_to_input(
+    input: &mut crate::text_field::TextField,
+    old_text: &str,
+    new_text: &str,
+) {
     strip_band_tail(input, old_text);
     if new_text.is_empty() {
         return;
@@ -1914,8 +1941,11 @@ fn strip_band_tail(input: &mut crate::text_field::TextField, old_text: &str) {
 /// on a partial verb, e.g. `exa` + click `examine`, must replace it exactly
 /// like Tab does, not append after it).
 fn band_pick_row(state: &mut AppState, col: usize, idx: usize) {
-    let old_is_empty =
-        state.overlays.command_band.as_ref().is_some_and(|b| b.phrase_text().is_empty());
+    let old_is_empty = state
+        .overlays
+        .command_band
+        .as_ref()
+        .is_some_and(|b| b.phrase_text().is_empty());
     if old_is_empty {
         let keep = state.input.char_len() - state.current_partial().chars().count();
         state.input.truncate_chars(keep);
@@ -2011,10 +2041,9 @@ impl BandClickTracker {
     /// double RESETS the tracker: the submit emptied the prompt, so the next click on that row
     /// must read as a fresh pick, not a third beat of the same gesture.
     pub fn observe(&mut self, col: usize, idx: usize, now: std::time::Instant) -> bool {
-        let double = self
-            .last
-            .take()
-            .is_some_and(|(lc, li, lt)| lc == col && li == idx && now.duration_since(lt) < Self::WINDOW);
+        let double = self.last.take().is_some_and(|(lc, li, lt)| {
+            lc == col && li == idx && now.duration_since(lt) < Self::WINDOW
+        });
         if !double {
             self.last = Some((col, idx, now));
         }
@@ -2096,6 +2125,20 @@ fn config_screen_key_to_action(key: KeyEvent, focus: usize) -> Action {
 
 fn game_key_to_action(state: &AppState, key: KeyEvent) -> Action {
     let shift = key.modifiers == KeyModifiers::SHIFT;
+    if shift && state.room_tab_visible() {
+        match key.code {
+            KeyCode::Up => return Action::RoomDockScroll(-1),
+            KeyCode::Down => return Action::RoomDockScroll(1),
+            _ => {}
+        }
+    }
+    if shift && state.inventory_tab_visible() {
+        match key.code {
+            KeyCode::Up => return Action::InventoryDockScroll(-1),
+            KeyCode::Down => return Action::InventoryDockScroll(1),
+            _ => {}
+        }
+    }
     // The Documents tab (SQ-1681) is modeless like the map: Shift+Arrows and
     // Shift+PageUp/PageDown are never typed text, and with the Documents tab up the
     // map they would pan is not on screen. Up/Down move the list's selection (or
@@ -2104,9 +2147,27 @@ fn game_key_to_action(state: &AppState, key: KeyEvent) -> Action {
     if shift && state.documents_tab_visible() {
         let viewer = state.documents_tab.viewer_open();
         match key.code {
-            KeyCode::Up => return if viewer { Action::DocTabScroll(-1) } else { Action::DocTabSelect(-1) },
-            KeyCode::Down => return if viewer { Action::DocTabScroll(1) } else { Action::DocTabSelect(1) },
-            KeyCode::Right => return if viewer { Action::None } else { Action::DocTabOpen(None) },
+            KeyCode::Up => {
+                return if viewer {
+                    Action::DocTabScroll(-1)
+                } else {
+                    Action::DocTabSelect(-1)
+                }
+            }
+            KeyCode::Down => {
+                return if viewer {
+                    Action::DocTabScroll(1)
+                } else {
+                    Action::DocTabSelect(1)
+                }
+            }
+            KeyCode::Right => {
+                return if viewer {
+                    Action::None
+                } else {
+                    Action::DocTabOpen(None)
+                }
+            }
             KeyCode::Left => return Action::DocTabClose,
             KeyCode::PageUp => return Action::DocTabPage(-1),
             KeyCode::PageDown => return Action::DocTabPage(1),
@@ -2147,12 +2208,13 @@ fn game_key_to_action(state: &AppState, key: KeyEvent) -> Action {
         KeyCode::Backspace => Action::Backspace,
         // '/' at an EMPTY prompt promotes into the command palette (SQ-0419); '/'
         // mid-line stays a literal character (falls through to InputChar below).
-        KeyCode::Char('/') if key.modifiers == KeyModifiers::NONE && state.input.value.is_empty() => {
+        KeyCode::Char('/')
+            if key.modifiers == KeyModifiers::NONE && state.input.value.is_empty() =>
+        {
             Action::OpenCommandPalette { from_hotkey: false }
         }
         KeyCode::Char(c)
-            if key.modifiers == KeyModifiers::NONE
-                || key.modifiers == KeyModifiers::SHIFT =>
+            if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
         {
             Action::InputChar(c)
         }
@@ -2178,7 +2240,8 @@ pub fn page_scroll(current: u16, dir: i8, viewport_rows: u16, max_scroll: u16) -
 /// but the step is `floor(viewport_rows / 2)` (floored at 1) rather than a full
 /// page.
 pub fn half_page_scroll(current: u16, dir: i8, viewport_rows: u16, max_scroll: u16) -> u16 {
-    let next = crate::list_scroll::half_page_step(current as usize, dir as i32, viewport_rows as usize);
+    let next =
+        crate::list_scroll::half_page_step(current as usize, dir as i32, viewport_rows as usize);
     (next.min(u16::MAX as usize) as u16).min(max_scroll)
 }
 
@@ -2408,7 +2471,11 @@ pub fn apply_action(action: Action, state: &mut AppState, mapper: &mut Mapper) {
     // dispatch catches all of them in one place, including the arms that
     // return early, instead of asking every future input-touching arm to
     // remember (which is exactly how the two would drift apart).
-    let before = state.overlays.command_band.as_ref().map(|_| state.input.value.clone());
+    let before = state
+        .overlays
+        .command_band
+        .as_ref()
+        .map(|_| state.input.value.clone());
     apply_action_inner(action, state, mapper);
     if let Some(before) = before {
         if before != state.input.value {
@@ -2432,7 +2499,9 @@ pub fn band_react_to_input(state: &mut AppState) {
     let input = state.input.value.clone();
     let vp = state.modal_list_viewport;
     let anim = state.config.animation.clone();
-    let Some(b) = state.overlays.command_band.as_mut() else { return };
+    let Some(b) = state.overlays.command_band.as_mut() else {
+        return;
+    };
     b.row_sel = None;
     b.sync_from_input(&input);
     if let Some((col, idx)) = b.nearest_match(&input) {
@@ -2541,7 +2610,10 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             // Applying it exactly as Tab does keeps the two paths honest: `suggestion_active`
             // flips, so the bracketed preview reads as applied rather than still just a preview.
             let at_end = state.input.cursor >= state.input.char_len();
-            match state.suggestions.get(state.suggestion_idx % state.suggestions.len().max(1)) {
+            match state
+                .suggestions
+                .get(state.suggestion_idx % state.suggestions.len().max(1))
+            {
                 Some(c) if at_end => {
                     let completion = c.clone();
                     state.suggestion_active = true;
@@ -2573,7 +2645,10 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             if mapper.graph.layer_view(state.active_layer(&mapper.graph))
                 == mapper::layer::MapView::Matrix
             {
-                let rows = mapper.graph.rooms_in_layer(state.active_layer(&mapper.graph)).len();
+                let rows = mapper
+                    .graph
+                    .rooms_in_layer(state.active_layer(&mapper.graph))
+                    .len();
                 let max = rows.saturating_sub(1) as i32;
                 state.matrix_scroll.1 = (state.matrix_scroll.1 as i32 + dy).clamp(0, max) as u16;
                 state.matrix_scroll.0 = (state.matrix_scroll.0 as i32 + dx).clamp(0, 11) as u16;
@@ -2590,9 +2665,12 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::MatrixMove(delta) => {
             let layer = state.active_layer(&mapper.graph);
             if mapper.graph.layer_view(layer) == mapper::layer::MapView::Matrix {
-                if let Some(id) =
-                    crate::render::matrix::step_selection(&mapper.graph, layer, state.selected_room, delta)
-                {
+                if let Some(id) = crate::render::matrix::step_selection(
+                    &mapper.graph,
+                    layer,
+                    state.selected_room,
+                    delta,
+                ) {
                     // Selection only. Opening the room panel on every arrow press would cover
                     // the very table the player is stepping through; a CLICK still opens it,
                     // because a click is a deliberate "tell me about this one".
@@ -2690,7 +2768,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let progress_clone = std::sync::Arc::clone(&progress);
                 let handle = std::thread::spawn(move || {
-                    let frames = crate::tidy::run_tidy_pipeline(&mut g, layer, Some(progress_clone));
+                    let frames =
+                        crate::tidy::run_tidy_pipeline(&mut g, layer, Some(progress_clone));
                     (frames, g)
                 });
                 state.anim_build_job = Some(crate::state::AnimBuildJob {
@@ -2706,23 +2785,21 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             }
         }
 
-        Action::ReloadStyle => {
-            match crate::reload::reload_style(state) {
-                crate::reload::ReloadOutcome::Reloaded { warnings } => {
-                    for w in &warnings {
-                        state.push_transcript_kind(w, crate::state::TranscriptKind::Warning);
-                    }
-                    state.set_status("style reloaded");
+        Action::ReloadStyle => match crate::reload::reload_style(state) {
+            crate::reload::ReloadOutcome::Reloaded { warnings } => {
+                for w in &warnings {
+                    state.push_transcript_kind(w, crate::state::TranscriptKind::Warning);
                 }
-                crate::reload::ReloadOutcome::Failed { msg } => {
-                    state.push_transcript_kind(
-                        &format!("style reload failed: {}", msg),
-                        crate::state::TranscriptKind::Warning,
-                    );
-                    state.set_status("reload failed — keeping current style");
-                }
+                state.set_status("style reloaded");
             }
-        }
+            crate::reload::ReloadOutcome::Failed { msg } => {
+                state.push_transcript_kind(
+                    &format!("style reload failed: {}", msg),
+                    crate::state::TranscriptKind::Warning,
+                );
+                state.set_status("reload failed — keeping current style");
+            }
+        },
 
         Action::ToggleWatch => { /* handled in the run loop (owns the watcher) */ }
 
@@ -2742,7 +2819,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let progress_clone = std::sync::Arc::clone(&progress);
                 let handle = std::thread::spawn(move || {
-                    let frames = crate::tidy::run_tidy_pipeline(&mut g, layer, Some(progress_clone));
+                    let frames =
+                        crate::tidy::run_tidy_pipeline(&mut g, layer, Some(progress_clone));
                     (frames, g)
                 });
                 state.anim_build_job = Some(crate::state::AnimBuildJob {
@@ -2791,7 +2869,11 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         Action::CycleLayer(delta) => {
-            let mut ids: Vec<_> = mapper.graph.layers().keys().copied()
+            let mut ids: Vec<_> = mapper
+                .graph
+                .layers()
+                .keys()
+                .copied()
                 .filter(|&l| !mapper.graph.rooms_in_layer(l).is_empty())
                 .collect();
             ids.sort_unstable();
@@ -2838,15 +2920,26 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::CutNotesSelection => {}
         Action::ToggleTimedInput => {
             state.config.honor_timed_input = !state.config.honor_timed_input;
-            state.set_status(if state.config.honor_timed_input { "timed input on" } else { "timed input off" });
+            state.set_status(if state.config.honor_timed_input {
+                "timed input on"
+            } else {
+                "timed input off"
+            });
         }
         Action::ToggleSound => {
             // Reaching for the key is a decision, so it ends any hold `--sound`
             // had on this run's value — the same rule the settings rows follow
             // (SQ-0807).
-            state.config.one_run.release(crate::config::keys::ENABLE_SOUND);
+            state
+                .config
+                .one_run
+                .release(crate::config::keys::ENABLE_SOUND);
             state.config.enable_sound = !state.config.enable_sound;
-            state.set_status(if state.config.enable_sound { "sound on" } else { "sound off" });
+            state.set_status(if state.config.enable_sound {
+                "sound on"
+            } else {
+                "sound off"
+            });
             if !state.config.enable_sound {
                 state.reset_sound_sidecars();
             } else if state.audio.is_none() {
@@ -2859,7 +2952,9 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             let v = v.min(100);
             state.config.volume = v;
             state.set_status(format!("volume {v}"));
-            if let Some(b) = state.audio.as_mut() { b.set_volume(v); }
+            if let Some(b) = state.audio.as_mut() {
+                b.set_volume(v);
+            }
         }
         Action::ToggleRoomDiagnostics => {
             // Closed dock: open it straight onto the diagnostics body. Open dock:
@@ -2880,7 +2975,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 state.overlays.hotkey_dialog = false;
                 state.overlays.dialog_focus = 0;
                 // Opens empty: an empty submit clears the room's custom label.
-                state.overlays.text_entry = Some(TextEntryDialog::new(TextEntryKind::RenameRoom(id), ""));
+                state.overlays.text_entry =
+                    Some(TextEntryDialog::new(TextEntryKind::RenameRoom(id), ""));
             }
         }
         Action::RenameLayer => {
@@ -2888,40 +2984,51 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             let current_name = mapper.graph.layer_name(layer).to_owned();
             state.overlays.hotkey_dialog = false;
             state.overlays.dialog_focus = 0;
-            state.overlays.text_entry =
-                Some(TextEntryDialog::new(TextEntryKind::RenameLayer(layer), current_name));
+            state.overlays.text_entry = Some(TextEntryDialog::new(
+                TextEntryKind::RenameLayer(layer),
+                current_name,
+            ));
         }
         Action::EditNotes => {
             if let Some(id) = state.selected_room {
-                let current_notes =
-                    mapper.graph.room(id).map(|r| r.notes.clone()).unwrap_or_default();
+                let current_notes = mapper
+                    .graph
+                    .room(id)
+                    .map(|r| r.notes.clone())
+                    .unwrap_or_default();
                 state.overlays.hotkey_dialog = false;
                 state.overlays.dialog_focus = 0;
                 // Prefilled with the room's existing notes (caret at the end): submit
                 // replaces the notes with the field's contents (empty clears them).
-                state.overlays.text_entry =
-                    Some(TextEntryDialog::new(TextEntryKind::EditNotes(id), current_notes));
+                state.overlays.text_entry = Some(TextEntryDialog::new(
+                    TextEntryKind::EditNotes(id),
+                    current_notes,
+                ));
             }
         }
         Action::RelabelSelectedEdge => {
             if let Some(id) = state.selected_room {
                 // Find the first outgoing connection for this room.
-                if let Some(conn) =
-                    mapper.graph.connections().iter().find(|c| c.origin == id)
-                {
+                if let Some(conn) = mapper.graph.connections().iter().find(|c| c.origin == id) {
                     let old_dir = conn.dir;
                     state.overlays.hotkey_dialog = false;
                     state.overlays.dialog_focus = 0;
-                    state.overlays.text_entry =
-                        Some(TextEntryDialog::new(TextEntryKind::RelabelEdge(id, old_dir), ""));
+                    state.overlays.text_entry = Some(TextEntryDialog::new(
+                        TextEntryKind::RelabelEdge(id, old_dir),
+                        "",
+                    ));
                 }
             }
         }
         Action::DeleteSelectedConnection => {
             if let Some(id) = state.selected_room {
                 // Delete the first outgoing connection for this room.
-                if let Some(conn) =
-                    mapper.graph.connections().iter().find(|c| c.origin == id).cloned()
+                if let Some(conn) = mapper
+                    .graph
+                    .connections()
+                    .iter()
+                    .find(|c| c.origin == id)
+                    .cloned()
                 {
                     // `delete_connection` bumps `Mapper::struct_gen` itself (SQ-1544).
                     mapper.delete_connection(conn.origin, conn.dir);
@@ -2939,7 +3046,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Command palette actions (SQ-0419) ─────────────────────────────────
-
         Action::OpenCommandPalette { from_hotkey } => {
             // The palette owns its own input line; the story prompt underneath is
             // left untouched, so closing restores it unchanged.
@@ -3002,7 +3108,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 let anim = state.config.animation.clone();
                 let len = crate::complete::palette_candidates(p.query()).len();
                 p.scroll.len(len);
-                p.scroll.select(p.scroll.selected.min(len.saturating_sub(1)), vp, &anim);
+                p.scroll
+                    .select(p.scroll.selected.min(len.saturating_sub(1)), vp, &anim);
             }
         }
 
@@ -3025,7 +3132,12 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         Action::PaletteClose => {
-            let from_hotkey = state.overlays.palette.as_ref().map(|p| p.from_hotkey).unwrap_or(false);
+            let from_hotkey = state
+                .overlays
+                .palette
+                .as_ref()
+                .map(|p| p.from_hotkey)
+                .unwrap_or(false);
             state.overlays.palette = None;
             if from_hotkey {
                 state.overlays.hotkey_dialog = true;
@@ -3033,7 +3145,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Saves-manager actions ─────────────────────────────────────────────
-
         Action::OpenSaves => {
             // The list must be populated by the caller (main.rs has dir + ifid).
             // apply_action only sets up the state; the caller refreshes the list
@@ -3116,7 +3227,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
 
         // SavesLoad, SavesSaveAs, SavesDelete: state-only pre-work here;
         // the actual I/O is caller-handled.
-
         Action::SavesSaveAs => {
             // Open the save-name dialog (a common-dialog modal, not a bottom-bar
             // prompt); on submit the caller performs the host Save State save.
@@ -3148,10 +3258,13 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         // SavesLoad is caller-handled.
 
         // ── VFS file-picker actions ─────────────────────────────────────────────
-
         Action::FilePickerNav(delta) => {
             if let Some(fp) = &mut state.overlays.file_picker {
-                if delta < 0 { fp.move_up() } else { fp.move_down() }
+                if delta < 0 {
+                    fp.move_up()
+                } else {
+                    fp.move_down()
+                }
             }
         }
         Action::FilePickerPick => {
@@ -3171,7 +3284,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         // ── File-browser actions ──────────────────────────────────────────────
 
         // SavesImport, FbEnter are caller-handled.
-
         Action::FbNav(delta) => {
             let vp = state.modal_list_viewport;
             let anim = state.config.animation.clone();
@@ -3180,7 +3292,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                     let len = fb.entries.len();
                     fb.scroll.len(len);
                     // Preserve the existing wrap-around behavior via select().
-                    let next = ((fb.scroll.selected as i32 + delta).rem_euclid(len as i32)) as usize;
+                    let next =
+                        ((fb.scroll.selected as i32 + delta).rem_euclid(len as i32)) as usize;
                     fb.scroll.select(next, vp, &anim);
                 }
             }
@@ -3220,7 +3333,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Room dock actions (SQ-0692) ───────────────────────────────────────
-
         Action::ActivatePane(focus) => {
             // Pane focus only. The room dock is not an overlay and deliberately
             // survives a pane switch — it is a readout you keep up while you play,
@@ -3267,15 +3379,13 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Room context menu (SQ-1265) ───────────────────────────────────────
-
         Action::OpenRoomMenu(id, col, row) => {
             // The same pin a left click gives — keeping whichever body was last
             // shown, per `pin_room_dock` — so the menu and the panel underneath
             // always agree on which room is meant.
             let view = state.room_dock_view;
             pin_room_dock(state, mapper, id, view);
-            state.overlays.room_menu =
-                Some(crate::room_menu::RoomMenu::new(id, col, row));
+            state.overlays.room_menu = Some(crate::room_menu::RoomMenu::new(id, col, row));
         }
 
         Action::RoomMenuNav(delta) => {
@@ -3290,10 +3400,15 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Mouse drag-pan actions ────────────────────────────────────────────
-
         Action::BeginDragPan(col, row) => {
             use crate::state::DragState;
-            state.drag = Some(DragState { last: (col, row), acc_x: 0, acc_y: 0, moved: false, map_click: None });
+            state.drag = Some(DragState {
+                last: (col, row),
+                acc_x: 0,
+                acc_y: 0,
+                moved: false,
+                map_click: None,
+            });
         }
 
         // SQ-1325: same shape as `BeginDragPan` above, but records the plain-click
@@ -3301,7 +3416,13 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         // for `EndDragPan` to replay if the pointer never moves.
         Action::BeginMapDrag(col, row, click) => {
             use crate::state::DragState;
-            state.drag = Some(DragState { last: (col, row), acc_x: 0, acc_y: 0, moved: false, map_click: Some(click) });
+            state.drag = Some(DragState {
+                last: (col, row),
+                acc_x: 0,
+                acc_y: 0,
+                moved: false,
+                map_click: Some(click),
+            });
         }
 
         Action::DragPanTo(col, row) => {
@@ -3324,7 +3445,11 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         // left-button drag that DID move) carries no `map_click` / has `moved`
         // set, so this is a no-op for both.
         Action::EndDragPan => {
-            let click = state.drag.take().filter(|d| !d.moved).and_then(|d| d.map_click);
+            let click = state
+                .drag
+                .take()
+                .filter(|d| !d.moved)
+                .and_then(|d| d.map_click);
             end_map_click(state, mapper, click, std::time::Instant::now());
         }
 
@@ -3350,12 +3475,18 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 state.selection_edge = 0;
             } else if let Some(g) = state.transcript_geom.get() {
                 if let Some(sel) = &mut state.selection {
-                    if let Some(p) = screen_to_point(g, col, row) { sel.head = p; }
+                    if let Some(p) = screen_to_point(g, col, row) {
+                        sel.head = p;
+                    }
                 }
                 // Edge detection for auto-scroll: pointer at/above top → -1; at/below bottom → +1.
-                state.selection_edge = if row <= g.area.y { -1 }
-                    else if row >= g.area.bottom().saturating_sub(1) { 1 }
-                    else { 0 };
+                state.selection_edge = if row <= g.area.y {
+                    -1
+                } else if row >= g.area.bottom().saturating_sub(1) {
+                    1
+                } else {
+                    0
+                };
                 // Step once now so a drag that reaches the edge scrolls even without a tick.
                 apply_selection_autoscroll(state);
             }
@@ -3368,7 +3499,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Transcript scroll ─────────────────────────────────────────────────
-
         Action::TranscriptScroll(delta) => {
             let target = if delta < 0 {
                 state.transcript_scroll.saturating_sub((-delta) as u16)
@@ -3388,19 +3518,37 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::DocTabScroll(n) => state.documents_tab.scroll(n as isize),
         Action::DocTabPage(d) => state.documents_tab.scroll_page(d),
         Action::DocTabClickRow(idx) => {
-            if state.documents_tab.click_row(idx, std::time::Instant::now()) {
+            if state
+                .documents_tab
+                .click_row(idx, std::time::Instant::now())
+            {
                 crate::documents_tab::open_selected(state, Some(idx), false);
             }
         }
         Action::DocTabOpenLink(url) => crate::opener::open(&url),
 
         Action::SetJournalTab(tab) => {
-            state.set_journal_tab(tab);            persist_journal_tab(state);
+            state.set_journal_tab(tab);
+            persist_journal_tab(state);
         }
 
         Action::JournalStepTab(forward) => {
-            let next = if forward { state.journal_tab.next() } else { state.journal_tab.prev() };
+            let next = if forward {
+                state.journal_tab.next()
+            } else {
+                state.journal_tab.prev()
+            };
             state.set_journal_tab(next);
+            persist_journal_tab(state);
+        }
+
+        Action::JournalStepFilesSubtab => {
+            let next = state.current_files_subtab().next();
+            let tab = match next {
+                crate::journal::FilesSubtab::Hints => crate::journal::JournalTab::Hints,
+                crate::journal::FilesSubtab::Documents => crate::journal::JournalTab::Documents,
+            };
+            state.set_journal_tab(tab);
             persist_journal_tab(state);
         }
 
@@ -3587,7 +3735,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Resize mode actions ───────────────────────────────────────────────
-
         Action::ResizePanes => {
             let visible = state.resize_targets_visible();
             if let Some(first) = visible.first() {
@@ -3618,8 +3765,17 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             use ResizeNavKind::*;
             match state.resize_target {
                 crate::state::ResizeTarget::StoryMap => match dir {
-                    Left => state.pane_sizes.split_ratio = state.pane_sizes.split_ratio.saturating_sub(STEP).max(MIN_SPLIT_PCT),
-                    Right => state.pane_sizes.split_ratio = (state.pane_sizes.split_ratio + STEP).min(MAX_SPLIT_PCT),
+                    Left => {
+                        state.pane_sizes.split_ratio = state
+                            .pane_sizes
+                            .split_ratio
+                            .saturating_sub(STEP)
+                            .max(MIN_SPLIT_PCT)
+                    }
+                    Right => {
+                        state.pane_sizes.split_ratio =
+                            (state.pane_sizes.split_ratio + STEP).min(MAX_SPLIT_PCT)
+                    }
                     _ => {}
                 },
                 // The command band is a bottom band now (SQ-0664), so it resizes
@@ -3634,8 +3790,11 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                                 (state.pane_sizes.band_height + 1).min(MAX_BAND_ROWS)
                         }
                         Down => {
-                            state.pane_sizes.band_height =
-                                state.pane_sizes.band_height.saturating_sub(1).max(MIN_BAND_ROWS)
+                            state.pane_sizes.band_height = state
+                                .pane_sizes
+                                .band_height
+                                .saturating_sub(1)
+                                .max(MIN_BAND_ROWS)
                         }
                         _ => {}
                     }
@@ -3645,7 +3804,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         }
 
         // ── Config screen actions ─────────────────────────────────────────────
-
         Action::OpenConfig => {
             state.overlays.hotkey_dialog = false;
             state.overlays.dialog_focus = 0;
@@ -3698,7 +3856,12 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::ConfigToggle => {
             if state.overlays.config_screen.is_some() {
                 // Split the borrow: take the selected row, then call helper.
-                let selected = state.overlays.config_screen.as_ref().map(|cs| cs.scroll.selected).unwrap_or(0);
+                let selected = state
+                    .overlays
+                    .config_screen
+                    .as_ref()
+                    .map(|cs| cs.scroll.selected)
+                    .unwrap_or(0);
                 config_toggle_or_edit(selected, state);
             }
         }
@@ -3714,7 +3877,9 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
                 let field = config_path_field(cs.scroll.selected);
                 if let Some(f) = field {
                     let current = match &f {
-                        crate::state::ConfigPathField::UserDir => cs.working.user_dir.to_string_lossy().to_string(),
+                        crate::state::ConfigPathField::UserDir => {
+                            cs.working.user_dir.to_string_lossy().to_string()
+                        }
                     };
                     state.overlays.dialog_focus = 0;
                     state.overlays.text_entry = Some(TextEntryDialog::new(
@@ -3768,7 +3933,6 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         Action::OpenHints => {}
 
         // ── Replay / rewind actions ───────────────────────────────────────────
-
         Action::OpenHistory => {
             // Three outcomes, and the point of SQ-1091 is that two of them used to
             // be one silent no-op: "there is nothing to replay" and "the thing
@@ -3776,7 +3940,8 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
             // and only the second is something the player can act on.
             state.overlays.hotkey_dialog = false;
             if !state.history.is_empty() {
-                state.overlays.replay = Some(crate::state::ReplayState::new(state.history.len() - 1));
+                state.overlays.replay =
+                    Some(crate::state::ReplayState::new(state.history.len() - 1));
             } else if !state.config.record_turn_history {
                 state.overlays.history_prompt = true;
                 state.overlays.dialog_focus = 0;
@@ -3830,8 +3995,7 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
         // ReplayResume is caller-handled in main.rs (needs the live session/VM).
         Action::ReplayResume => {}
 
-        Action::None => {}
-        // Note: OpenHotkeyDialog and CloseHotkeyDialog are handled above.
+        Action::None => {} // Note: OpenHotkeyDialog and CloseHotkeyDialog are handled above.
     }
 }
 
@@ -3839,12 +4003,21 @@ fn apply_action_inner(action: Action, state: &mut AppState, mapper: &mut Mapper)
 
 /// Map a story-pane screen cell to an absolute wrapped-transcript Point, clamped to
 /// the visible rows and the story band. `None` if geometry is degenerate. (SQ-0197)
-pub(crate) fn screen_to_point(g: crate::clipboard::TranscriptGeom, col: u16, row: u16)
-    -> Option<crate::clipboard::Point> {
-    if g.area.width == 0 || g.area.height == 0 { return None; }
-    let dy = row.saturating_sub(g.area.y).min(g.area.height.saturating_sub(1));
+pub(crate) fn screen_to_point(
+    g: crate::clipboard::TranscriptGeom,
+    col: u16,
+    row: u16,
+) -> Option<crate::clipboard::Point> {
+    if g.area.width == 0 || g.area.height == 0 {
+        return None;
+    }
+    let dy = row
+        .saturating_sub(g.area.y)
+        .min(g.area.height.saturating_sub(1));
     let abs = (g.first_abs_row + dy as usize).min(g.total_rows.saturating_sub(1));
-    let c = col.saturating_sub(g.area.x).min(g.area.width.saturating_sub(1));
+    let c = col
+        .saturating_sub(g.area.x)
+        .min(g.area.width.saturating_sub(1));
     Some(crate::clipboard::Point { row: abs, col: c })
 }
 
@@ -3856,19 +4029,31 @@ pub fn apply_selection_autoscroll(state: &mut AppState) {
     // outside the story pane), and scrolling the transcript for a drag that selects
     // nothing is exactly the SQ-0654 symptom — so honour the doc comment here too,
     // not only at the one call site that remembered to check.
-    if state.selection_edge == 0 || state.selection.is_none() { return; }
-    let Some(g) = state.transcript_geom.get() else { return };
+    if state.selection_edge == 0 || state.selection.is_none() {
+        return;
+    }
+    let Some(g) = state.transcript_geom.get() else {
+        return;
+    };
     let max_scroll = g.total_rows.saturating_sub(g.area.height as usize) as u16;
     let cur = state.transcript_scroll;
-    let next = if state.selection_edge < 0 { cur.saturating_add(1).min(max_scroll) }
-               else { cur.saturating_sub(1) };
-    if next == cur { return; } // at a limit
+    let next = if state.selection_edge < 0 {
+        cur.saturating_add(1).min(max_scroll)
+    } else {
+        cur.saturating_sub(1)
+    };
+    if next == cur {
+        return;
+    } // at a limit
     state.scroll_transcript_to(next);
     if let Some(sel) = &mut state.selection {
         // Top edge reveals an older row above → head.row moves up by 1; bottom edge
         // reveals a newer row below → head.row moves down by 1.
-        if state.selection_edge < 0 { sel.head.row = sel.head.row.saturating_sub(1); }
-        else { sel.head.row = (sel.head.row + 1).min(g.total_rows.saturating_sub(1)); }
+        if state.selection_edge < 0 {
+            sel.head.row = sel.head.row.saturating_sub(1);
+        } else {
+            sel.head.row = (sel.head.row + 1).min(g.total_rows.saturating_sub(1));
+        }
     }
 }
 
@@ -3970,8 +4155,14 @@ pub fn refresh_seen_words(state: &mut AppState, engine: &dyn crate::engine::Engi
         let mut out: Vec<String> = Vec::new();
         let mut things: Vec<String> = Vec::new();
         for w in tokens.iter().rev() {
-            let knows = |x: &str| engine.knows_word(x).unwrap_or_else(|| vocab.is_some_and(|v| v.knows(x)));
-            let Some(w) = crate::complete::story_word(w, &knows) else { continue };
+            let knows = |x: &str| {
+                engine
+                    .knows_word(x)
+                    .unwrap_or_else(|| vocab.is_some_and(|v| v.knows(x)))
+            };
+            let Some(w) = crate::complete::story_word(w, &knows) else {
+                continue;
+            };
             if out.contains(&w) {
                 continue;
             }
@@ -4057,9 +4248,9 @@ pub(crate) fn slash_suggestions(body_token: &str, names: &[String], limit: usize
             let at = ln.find(&lower)?;
             // `at` is a byte index; step back by CHAR so a non-ASCII token can't split one.
             let rank = match ln[..at].chars().next_back() {
-                None => 0,       // prefix
-                Some('-') => 1,  // start of a name-part
-                Some(_) => 2,    // mid-word
+                None => 0,      // prefix
+                Some('-') => 1, // start of a name-part
+                Some(_) => 2,   // mid-word
             };
             Some((rank, n.clone()))
         })
@@ -4084,7 +4275,8 @@ pub(crate) fn slash_suggestions(body_token: &str, names: &[String], limit: usize
 /// host with no `AppState` of its own can call directly.
 fn apply_completion(state: &mut AppState, completion: &str) {
     let prefix = state.config.command_prefix;
-    let new_line = crate::complete::apply_completion_to_line(&state.input.value, prefix, completion);
+    let new_line =
+        crate::complete::apply_completion_to_line(&state.input.value, prefix, completion);
     state.input.set(new_line, true);
 }
 
@@ -4279,8 +4471,11 @@ pub fn apply_text_entry(dlg: TextEntryDialog, state: &mut AppState, mapper: &mut
             }
         }
         TextEntryKind::CreateFile => {
-            state.filename_submitted =
-                Some(if value.trim().is_empty() { None } else { Some(value) });
+            state.filename_submitted = Some(if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            });
         }
     }
 }
@@ -4418,7 +4613,10 @@ fn parse_move_region_arg(
 #[derive(Debug)]
 pub enum SeamRefusal {
     /// The seam was named and the region walk turned it down; the pair is the passage tried.
-    Region(mapper::layer::RegionRefusal, Option<(mapper::graph::RoomId, Direction)>),
+    Region(
+        mapper::layer::RegionRefusal,
+        Option<(mapper::graph::RoomId, Direction)>,
+    ),
     /// Several passages lead into the room and each cuts a different map. Nothing to auto-pick
     /// from, so the player says which. (Lane D turns this list into a picker; until then it is a
     /// refusal that names the candidates and the command that resolves them.)
@@ -4454,7 +4652,13 @@ pub fn choose_region(
     graph: &mapper::graph::MapGraph,
     room: mapper::graph::RoomId,
     dir: Option<Direction>,
-) -> Result<(mapper::layer::Region, Option<(mapper::graph::RoomId, Direction)>), SeamRefusal> {
+) -> Result<
+    (
+        mapper::layer::Region,
+        Option<(mapper::graph::RoomId, Direction)>,
+    ),
+    SeamRefusal,
+> {
     if let Some(d) = dir {
         let named: Vec<mapper::layer::InboundSeam> = mapper::layer::inbound_seams(graph, room)
             .into_iter()
@@ -4503,7 +4707,12 @@ pub fn move_targets(
     }
     if !(src == MAIN_LAYER && is_whole) {
         out.extend(
-            graph.layers().keys().copied().filter(|&t| t != src).map(MoveTarget::Existing),
+            graph
+                .layers()
+                .keys()
+                .copied()
+                .filter(|&t| t != src)
+                .map(MoveTarget::Existing),
         );
     }
     out
@@ -4533,7 +4742,9 @@ fn apply_move_region(state: &mut AppState, mapper: &mut Mapper, arg: &str) {
         // A refusal used to be silent, which reads as a broken command — say which of the several
         // quite different reasons it was (SQ-0360).
         Err(SeamRefusal::Region(why, tried)) => {
-            state.notifications.push(region_refusal_message(&mapper.graph, room, tried, why));
+            state
+                .notifications
+                .push(region_refusal_message(&mapper.graph, room, tried, why));
             return;
         }
         Err(SeamRefusal::Ambiguous(seams)) => {
@@ -4622,7 +4833,9 @@ fn perform_move(
             Some(landed)
         }
         Err(why) => {
-            state.notifications.push(move_refusal_message(&mapper.graph, region.anchor, why));
+            state
+                .notifications
+                .push(move_refusal_message(&mapper.graph, region.anchor, why));
             None
         }
     }
@@ -4630,7 +4843,10 @@ fn perform_move(
 
 /// A room's name, or `#id` when the map has forgotten it.
 fn room_label(graph: &mapper::graph::MapGraph, id: mapper::graph::RoomId) -> String {
-    graph.room(id).map(|r| r.label().to_string()).unwrap_or_else(|| crate::roomid::room_label_no(graph, id))
+    graph
+        .room(id)
+        .map(|r| r.label().to_string())
+        .unwrap_or_else(|| crate::roomid::room_label_no(graph, id))
 }
 
 /// Every room a region holds, named, in region order — the bulleted list under the question.
@@ -4643,7 +4859,11 @@ fn region_rooms_lines(
     graph: &mapper::graph::MapGraph,
     region: &mapper::layer::Region,
 ) -> Vec<String> {
-    region.rooms.iter().map(|&id| room_label(graph, id)).collect()
+    region
+        .rooms
+        .iter()
+        .map(|&id| room_label(graph, id))
+        .collect()
 }
 
 /// Turn a destination list into prompt options, in the order it was ranked.
@@ -4737,37 +4957,39 @@ pub fn open_layer_suggestion(
             ],
         ),
         // The seam is the way IN, and the region is the maze side of it.
-        Trigger::Name => (
-            "This looks like a maze.".to_string(),
-            {
-                let mut body =
-                    vec![format!("{} calls itself a maze.", room_label(graph, suggestion.region.anchor))];
-                // Read from `suggestion_sets_maze_flag` rather than stated as a bare fact: that is
-                // also what `accept_layer_suggestion` consults to decide whether to actually set
-                // the flag (SQ-1551), so this sentence cannot promise something accepting won't do.
-                if suggestion_sets_maze_flag(suggestion.trigger) {
-                    body.push("Separating it also flags the layer as a maze.".to_string());
-                }
-                body
-            },
-        ),
+        Trigger::Name => ("This looks like a maze.".to_string(), {
+            let mut body = vec![format!(
+                "{} calls itself a maze.",
+                room_label(graph, suggestion.region.anchor)
+            )];
+            // Read from `suggestion_sets_maze_flag` rather than stated as a bare fact: that is
+            // also what `accept_layer_suggestion` consults to decide whether to actually set
+            // the flag (SQ-1551), so this sentence cannot promise something accepting won't do.
+            if suggestion_sets_maze_flag(suggestion.trigger) {
+                body.push("Separating it also flags the layer as a maze.".to_string());
+            }
+            body
+        }),
     };
     let options = dest_options(graph, &suggestion.destinations);
     if options.is_empty() {
         return; // `mapper::suggest` never builds one of these, but an empty list has no question
     }
-    open_region_prompt(state, RegionPrompt {
-        kind: RegionPromptKind::Suggest {
-            trigger: suggestion.trigger,
-            seam: suggestion.seam,
-            region: suggestion.region.clone(),
+    open_region_prompt(
+        state,
+        RegionPrompt {
+            kind: RegionPromptKind::Suggest {
+                trigger: suggestion.trigger,
+                seam: suggestion.seam,
+                region: suggestion.region.clone(),
+            },
+            title,
+            body,
+            rooms: region_rooms_lines(graph, &suggestion.region),
+            options,
+            choice: 0,
         },
-        title,
-        body,
-        rooms: region_rooms_lines(graph, &suggestion.region),
-        options,
-        choice: 0,
-    });
+    );
 }
 
 /// Tier 3: several passages lead into the selected room and each cuts a different map (SQ-0439).
@@ -4800,19 +5022,22 @@ fn open_seam_prompt(
     if options.is_empty() {
         return;
     }
-    open_region_prompt(state, RegionPrompt {
-        kind: RegionPromptKind::PickSeam { room, dest },
-        title: "Which passage should be cut?".to_string(),
-        body: vec![
-            format!("Several passages lead into {}.", room_label(graph, room)),
-            "Each one takes a different set of rooms.".to_string(),
-        ],
-        // Deliberately blank: the rooms are not settled until a passage is, and each option
-        // carries its own count.
-        rooms: Vec::new(),
-        options,
-        choice: 0,
-    });
+    open_region_prompt(
+        state,
+        RegionPrompt {
+            kind: RegionPromptKind::PickSeam { room, dest },
+            title: "Which passage should be cut?".to_string(),
+            body: vec![
+                format!("Several passages lead into {}.", room_label(graph, room)),
+                "Each one takes a different set of rooms.".to_string(),
+            ],
+            // Deliberately blank: the rooms are not settled until a passage is, and each option
+            // carries its own count.
+            rooms: Vec::new(),
+            options,
+            choice: 0,
+        },
+    );
 }
 
 /// The destination half of the same question: the rooms are settled and more than one layer could
@@ -4830,14 +5055,17 @@ fn open_dest_prompt(
         return;
     }
     let rooms = region_rooms_lines(graph, &region);
-    open_region_prompt(state, RegionPrompt {
-        kind: RegionPromptKind::PickDest { region, cut },
-        title: "Where do these rooms go?".to_string(),
-        body: vec!["More than one layer could take them.".to_string()],
-        rooms,
-        options,
-        choice: 0,
-    });
+    open_region_prompt(
+        state,
+        RegionPrompt {
+            kind: RegionPromptKind::PickDest { region, cut },
+            title: "Where do these rooms go?".to_string(),
+            body: vec!["More than one layer could take them.".to_string()],
+            rooms,
+            options,
+            choice: 0,
+        },
+    );
 }
 
 /// Apply what the player told the region prompt to do, and close it (SQ-0439).
@@ -4846,15 +5074,23 @@ fn open_dest_prompt(
 /// crossing / never ask about this passage / never ask about anything on this map (SQ-1298) — so
 /// only the last three write anything down, and accepting writes nothing at all: the move puts the
 /// seam across two layers, which silences it by construction.
-pub fn apply_region_prompt(state: &mut AppState, mapper: &mut Mapper, act: crate::state::RegionPromptAct) {
+pub fn apply_region_prompt(
+    state: &mut AppState,
+    mapper: &mut Mapper,
+    act: crate::state::RegionPromptAct,
+) {
     use crate::state::{RegionOption, RegionPromptAct as A, RegionPromptKind as K};
     use mapper::suggest::SeamDecision;
-    let Some(prompt) = state.overlays.region_prompt.take() else { return };
+    let Some(prompt) = state.overlays.region_prompt.take() else {
+        return;
+    };
     let chosen = prompt.chosen().cloned();
     match (&prompt.kind, act) {
         (_, A::Dismiss) => {}
         (K::Suggest { seam, .. }, A::Defer) => {
-            mapper.graph.set_seam_decision(*seam, SeamDecision::Deferred);
+            mapper
+                .graph
+                .set_seam_decision(*seam, SeamDecision::Deferred);
         }
         (K::Suggest { seam, .. }, A::Never) => {
             mapper.graph.set_seam_decision(*seam, SeamDecision::Ignored);
@@ -4864,16 +5100,31 @@ pub fn apply_region_prompt(state: &mut AppState, mapper: &mut Mapper, act: crate
         }
         // A pick has nothing to remember: declining to choose decided nothing.
         (_, A::Defer | A::Never | A::NeverForStory) => {}
-        (K::Suggest { trigger, region, .. }, A::Accept) => {
-            let Some(RegionOption::Dest { target, .. }) = chosen else { return };
+        (
+            K::Suggest {
+                trigger, region, ..
+            },
+            A::Accept,
+        ) => {
+            let Some(RegionOption::Dest { target, .. }) = chosen else {
+                return;
+            };
             // The player confirmed it is a maze by accepting a prompt that said so. A structural
             // suggestion sets nothing — a cellar is not a maze. `suggestion_sets_maze_flag` is the
             // one place that rule lives, so the prompt's own "flags it as a maze" line (built in
             // `open_layer_suggestion`) cannot say something this accept doesn't actually do.
-            accept_layer_suggestion(state, mapper, region, target, suggestion_sets_maze_flag(*trigger));
+            accept_layer_suggestion(
+                state,
+                mapper,
+                region,
+                target,
+                suggestion_sets_maze_flag(*trigger),
+            );
         }
         (K::PickSeam { room, dest }, A::Accept) => {
-            let Some(RegionOption::Seam { from, dir, .. }) = chosen else { return };
+            let Some(RegionOption::Seam { from, dir, .. }) = chosen else {
+                return;
+            };
             // Recomputed with the same walker `inbound_seams` used, so the region cannot disagree
             // with the one the option was labelled from.
             match mapper::layer::region_at_arrival(&mapper.graph, from, dir) {
@@ -4888,7 +5139,9 @@ pub fn apply_region_prompt(state: &mut AppState, mapper: &mut Mapper, act: crate
             }
         }
         (K::PickDest { region, cut }, A::Accept) => {
-            let Some(RegionOption::Dest { target, .. }) = chosen else { return };
+            let Some(RegionOption::Dest { target, .. }) = chosen else {
+                return;
+            };
             perform_move(state, mapper, region, *cut, target);
         }
     }
@@ -4946,7 +5199,10 @@ fn region_refusal_message(
 ) -> String {
     use mapper::layer::RegionRefusal as R;
     let name = |id: mapper::graph::RoomId| {
-        graph.room(id).map(|r| r.label().to_string()).unwrap_or_else(|| crate::roomid::room_label_no(graph, id))
+        graph
+            .room(id)
+            .map(|r| r.label().to_string())
+            .unwrap_or_else(|| crate::roomid::room_label_no(graph, id))
     };
     let here = name(room);
     let layer = graph.layer_name(graph.layer_of(room));
@@ -4970,7 +5226,9 @@ fn region_refusal_message(
             name(from)
         ),
         (R::LeavesLayer, None) => {
-            format!("move-region: {here}'s passage already leaves {layer}. A seam divides one layer.")
+            format!(
+                "move-region: {here}'s passage already leaves {layer}. A seam divides one layer."
+            )
         }
     }
 }
@@ -5068,8 +5326,13 @@ pub fn recenter_for_active_layer(state: &mut AppState, graph: &mapper::graph::Ma
     if graph.layer_view(layer) == mapper::layer::MapView::Matrix {
         if let (Some(id), Some((w, h))) = (select, state.map_pane_size.get()) {
             let area = ratatui::layout::Rect::new(0, 0, w, h);
-            state.matrix_scroll.1 =
-                crate::render::matrix::scroll_to_show(graph, layer, id, area, state.matrix_scroll.1);
+            state.matrix_scroll.1 = crate::render::matrix::scroll_to_show(
+                graph,
+                layer,
+                id,
+                area,
+                state.matrix_scroll.1,
+            );
         }
     } else {
         let (pw, ph) = state.map_pane_size.get().unwrap_or((80, 24));
@@ -5083,8 +5346,12 @@ fn layer_bbox_center(
     graph: &mapper::graph::MapGraph,
     rooms: &[mapper::graph::RoomId],
 ) -> (i32, i32) {
-    let mut positions = rooms.iter().filter_map(|&id| graph.room(id).and_then(|r| r.pos));
-    let Some(first) = positions.next() else { return (0, 0) };
+    let mut positions = rooms
+        .iter()
+        .filter_map(|&id| graph.room(id).and_then(|r| r.pos));
+    let Some(first) = positions.next() else {
+        return (0, 0);
+    };
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.0, first.0, first.1, first.1);
     for (x, y) in positions {
         min_x = min_x.min(x);
@@ -5141,49 +5408,159 @@ fn config_path_field(row: usize) -> Option<crate::state::ConfigPathField> {
 
 /// Apply ConfigToggle to the selected row: toggle bool, advance enum by 1, or open path edit.
 fn config_toggle_or_edit(selected: usize, state: &mut AppState) {
-    if let (Some(key), Some(cs)) =
-        (one_run_key_for_row(selected), state.overlays.config_screen.as_mut())
-    {
+    if let (Some(key), Some(cs)) = (
+        one_run_key_for_row(selected),
+        state.overlays.config_screen.as_mut(),
+    ) {
         cs.working.one_run.release(key);
     }
     match selected {
         0 => {
             // user_dir — open the text-entry path edit dialog.
-            let current = state.overlays.config_screen.as_ref()
+            let current = state
+                .overlays
+                .config_screen
+                .as_ref()
                 .map(|cs| cs.working.user_dir.to_string_lossy().to_string())
                 .unwrap_or_default();
             state.overlays.dialog_focus = 0;
             state.overlays.text_entry = Some(TextEntryDialog::new(
-                TextEntryKind::ConfigEditPath { field: crate::state::ConfigPathField::UserDir },
+                TextEntryKind::ConfigEditPath {
+                    field: crate::state::ConfigPathField::UserDir,
+                },
                 current,
             ));
         }
-        1 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.auto_load = !cs.working.auto_load; } }
-        2 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.auto_save = !cs.working.auto_save; } }
-        3 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.prompt_save_on_quit = !cs.working.prompt_save_on_quit; } }
-        4 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.prompt_load_on_launch = !cs.working.prompt_load_on_launch; } }
-        5 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.show_room_numbers = !cs.working.show_room_numbers; } }
-        6 => { if let Some(cs) = &mut state.overlays.config_screen { config_cycle_background_tidy(&mut cs.working.background_tidy, 1); } }
-        7 => { if let Some(cs) = &mut state.overlays.config_screen { config_cycle_aux_storage(&mut cs.working.aux_storage, 1); } }
-        8 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.honor_game_colours = !cs.working.honor_game_colours; } }
-        9 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.period_look = !cs.working.period_look; } }
-        10 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.honor_timed_input = !cs.working.honor_timed_input; } }
-        11 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.enable_sound = !cs.working.enable_sound; } }
-        13 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.mouse = !cs.working.mouse; } }
-        14 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.command_bar = !cs.working.command_bar; } }
-        15 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.mouse_wheel_invert = !cs.working.mouse_wheel_invert; } }
-        16 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.show_status_bar = !cs.working.show_status_bar; } }
-        17 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.watch_style = !cs.working.watch_style; } }
-        18 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.record_turn_history = !cs.working.record_turn_history; } }
-        21 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.hint_skip_screen_warning = !cs.working.hint_skip_screen_warning; } }
-        24 => { if let Some(cs) = &mut state.overlays.config_screen { config_cycle_v6_render(&mut cs.working.v6_render, 1); } }
-        25 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.v6_arrow_keys = !cs.working.v6_arrow_keys; } }
-        26 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.v6_pixel_lock = !cs.working.v6_pixel_lock; } }
-        27 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.guidance = !cs.working.guidance; } }
-        28 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.guidance_probe = !cs.working.guidance_probe; } }
-        29 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.hide_adult_words = !cs.working.hide_adult_words; } }
-        30 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.return_probe = !cs.working.return_probe; } }
-        31 => { if let Some(cs) = &mut state.overlays.config_screen { cs.working.scan_exits = !cs.working.scan_exits; } }
+        1 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.auto_load = !cs.working.auto_load;
+            }
+        }
+        2 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.auto_save = !cs.working.auto_save;
+            }
+        }
+        3 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.prompt_save_on_quit = !cs.working.prompt_save_on_quit;
+            }
+        }
+        4 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.prompt_load_on_launch = !cs.working.prompt_load_on_launch;
+            }
+        }
+        5 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.show_room_numbers = !cs.working.show_room_numbers;
+            }
+        }
+        6 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                config_cycle_background_tidy(&mut cs.working.background_tidy, 1);
+            }
+        }
+        7 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                config_cycle_aux_storage(&mut cs.working.aux_storage, 1);
+            }
+        }
+        8 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.honor_game_colours = !cs.working.honor_game_colours;
+            }
+        }
+        9 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.period_look = !cs.working.period_look;
+            }
+        }
+        10 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.honor_timed_input = !cs.working.honor_timed_input;
+            }
+        }
+        11 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.enable_sound = !cs.working.enable_sound;
+            }
+        }
+        13 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.mouse = !cs.working.mouse;
+            }
+        }
+        14 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.command_bar = !cs.working.command_bar;
+            }
+        }
+        15 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.mouse_wheel_invert = !cs.working.mouse_wheel_invert;
+            }
+        }
+        16 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.show_status_bar = !cs.working.show_status_bar;
+            }
+        }
+        17 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.watch_style = !cs.working.watch_style;
+            }
+        }
+        18 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.record_turn_history = !cs.working.record_turn_history;
+            }
+        }
+        21 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.hint_skip_screen_warning = !cs.working.hint_skip_screen_warning;
+            }
+        }
+        24 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                config_cycle_v6_render(&mut cs.working.v6_render, 1);
+            }
+        }
+        25 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.v6_arrow_keys = !cs.working.v6_arrow_keys;
+            }
+        }
+        26 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.v6_pixel_lock = !cs.working.v6_pixel_lock;
+            }
+        }
+        27 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.guidance = !cs.working.guidance;
+            }
+        }
+        28 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.guidance_probe = !cs.working.guidance_probe;
+            }
+        }
+        29 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.hide_adult_words = !cs.working.hide_adult_words;
+            }
+        }
+        30 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.return_probe = !cs.working.return_probe;
+            }
+        }
+        31 => {
+            if let Some(cs) = &mut state.overlays.config_screen {
+                cs.working.scan_exits = !cs.working.scan_exits;
+            }
+        }
         _ => {}
     }
 }
@@ -5274,7 +5651,8 @@ fn config_cycle(working: &mut crate::config::Config, row: usize, delta: i32) {
         // Position 0 == None (lanthorn's default); 1..=10 are explicit interpreter numbers.
         // ← from 1 returns to "default"; → from "default" goes to 1.
         20 => {
-            let pos = (working.interpreter_number.map(|n| n as i32).unwrap_or(0) + delta).clamp(0, 10);
+            let pos =
+                (working.interpreter_number.map(|n| n as i32).unwrap_or(0) + delta).clamp(0, 10);
             working.set_interpreter_number(if pos == 0 { None } else { Some(pos as u8) });
         }
         21 => working.hint_skip_screen_warning = !working.hint_skip_screen_warning,
@@ -5353,24 +5731,54 @@ mod tests {
     #[test]
     fn game_focus_has_map_shortcuts() {
         let s = AppState::default(); // Game focus (story line)
-        // Map navigation works without leaving the story line.
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Left)), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
+                                     // Map navigation works without leaving the story line.
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Left)),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
         // Home is a TEXT key now that the command line has a caret (SQ-0354) — it jumps to the
         // start of the line, matching every other text entry in the app. Recenter keeps its
         // `center-map` command and its hotkey; it just gives up the bare Home key.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Home)), Action::CursorHome));
-        assert!(matches!(key_to_action(&s, key(KeyCode::End)), Action::CursorEnd));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Home)),
+            Action::CursorHome
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::End)),
+            Action::CursorEnd
+        ));
         // Shift+Arrows still pan, so map nav survives without leaving the story line.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::CursorLeft
+        ));
         // PageUp/PageDown now page the transcript (older/newer), not zoom.
-        assert!(matches!(key_to_action(&s, key(KeyCode::PageUp)), Action::TranscriptScrollPage(1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::PageDown)), Action::TranscriptScrollPage(-1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::PageUp)),
+            Action::TranscriptScrollPage(1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::PageDown)),
+            Action::TranscriptScrollPage(-1)
+        ));
         // Retidy (Ctrl+T) is not in the direct set: returns None when dialog is closed.
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('t'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('t'))),
+            Action::None
+        ));
         // Typing still reaches the command line (plain and shifted/capital letters).
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('n'))), Action::InputChar('n')));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('N'))), Action::InputChar('N')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('n'))),
+            Action::InputChar('n')
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('N'))),
+            Action::InputChar('N')
+        ));
     }
 
     #[test]
@@ -5380,21 +5788,35 @@ mod tests {
         // game.
         let mut s = AppState::default();
         s.pager.active = true;
-        for code in [KeyCode::Char(' '), KeyCode::PageDown, KeyCode::Down, KeyCode::Enter] {
+        for code in [
+            KeyCode::Char(' '),
+            KeyCode::PageDown,
+            KeyCode::Down,
+            KeyCode::Enter,
+        ] {
             assert!(
-                matches!(key_to_command(&s, key(code)), KeyResolve::Action(Action::PagerAdvance)),
+                matches!(
+                    key_to_command(&s, key(code)),
+                    KeyResolve::Action(Action::PagerAdvance)
+                ),
                 "{code:?} should advance the pager"
             );
         }
         for code in [KeyCode::Char('x'), KeyCode::Esc, KeyCode::Char('q')] {
             assert!(
-                matches!(key_to_command(&s, key(code)), KeyResolve::Action(Action::PagerDismiss)),
+                matches!(
+                    key_to_command(&s, key(code)),
+                    KeyResolve::Action(Action::PagerDismiss)
+                ),
                 "{code:?} should dismiss the pager"
             );
         }
         // Inactive: the pager does not intercept — a plain letter reaches input.
         s.pager.active = false;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('x'))), Action::InputChar('x')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('x'))),
+            Action::InputChar('x')
+        ));
     }
 
     #[test]
@@ -5420,7 +5842,10 @@ mod tests {
             KeyCode::Char('q'),
         ] {
             assert!(
-                matches!(key_to_command(&s, key(code)), KeyResolve::Action(Action::PagerAdvance)),
+                matches!(
+                    key_to_command(&s, key(code)),
+                    KeyResolve::Action(Action::PagerAdvance)
+                ),
                 "{code:?} must PAGE (never dismiss/deliver) while a read_char is pending"
             );
         }
@@ -5449,7 +5874,10 @@ mod tests {
     #[test]
     fn ctrl_q_quits_in_any_focus() {
         let s = AppState::default();
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('q'))), Action::Quit));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('q'))),
+            Action::Quit
+        ));
     }
 
     // The former "prompt-precedence" tests (Ctrl+Q/Tab/Ctrl+S during a bottom-bar
@@ -5466,30 +5894,69 @@ mod tests {
         // focus state with no on-screen cue. Now plain arrows are always the
         // command line's, and Shift+Arrow is always the map's.
         let s = AppState::default();
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Right)), Action::CursorRight));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Up)), Action::HistoryPrev));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Down)), Action::HistoryNext));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Left)), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Right)), Action::Pan(1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Up)), Action::Pan(0, -1)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::CursorLeft
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Right)),
+            Action::CursorRight
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Up)),
+            Action::HistoryPrev
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Down)),
+            Action::HistoryNext
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Left)),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Right)),
+            Action::Pan(1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Up)),
+            Action::Pan(0, -1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
     }
 
     #[test]
     fn shift_arrows_pan_from_the_story() {
         let s = AppState::default();
         // Shift+Arrows pan without leaving the command line (SQ-0416).
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Left)), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Left)),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
         // F6-F9 were the room-nudge keys until SQ-0600 removed nudging; they are
         // unbound now, not silently doing nothing.
         for f in [6u8, 7, 8, 9] {
-            assert!(matches!(key_to_action(&s, key(KeyCode::F(f))), Action::None), "F{f} is unbound");
+            assert!(
+                matches!(key_to_action(&s, key(KeyCode::F(f))), Action::None),
+                "F{f} is unbound"
+            );
         }
         // Ctrl+Arrows are unbound too.
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Left)), Action::None));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Right)), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Left)),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Right)),
+            Action::None
+        ));
     }
 
     #[test]
@@ -5499,42 +5966,82 @@ mod tests {
         // 'n' is the direct select-room-next; Shift+N is not a leader letter.
         let mut s = AppState::default();
         s.focus = Focus::Map;
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('N'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('N'))),
+            Action::None
+        ));
         // Open dialog: Shift+N is not an authored leader letter, so it closes the
         // dialog; the authored leader letter 'n' fires EditNotes.
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('N'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('n'))), Action::EditNotes));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('N'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('n'))),
+            Action::EditNotes
+        ));
     }
 
     #[test]
     fn global_shortcuts_work_with_the_dialog_closed() {
         let mut s = AppState::default();
         // Direct commands fire without the dialog.
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('q'))), Action::Quit));
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state"));
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('r'))), KeyResolve::Command(c, _) if c == "restore-state"));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('q'))),
+            Action::Quit
+        ));
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state")
+        );
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('r'))), KeyResolve::Command(c, _) if c == "restore-state")
+        );
         // Non-direct commands return None when dialog is closed. (Ctrl+E is the
         // readline move-to-end at the story prompt, so it is not one of them.
         // Ctrl+D is not one of them either since SQ-1228: it half-pages the
         // transcript in Game focus, hardwired ahead of this dialog lookup.)
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('g'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('g'))),
+            Action::None
+        ));
         assert!(matches!(
             key_to_action(&s, ctrl(KeyCode::Char('d'))),
             Action::TranscriptScrollHalfPage(-1)
         ));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('l'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('l'))),
+            Action::None
+        ));
         // Ctrl-combos always close the dialog now (never fire); the underlying
         // commands fire via their authored leader letters instead (SQ-0446 layout).
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('e'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('v'))), Action::OpenCommandBand));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('l'))), Action::TogglePortalLabels));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::SetJournalTab(crate::journal::JournalTab::Inventory)));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('e'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('v'))),
+            Action::OpenCommandBand
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('l'))),
+            Action::TogglePortalLabels
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::SetJournalTab(crate::journal::JournalTab::Inventory)
+        ));
         // 'u' fires the map view-mode cycle (SQ-0666, inheriting SQ-0391's freed letter);
         // 'x' (reset-game's old letter) is still unbound.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('u'))), Action::ViewMap(None)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('x'))), Action::CloseHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('u'))),
+            Action::ViewMap(None)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('x'))),
+            Action::CloseHotkeyDialog
+        ));
     }
 
     #[test]
@@ -5565,22 +6072,34 @@ mod tests {
         // and close the dialog. 'q' is deliberately unbound (quit convention).
         let mut s = AppState::default();
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_command(&s, key(KeyCode::Char('q'))), KeyResolve::Action(Action::CloseHotkeyDialog)));
-        assert!(matches!(key_to_command(&s, key(KeyCode::Char('1'))), KeyResolve::Action(Action::CloseHotkeyDialog)));
+        assert!(matches!(
+            key_to_command(&s, key(KeyCode::Char('q'))),
+            KeyResolve::Action(Action::CloseHotkeyDialog)
+        ));
+        assert!(matches!(
+            key_to_command(&s, key(KeyCode::Char('1'))),
+            KeyResolve::Action(Action::CloseHotkeyDialog)
+        ));
     }
 
     #[test]
     fn leader_ctrl_combo_closes_not_fires() {
         let mut s = AppState::default();
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Action(Action::CloseHotkeyDialog)));
+        assert!(matches!(
+            key_to_command(&s, ctrl(KeyCode::Char('s'))),
+            KeyResolve::Action(Action::CloseHotkeyDialog)
+        ));
     }
 
     #[test]
     fn leader_esc_closes() {
         let mut s = AppState::default();
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_command(&s, key(KeyCode::Esc)), KeyResolve::Action(Action::CloseHotkeyDialog)));
+        assert!(matches!(
+            key_to_command(&s, key(KeyCode::Esc)),
+            KeyResolve::Action(Action::CloseHotkeyDialog)
+        ));
     }
 
     #[test]
@@ -5595,26 +6114,53 @@ mod tests {
             other => panic!("expected Command, got {other:?}"),
         }
         // Hardwired Ctrl+Q stays an Action.
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('q'))), KeyResolve::Action(Action::Quit)));
+        assert!(matches!(
+            key_to_command(&s, ctrl(KeyCode::Char('q'))),
+            KeyResolve::Action(Action::Quit)
+        ));
     }
 
     #[test]
     fn tab_toggles_focus() {
         let s = AppState::default();
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::ToggleFocus));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::ToggleFocus
+        ));
     }
 
     #[test]
     fn history_keys_step_resume_and_close() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let plain = |c| KeyEvent::new(c, KeyModifiers::NONE);
-        assert!(matches!(history_key_to_action(plain(KeyCode::Left)), Action::ReplayStep(-1)));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Right)), Action::ReplayStep(1)));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Char(' '))), Action::ReplayTogglePlay));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Enter)), Action::ReplayResume));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Char('r'))), Action::ReplayResume));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Esc)), Action::ReplayClose));
-        assert!(matches!(history_key_to_action(plain(KeyCode::Char('q'))), Action::ReplayClose));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Left)),
+            Action::ReplayStep(-1)
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Right)),
+            Action::ReplayStep(1)
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Char(' '))),
+            Action::ReplayTogglePlay
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Enter)),
+            Action::ReplayResume
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Char('r'))),
+            Action::ReplayResume
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Esc)),
+            Action::ReplayClose
+        ));
+        assert!(matches!(
+            history_key_to_action(plain(KeyCode::Char('q'))),
+            Action::ReplayClose
+        ));
     }
 
     #[test]
@@ -5645,31 +6191,48 @@ mod tests {
         let mut s = AppState::default();
         s.set_journal_tab(crate::journal::JournalTab::Room);
         s.selected_room = Some(1);
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::UnpinRoomDock),
-            "Esc with a pinned room unpins first");
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Esc)), Action::UnpinRoomDock),
+            "Esc with a pinned room unpins first"
+        );
         // q is not a close key (and never was, since the panels stopped being modals).
-        assert!(!matches!(key_to_action(&s, key(KeyCode::Char('q'))),
-            Action::UnpinRoomDock | Action::CloseRoomDock),
-            "q must not touch the panel");
+        assert!(
+            !matches!(
+                key_to_action(&s, key(KeyCode::Char('q'))),
+                Action::UnpinRoomDock | Action::CloseRoomDock
+            ),
+            "q must not touch the panel"
+        );
 
         s.selected_room = None;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::CloseRoomDock),
-            "Esc with an unpinned Room tab goes back to the Map tab");
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Esc)), Action::CloseRoomDock),
+            "Esc with an unpinned Room tab goes back to the Map tab"
+        );
 
         s.journal_tab = crate::journal::JournalTab::Map;
-        assert!(!matches!(key_to_action(&s, key(KeyCode::Esc)),
-            Action::UnpinRoomDock | Action::CloseRoomDock),
-            "Esc with nothing pinned on the Map tab must not produce a panel action");
+        assert!(
+            !matches!(
+                key_to_action(&s, key(KeyCode::Esc)),
+                Action::UnpinRoomDock | Action::CloseRoomDock
+            ),
+            "Esc with nothing pinned on the Map tab must not produce a panel action"
+        );
 
         // A pin made from the Map tab (a click on a room) still gets Esc's first rung.
         s.selected_room = Some(2);
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::UnpinRoomDock));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Esc)),
+            Action::UnpinRoomDock
+        ));
 
         // Esc never pulls you off the Inventory tab.
         s.selected_room = None;
         s.journal_tab = crate::journal::JournalTab::Inventory;
-        assert!(!matches!(key_to_action(&s, key(KeyCode::Esc)),
-            Action::UnpinRoomDock | Action::CloseRoomDock));
+        assert!(!matches!(
+            key_to_action(&s, key(KeyCode::Esc)),
+            Action::UnpinRoomDock | Action::CloseRoomDock
+        ));
     }
 
     /// The ladder's rungs actually do what they say when applied.
@@ -5683,10 +6246,18 @@ mod tests {
 
         apply_action(Action::UnpinRoomDock, &mut s, &mut m);
         assert_eq!(s.selected_room, None, "first Esc unpins");
-        assert_eq!(s.journal_tab, JournalTab::Room, "…and leaves the Room tab up");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Room,
+            "…and leaves the Room tab up"
+        );
 
         apply_action(Action::CloseRoomDock, &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Map, "the second Esc returns to the Map tab");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Map,
+            "the second Esc returns to the Map tab"
+        );
     }
 
     #[test]
@@ -5733,15 +6304,27 @@ mod tests {
     fn rename_fires_only_through_the_leader_dialog() {
         let mut s = AppState::default();
         // With the dialog closed these are ordinary typing (SQ-0599).
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('t'))), Action::InputChar('t')));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('r'))), Action::InputChar('r')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('t'))),
+            Action::InputChar('t')
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('r'))),
+            Action::InputChar('r')
+        ));
         // With it open, 'r' fires rename-room through its authored leader letter;
         // Shift+R is no longer an authored letter. 't' used to be tidy-map here and
         // is now unauthored, so it closes the dialog instead — see
         // `retidy_has_no_default_key_and_t_is_free`.
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('r'))), Action::RenameRoom));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('t'))), Action::CloseHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('r'))),
+            Action::RenameRoom
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('t'))),
+            Action::CloseHotkeyDialog
+        ));
     }
 
     #[test]
@@ -5750,7 +6333,7 @@ mod tests {
         let mut m = Mapper::default();
         m.observe(1, "A", None);
         m.observe(2, "B", Some(mapper::direction::Direction::E)); // hint: 2 east of 1
-        // Scramble so 2 sits WEST of 1, contradicting the hint (mimics greedy drift).
+                                                                  // Scramble so 2 sits WEST of 1, contradicting the hint (mimics greedy drift).
         m.graph.set_pos(1, (5, 5));
         m.graph.set_pos(2, (0, 0));
         apply_action(Action::Retidy, &mut s, &mut m);
@@ -5759,7 +6342,10 @@ mod tests {
         drive_retidy(&mut s, &mut m);
         let p1 = m.graph.room(1).unwrap().pos.unwrap();
         let p2 = m.graph.room(2).unwrap().pos.unwrap();
-        assert!(p2.0 > p1.0, "after retidy room 2 must be east of room 1: {p2:?} vs {p1:?}");
+        assert!(
+            p2.0 > p1.0,
+            "after retidy room 2 must be east of room 1: {p2:?} vs {p1:?}"
+        );
     }
 
     /// Test helper: `Retidy` spawns an off-thread build (SQ-0261). Join it and write
@@ -5794,9 +6380,16 @@ mod tests {
         );
         let before = m.struct_gen();
         apply_text_entry(dlg, &mut s, &mut m);
-        assert_eq!(m.graph.room(1).unwrap().label_override.as_deref(), Some("New Name"),
-            "rename actually applied");
-        assert_ne!(m.struct_gen(), before, "renaming a room must invalidate the map memo");
+        assert_eq!(
+            m.graph.room(1).unwrap().label_override.as_deref(),
+            Some("New Name"),
+            "rename actually applied"
+        );
+        assert_ne!(
+            m.struct_gen(),
+            before,
+            "renaming a room must invalidate the map memo"
+        );
     }
 
     #[test]
@@ -5805,13 +6398,22 @@ mod tests {
         let mut m = Mapper::default();
         m.observe(1, "A", None);
         m.observe(2, "B", Some(mapper::direction::Direction::E)); // edge origin=1 --E--> 2
-        assert!(m.graph.connections().iter().any(|c| c.origin == 1),
-            "fixture must have an outgoing edge from room 1");
+        assert!(
+            m.graph.connections().iter().any(|c| c.origin == 1),
+            "fixture must have an outgoing edge from room 1"
+        );
         s.select_room(Some(1));
         let before = m.struct_gen();
         apply_action(Action::DeleteSelectedConnection, &mut s, &mut m);
-        assert!(!m.graph.connections().iter().any(|c| c.origin == 1), "edge actually deleted");
-        assert_ne!(m.struct_gen(), before, "deleting a connection must invalidate the map memo");
+        assert!(
+            !m.graph.connections().iter().any(|c| c.origin == 1),
+            "edge actually deleted"
+        );
+        assert_ne!(
+            m.struct_gen(),
+            before,
+            "deleting a connection must invalidate the map memo"
+        );
     }
 
     #[test]
@@ -5838,13 +6440,22 @@ mod tests {
 
         // The frames are now built on a worker thread: AnimateTidy spawns a build job and
         // does NOT touch tidy_anim or the live graph synchronously.
-        assert!(s_anim.tidy_anim.is_none(), "no synchronous animation install");
+        assert!(
+            s_anim.tidy_anim.is_none(),
+            "no synchronous animation install"
+        );
         let job = s_anim.anim_build_job.expect("build job spawned");
-        assert!(job.total > 0, "build job carries a positive progress estimate");
+        assert!(
+            job.total > 0,
+            "build job carries a positive progress estimate"
+        );
         let progress = std::sync::Arc::clone(&job.progress);
         // Drive the async path by joining the worker (the run loop does this + installs).
         let (frames, tidied) = job.handle.join().expect("worker completes");
-        assert!(frames.len() >= 2, "at least before + one layout stage frame");
+        assert!(
+            frames.len() >= 2,
+            "at least before + one layout stage frame"
+        );
         assert_eq!(
             progress.load(std::sync::atomic::Ordering::Relaxed),
             frames.len(),
@@ -5853,7 +6464,10 @@ mod tests {
         // The worker's frames and tidied graph match the instant-tidy result room-for-room.
         for id in [1u16, 2, 3] {
             let inst = m_inst.graph.room(id.into()).unwrap().pos;
-            assert_eq!(frames.last().unwrap().graph.room(id.into()).unwrap().pos, inst);
+            assert_eq!(
+                frames.last().unwrap().graph.room(id.into()).unwrap().pos,
+                inst
+            );
             assert_eq!(tidied.room(id.into()).unwrap().pos, inst);
         }
     }
@@ -5867,7 +6481,10 @@ mod tests {
             let mut m = Mapper::default();
             m.observe(1, "A", None);
             apply_action(Action::AnimateTidy, &mut s, &mut m);
-            assert!(s.anim_build_job.is_some(), "first invocation spawns a build job");
+            assert!(
+                s.anim_build_job.is_some(),
+                "first invocation spawns a build job"
+            );
             let started = s.anim_build_job.as_ref().unwrap().started;
             apply_action(Action::AnimateTidy, &mut s, &mut m);
             assert_eq!(
@@ -5881,16 +6498,22 @@ mod tests {
             let mut s = AppState::default();
             let mut m = Mapper::default();
             m.observe(1, "A", None);
-            s.tidy_anim = Some(TidyAnim::new(vec![TidyFrame {
-                label: "x".into(),
-                graph: m.graph.clone(),
-                description: String::new(),
-                stats: Default::default(),
-                stage_start: true,
-                manifest: None,
-            }], mapper::layer::MAIN_LAYER));
+            s.tidy_anim = Some(TidyAnim::new(
+                vec![TidyFrame {
+                    label: "x".into(),
+                    graph: m.graph.clone(),
+                    description: String::new(),
+                    stats: Default::default(),
+                    stage_start: true,
+                    manifest: None,
+                }],
+                mapper::layer::MAIN_LAYER,
+            ));
             apply_action(Action::AnimateTidy, &mut s, &mut m);
-            assert!(s.anim_build_job.is_none(), "no build job while an animation plays");
+            assert!(
+                s.anim_build_job.is_none(),
+                "no build job while an animation plays"
+            );
         }
     }
 
@@ -5899,21 +6522,61 @@ mod tests {
         use crate::state::{TidyAnim, TidyFrame};
         let mut s = AppState::default();
         // No animation: arrows are the command line's (SQ-0599), not stepping.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::CursorLeft
+        ));
         // Animation active: arrows step, Space toggles, Esc exits.
-        let frame = |l: &str| TidyFrame { label: l.into(), graph: mapper::graph::MapGraph::new(), description: String::new(), stats: mapper::layout::TidyStats::default(), stage_start: false, manifest: None };
-        s.tidy_anim = Some(TidyAnim::new(vec![frame("a"), frame("b")], mapper::layer::MAIN_LAYER));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::AnimStep(-1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Right)), Action::AnimStep(1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char(' '))), Action::AnimTogglePlay));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::AnimExit));
+        let frame = |l: &str| TidyFrame {
+            label: l.into(),
+            graph: mapper::graph::MapGraph::new(),
+            description: String::new(),
+            stats: mapper::layout::TidyStats::default(),
+            stage_start: false,
+            manifest: None,
+        };
+        s.tidy_anim = Some(TidyAnim::new(
+            vec![frame("a"), frame("b")],
+            mapper::layer::MAIN_LAYER,
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::AnimStep(-1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Right)),
+            Action::AnimStep(1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char(' '))),
+            Action::AnimTogglePlay
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Esc)),
+            Action::AnimExit
+        ));
         // The map stays scrollable during playback: hjkl + shift-arrows pan (SQ-0416),
         // +/- zoom. (Plain arrows step stages, so shift+Arrow is the arrow pan path.)
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('h'))), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('j'))), Action::Pan(0, 1)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Right)), Action::Pan(1, 0)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('+'))), Action::ZoomIn));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('-'))), Action::ZoomOut));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('h'))),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('j'))),
+            Action::Pan(0, 1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Right)),
+            Action::Pan(1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('+'))),
+            Action::ZoomIn
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('-'))),
+            Action::ZoomOut
+        ));
         // Exit clears playback.
         apply_action(Action::AnimExit, &mut s, &mut Mapper::default());
         assert!(s.tidy_anim.is_none());
@@ -5923,8 +6586,18 @@ mod tests {
     fn anim_step_clamps_pauses_and_holds_at_end() {
         use crate::state::{TidyAnim, TidyFrame};
         use std::time::Duration;
-        let frame = |l: &str| TidyFrame { label: l.into(), graph: mapper::graph::MapGraph::new(), description: String::new(), stats: mapper::layout::TidyStats::default(), stage_start: false, manifest: None };
-        let mut a = TidyAnim::new(vec![frame("a"), frame("b"), frame("c")], mapper::layer::MAIN_LAYER);
+        let frame = |l: &str| TidyFrame {
+            label: l.into(),
+            graph: mapper::graph::MapGraph::new(),
+            description: String::new(),
+            stats: mapper::layout::TidyStats::default(),
+            stage_start: false,
+            manifest: None,
+        };
+        let mut a = TidyAnim::new(
+            vec![frame("a"), frame("b"), frame("c")],
+            mapper::layer::MAIN_LAYER,
+        );
         assert!(a.playing && a.idx == 0);
         a.step(-1); // clamps at 0, and a manual step pauses
         assert_eq!(a.idx, 0);
@@ -5946,7 +6619,10 @@ mod tests {
         state.select_room(Some(1));
 
         // 'r' with the dialog closed is ordinary typing (SQ-0599).
-        assert!(matches!(key_to_action(&state, key(KeyCode::Char('r'))), Action::InputChar('r')));
+        assert!(matches!(
+            key_to_action(&state, key(KeyCode::Char('r'))),
+            Action::InputChar('r')
+        ));
 
         // With dialog open, 'r' → RenameRoom action → the text-entry dialog opens.
         state.overlays.hotkey_dialog = true;
@@ -5954,17 +6630,34 @@ mod tests {
         assert!(matches!(a, Action::RenameRoom));
         apply_action(a, &mut state, &mut mapper);
         // apply_action clears hotkey_dialog when opening the dialog.
-        assert!(!state.overlays.hotkey_dialog, "hotkey_dialog cleared when the dialog opens");
-        let dlg = state.overlays.text_entry.as_ref().expect("text-entry dialog opened");
-        assert!(matches!(dlg.kind, crate::state::TextEntryKind::RenameRoom(1)));
+        assert!(
+            !state.overlays.hotkey_dialog,
+            "hotkey_dialog cleared when the dialog opens"
+        );
+        let dlg = state
+            .overlays
+            .text_entry
+            .as_ref()
+            .expect("text-entry dialog opened");
+        assert!(matches!(
+            dlg.kind,
+            crate::state::TextEntryKind::RenameRoom(1)
+        ));
         assert_eq!(state.overlays.dialog_focus, 0, "focus starts on the field");
 
         // Type "Lit Room" into the field via the dialog's key routing.
         for c in "Lit Room".chars() {
             let d = state.overlays.text_entry.as_mut().unwrap();
-            crate::render::text_entry_dialog::text_entry_dialog_key(KeyCode::Char(c), &mut d.field, 0);
+            crate::render::text_entry_dialog::text_entry_dialog_key(
+                KeyCode::Char(c),
+                &mut d.field,
+                0,
+            );
         }
-        assert_eq!(state.overlays.text_entry.as_ref().unwrap().field.value, "Lit Room");
+        assert_eq!(
+            state.overlays.text_entry.as_ref().unwrap().field.value,
+            "Lit Room"
+        );
 
         // Submit (what the run loop does on Enter) → mapper updated, dialog cleared.
         let dlg = state.overlays.text_entry.take().unwrap();
@@ -6011,8 +6704,15 @@ mod tests {
         state.select_room(Some(1));
 
         apply_action(Action::EditNotes, &mut state, &mut mapper);
-        let dlg = state.overlays.text_entry.as_ref().expect("text-entry dialog opened");
-        assert!(matches!(dlg.kind, crate::state::TextEntryKind::EditNotes(1)));
+        let dlg = state
+            .overlays
+            .text_entry
+            .as_ref()
+            .expect("text-entry dialog opened");
+        assert!(matches!(
+            dlg.kind,
+            crate::state::TextEntryKind::EditNotes(1)
+        ));
         assert_eq!(dlg.field.value, "watch for the loose brick");
         assert_eq!(
             dlg.field.cursor,
@@ -6031,7 +6731,11 @@ mod tests {
         state.select_room(Some(1));
 
         apply_action(Action::EditNotes, &mut state, &mut mapper);
-        let dlg = state.overlays.text_entry.as_ref().expect("text-entry dialog opened");
+        let dlg = state
+            .overlays
+            .text_entry
+            .as_ref()
+            .expect("text-entry dialog opened");
         assert_eq!(dlg.field.value, "");
     }
 
@@ -6076,11 +6780,17 @@ mod tests {
         // there instead of None.
         let s = AppState::default();
         assert!(!s.show_alignment, "off by default");
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('a'))), Action::CursorHome));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('a'))),
+            Action::CursorHome
+        ));
         // In Map focus (no line prompt live) Ctrl+A is unbound, same as before.
         let mut s_map = AppState::default();
         s_map.focus = Focus::Map;
-        assert!(matches!(key_to_action(&s_map, ctrl(KeyCode::Char('a'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s_map, ctrl(KeyCode::Char('a'))),
+            Action::None
+        ));
         // The action itself still works when dispatched directly.
         let mut s = AppState::default();
         let mut m = Mapper::default();
@@ -6123,13 +6833,24 @@ mod tests {
         let mut m = Mapper::default();
         apply_action(Action::ToggleSound, &mut s, &mut m);
         assert!(s.config.enable_sound, "ToggleSound should turn sound on");
-        assert!(s.audio.is_some(), "ToggleSound should lazily construct the AudioBackend");
+        assert!(
+            s.audio.is_some(),
+            "ToggleSound should lazily construct the AudioBackend"
+        );
         // The toggle also queues a VM Sound-gestalt sync (drained by the event
         // loop) so a running Glulx game that re-checks gestalt_Sound honors it.
-        assert_eq!(s.pending_vm_sound, Some(true), "turning sound on queues a gestalt sync to true");
+        assert_eq!(
+            s.pending_vm_sound,
+            Some(true),
+            "turning sound on queues a gestalt sync to true"
+        );
         apply_action(Action::ToggleSound, &mut s, &mut m);
         assert!(!s.config.enable_sound, "second toggle turns sound off");
-        assert_eq!(s.pending_vm_sound, Some(false), "turning sound off queues a gestalt sync to false");
+        assert_eq!(
+            s.pending_vm_sound,
+            Some(false),
+            "turning sound off queues a gestalt sync to false"
+        );
     }
 
     #[test]
@@ -6139,11 +6860,20 @@ mod tests {
         let mut s = AppState::default();
         let mut working = clone_config(&s.config);
         working.watch_style = true;
-        s.overlays.config_screen =
-            Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
         apply_action(Action::ConfigSave, &mut s, &mut Mapper::default());
-        assert_eq!(s.pending_watch_style, Some(true), "ConfigSave should queue a live watch reconcile");
-        assert!(s.config.watch_style, "ConfigSave should apply the working config");
+        assert_eq!(
+            s.pending_watch_style,
+            Some(true),
+            "ConfigSave should queue a live watch reconcile"
+        );
+        assert!(
+            s.config.watch_style,
+            "ConfigSave should apply the working config"
+        );
     }
 
     /// SQ-1161: Save applies to the RUNNING session everything it can, not just to
@@ -6171,17 +6901,29 @@ mod tests {
         working.return_probe = false;
         working.v6_pixel_lock = true;
         working.v6_render = crate::config::V6RenderMode::Raster;
-        s.overlays.config_screen =
-            Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
 
         apply_action(Action::ConfigSave, &mut s, &mut m);
 
-        assert!(!s.show_status_bar, "the status bar hides on Save, not on next launch");
+        assert!(
+            !s.show_status_bar,
+            "the status bar hides on Save, not on next launch"
+        );
         assert!(s.show_room_numbers, "and the room numbers appear on Save");
-        assert!(s.guidance_base, "the global guidance default follows the row");
+        assert!(
+            s.guidance_base,
+            "the global guidance default follows the row"
+        );
         assert!(!s.return_probe_base, "so does the return probe's");
         assert!(s.v6_pixel_lock_base, "and the pixel lock's");
-        assert_eq!(s.v6_render_base, crate::config::V6RenderMode::Raster, "and the render mode's");
+        assert_eq!(
+            s.v6_render_base,
+            crate::config::V6RenderMode::Raster,
+            "and the render mode's"
+        );
     }
 
     /// …but a key a one-run source is PINNING is not the user speaking (SQ-0807):
@@ -6217,12 +6959,15 @@ mod tests {
     /// key as still-one-run. The user's global choice was reported saved and was not.
     #[test]
     fn cycling_the_v6_render_row_ends_this_games_hold_on_it() {
-        use crate::config::{V6RenderMode, keys};
+        use crate::config::{keys, V6RenderMode};
         let mut s = AppState::default();
         let mut m = Mapper::default();
         // What a per-game `v6_render = "raster"` sidecar leaves behind at boot.
         s.config.v6_render = V6RenderMode::Raster;
-        s.config.one_run.pin(keys::V6_RENDER, crate::config::v6_render_key(V6RenderMode::Raster));
+        s.config.one_run.pin(
+            keys::V6_RENDER,
+            crate::config::v6_render_key(V6RenderMode::Raster),
+        );
 
         apply_action(Action::OpenConfig, &mut s, &mut m);
         let row = crate::render::config_screen::CONFIG_ROWS
@@ -6238,7 +6983,11 @@ mod tests {
         }
         apply_action(Action::ConfigSave, &mut s, &mut m);
         assert_eq!(s.config.v6_render, V6RenderMode::Extended);
-        assert_eq!(s.v6_render_base, V6RenderMode::Extended, "and it becomes the global default");
+        assert_eq!(
+            s.v6_render_base,
+            V6RenderMode::Extended,
+            "and it becomes the global default"
+        );
     }
 
     /// SQ-0807: editing a settings row ends the one-run hold on its key.
@@ -6259,7 +7008,9 @@ mod tests {
         let mut s = AppState::default();
         s.config.config_file = cfg_path.clone();
         s.config.enable_sound = false;
-        s.config.one_run.pin(crate::config::keys::ENABLE_SOUND, false);
+        s.config
+            .one_run
+            .pin(crate::config::keys::ENABLE_SOUND, false);
 
         // Open the settings screen and work the sound row: on, then off again.
         let mut m = Mapper::default();
@@ -6280,7 +7031,9 @@ mod tests {
 
         let back = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(
-            !toml::from_str::<crate::config::Config>(&back).unwrap().enable_sound,
+            !toml::from_str::<crate::config::Config>(&back)
+                .unwrap()
+                .enable_sound,
             "the user's own off must persist even though it matches the flag: {back}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -6297,8 +7050,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bm-honour-row-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("style.toml"), "[colors]\n\"transcript\" = { fg = \"white\" }\n")
-            .unwrap();
+        std::fs::write(
+            dir.join("style.toml"),
+            "[colors]\n\"transcript\" = { fg = \"white\" }\n",
+        )
+        .unwrap();
         let honour_row = crate::render::config_screen::CONFIG_ROWS
             .iter()
             .position(|(n, _, _)| *n == "honor_game_colours")
@@ -6312,7 +7068,9 @@ mod tests {
             s.honor_game_colours_base = true;
             s.artwork_declines_colours = true;
             s.config.honor_game_colours = false;
-            s.config.one_run.pin(crate::config::keys::HONOR_GAME_COLOURS, false);
+            s.config
+                .one_run
+                .pin(crate::config::keys::HONOR_GAME_COLOURS, false);
             s
         };
 
@@ -6321,13 +7079,22 @@ mod tests {
         apply_action(Action::OpenConfig, &mut s, &mut m);
         if let Some(cs) = &mut s.overlays.config_screen {
             config_cycle(&mut cs.working, honour_row, 1);
-            assert!(cs.working.honor_game_colours, "the row turns the game's colours on");
+            assert!(
+                cs.working.honor_game_colours,
+                "the row turns the game's colours on"
+            );
         }
         apply_action(Action::ConfigSave, &mut s, &mut m);
-        assert!(!s.artwork_declines_colours, "a deliberate edit outranks a guess about a machine");
+        assert!(
+            !s.artwork_declines_colours,
+            "a deliberate edit outranks a guess about a machine"
+        );
         assert!(s.config.honor_game_colours);
         crate::reload::reload_style(&mut s);
-        assert!(s.config.honor_game_colours, "and the next style reload does not undo it");
+        assert!(
+            s.config.honor_game_colours,
+            "and the next style reload does not undo it"
+        );
 
         // The same save with the row untouched changes nothing: the artwork's
         // force-off is still in force for this run.
@@ -6337,9 +7104,15 @@ mod tests {
             config_cycle(&mut cs.working, 5, 1); // show_room_numbers — an unrelated row
         }
         apply_action(Action::ConfigSave, &mut s, &mut m);
-        assert!(s.artwork_declines_colours, "saving some other setting is not a choice about this one");
+        assert!(
+            s.artwork_declines_colours,
+            "saving some other setting is not a choice about this one"
+        );
         crate::reload::reload_style(&mut s);
-        assert!(!s.config.honor_game_colours, "so the archive still has the last word");
+        assert!(
+            !s.config.honor_game_colours,
+            "so the archive still has the last word"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6348,14 +7121,29 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         // CycleLayer is dialog-only: returns None when dialog is closed.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char(']'))), Action::None));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('['))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char(']'))),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('['))),
+            Action::None
+        ));
         s.overlays.hotkey_dialog = true;
         // Brackets are not authored leader letters: they close the dialog now.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char(']'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('['))), Action::CloseHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char(']'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('['))),
+            Action::CloseHotkeyDialog
+        ));
         // The authored leader letter 'c' fires cycle-layer next instead.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('c'))), Action::CycleLayer(1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('c'))),
+            Action::CycleLayer(1)
+        ));
     }
 
     #[test]
@@ -6366,7 +7154,11 @@ mod tests {
         let mut mapper = Mapper::default();
         assert_eq!(s.viewed_layer, None);
         apply_action(Action::SetViewedLayer(2), &mut s, &mut mapper);
-        assert_eq!(s.viewed_layer, Some(2), "SetViewedLayer selects the clicked layer");
+        assert_eq!(
+            s.viewed_layer,
+            Some(2),
+            "SetViewedLayer selects the clicked layer"
+        );
     }
 
     #[test]
@@ -6374,13 +7166,23 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         // The layer commands are dialog-only: return None when the dialog is closed.
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('P'))), Action::None));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('M'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('P'))),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('M'))),
+            Action::None
+        ));
         // Open dialog: authored leader letters 'p'/'m' fire the commands
         // (Shift+P/Shift+M are no longer authored leader letters).
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('p'))), Action::MoveRegion(ref a) if a == "new"));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('m'))), Action::MoveRegion(ref a) if a == "parent"));
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Char('p'))), Action::MoveRegion(ref a) if a == "new")
+        );
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Char('m'))), Action::MoveRegion(ref a) if a == "parent")
+        );
     }
 
     // ── Autocomplete / Tab precedence tests ───────────────────────────────────
@@ -6389,7 +7191,10 @@ mod tests {
     fn tab_is_toggle_focus_with_empty_input() {
         // Game focus, empty input, no suggestions → Tab is ToggleFocus.
         let s = AppState::default(); // focus = Game, input = "", suggestions = []
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::ToggleFocus));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::ToggleFocus
+        ));
     }
 
     #[test]
@@ -6399,7 +7204,10 @@ mod tests {
         let mut s = AppState::default();
         s.input.set("nor", true);
         // suggestions is empty by default
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::ToggleFocus));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::ToggleFocus
+        ));
     }
 
     #[test]
@@ -6408,7 +7216,10 @@ mod tests {
         let mut s = AppState::default();
         s.input.set("nor", true);
         s.suggestions = vec!["north".to_string(), "northeast".to_string()];
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::Autocomplete));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::Autocomplete
+        ));
     }
 
     #[test]
@@ -6417,7 +7228,10 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         s.suggestions = vec!["north".to_string()]; // not relevant for map focus
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::ToggleFocus));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::ToggleFocus
+        ));
     }
 
     #[test]
@@ -6481,7 +7295,11 @@ mod tests {
         let mut s = AppState::default();
         let mut m = Mapper::default();
         s.input.set("go nor", true);
-        s.suggestions = vec!["north".to_string(), "northeast".to_string(), "nowhere".to_string()];
+        s.suggestions = vec![
+            "north".to_string(),
+            "northeast".to_string(),
+            "nowhere".to_string(),
+        ];
         s.suggestion_idx = 0;
         for expected in ["north", "northeast", "nowhere", "north"] {
             apply_action(Action::Autocomplete, &mut s, &mut m);
@@ -6504,7 +7322,10 @@ mod tests {
         let mut s = AppState::default();
         s.input.set("nor", true);
         s.suggestions = vec!["north".to_string(), "northeast".to_string()];
-        assert!(matches!(key_to_action(&s, key(KeyCode::BackTab)), Action::AutocompletePrev));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::BackTab)),
+            Action::AutocompletePrev
+        ));
     }
 
     #[test]
@@ -6513,13 +7334,19 @@ mod tests {
         // Shift-Tab reverses the per-window focus cycle.
         let mut s = AppState::default();
         s.input.set("nor", true);
-        assert!(matches!(key_to_action(&s, key(KeyCode::BackTab)), Action::CycleFocusBack));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::BackTab)),
+            Action::CycleFocusBack
+        ));
     }
 
     #[test]
     fn shift_tab_cycles_focus_back_with_empty_input() {
         let s = AppState::default(); // Game focus, empty input, no suggestions
-        assert!(matches!(key_to_action(&s, key(KeyCode::BackTab)), Action::CycleFocusBack));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::BackTab)),
+            Action::CycleFocusBack
+        ));
     }
 
     #[test]
@@ -6529,7 +7356,10 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         s.suggestions = vec!["north".to_string()];
-        assert!(matches!(key_to_action(&s, key(KeyCode::BackTab)), Action::CycleFocusBack));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::BackTab)),
+            Action::CycleFocusBack
+        ));
     }
 
     #[test]
@@ -6552,7 +7382,11 @@ mod tests {
         let mut s = AppState::default();
         let mut m = Mapper::default();
         s.input.set("go nor", true);
-        s.suggestions = vec!["north".to_string(), "northeast".to_string(), "nowhere".to_string()];
+        s.suggestions = vec![
+            "north".to_string(),
+            "northeast".to_string(),
+            "nowhere".to_string(),
+        ];
         s.suggestion_idx = 0;
         // First Shift-Tab: applies the highlighted index 0 (north), no step.
         apply_action(Action::AutocompletePrev, &mut s, &mut m);
@@ -6600,16 +7434,25 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         // toggle-inventory-panel is dialog-only: returns None when dialog is closed.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::None
+        ));
         // Returns the action when dialog is open.
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::SetJournalTab(crate::journal::JournalTab::Inventory)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::SetJournalTab(crate::journal::JournalTab::Inventory)
+        ));
     }
 
     #[test]
     fn i_in_game_focus_is_input_char_not_leader() {
         let s = AppState::default(); // game focus
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::InputChar('i')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::InputChar('i')
+        ));
     }
 
     /// SQ-0692: `/toggle-inspector` no longer opens a second floating panel for a
@@ -6623,17 +7466,33 @@ mod tests {
         use crate::state::RoomDockView;
         let mut s = AppState::default();
         let mut m = Mapper::default();
-        assert_eq!(s.journal_tab, JournalTab::Map, "the Journal starts on the Map tab");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Map,
+            "the Journal starts on the Map tab"
+        );
 
         // No selection needed: it opens on the followed room.
         apply_action(Action::ToggleRoomDiagnostics, &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Room, "another tab switches to the Room tab");
-        assert_eq!(s.room_dock_view, RoomDockView::Diagnostics, "…onto the diagnostics body");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Room,
+            "another tab switches to the Room tab"
+        );
+        assert_eq!(
+            s.room_dock_view,
+            RoomDockView::Diagnostics,
+            "…onto the diagnostics body"
+        );
         assert_eq!(s.selected_room, None, "and does not pin anything");
 
         // Again with the dock open: flip to Info…
         apply_action(Action::ToggleRoomDiagnostics, &mut s, &mut m);
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Room, "the tab stays up — this flips views, it does not leave");
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Room,
+            "the tab stays up — this flips views, it does not leave"
+        );
         assert_eq!(s.room_dock_view, RoomDockView::Info);
 
         // …and back.
@@ -6652,7 +7511,11 @@ mod tests {
         apply_action(Action::SetJournalTab(JournalTab::Room), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Room);
         apply_action(Action::SetJournalTab(JournalTab::Room), &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Room, "selecting the tab you are on does not toggle it off");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Room,
+            "selecting the tab you are on does not toggle it off"
+        );
 
         apply_action(Action::SetJournalTab(JournalTab::Map), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Map);
@@ -6679,25 +7542,109 @@ mod tests {
         let mut s = AppState::default();
         let mut m = Mapper::default();
         apply_action(Action::JournalStepTab(false), &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Notes, "back from Map wraps to the last tab");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Notes,
+            "back from Map wraps to the last tab"
+        );
         apply_action(Action::JournalStepTab(true), &mut s, &mut m);
-        assert_eq!(s.journal_tab, JournalTab::Map, "forward from the last tab wraps to Map");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Map,
+            "forward from the last tab wraps to Map"
+        );
         apply_action(Action::JournalStepTab(true), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Room);
     }
 
     #[test]
-    fn journal_shortcuts_do_not_steal_shift_arrows_from_map_or_documents() {
+    fn journal_shortcuts_use_control_and_preserve_pane_shift_arrows() {
         let mut s = AppState::default();
         s.focus = Focus::Map;
-        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)), Action::JournalStepTab(true));
-        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)), Action::JournalStepTab(false));
-        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)), Action::MatrixPanColumns(1));
-        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)), Action::MatrixMove(-1));
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
+            Action::JournalStepTab(true)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            Action::JournalStepTab(false)
+        );
+        assert_ne!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
+            Action::JournalStepTab(true)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            Action::MatrixPanColumns(1)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            Action::MatrixMove(-1)
+        );
+
+        s.journal_tab = crate::journal::JournalTab::Files;
+        assert_eq!(
+            key_to_action(
+                &s,
+                KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            ),
+            Action::JournalStepFilesSubtab
+        );
+
+        s.journal_tab = crate::journal::JournalTab::Room;
+        s.focus = Focus::Game;
+        assert_eq!(
+            key_to_action(
+                &s,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            ),
+            Action::ToggleRoomDiagnostics
+        );
+        assert_eq!(
+            key_to_action(
+                &s,
+                KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            ),
+            Action::ToggleRoomDiagnostics
+        );
+        assert_eq!(s.room_dock_view, crate::state::RoomDockView::Info);
+        apply_action(
+            Action::ToggleRoomDiagnostics,
+            &mut s,
+            &mut Mapper::default(),
+        );
+        assert_eq!(s.room_dock_view, crate::state::RoomDockView::Diagnostics);
+        apply_action(
+            Action::ToggleRoomDiagnostics,
+            &mut s,
+            &mut Mapper::default(),
+        );
+        assert_eq!(s.room_dock_view, crate::state::RoomDockView::Info);
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            Action::RoomDockScroll(-1)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)),
+            Action::RoomDockScroll(1)
+        );
+
+        s.journal_tab = crate::journal::JournalTab::Inventory;
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            Action::InventoryDockScroll(-1)
+        );
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)),
+            Action::InventoryDockScroll(1)
+        );
 
         s.journal_tab = crate::journal::JournalTab::Documents;
         s.focus = Focus::Game;
-        assert_eq!(key_to_action(&s, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)), Action::DocTabSelect(1));
+        assert_eq!(
+            key_to_action(&s, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)),
+            Action::DocTabSelect(1)
+        );
 
         s.journal_tab = crate::journal::JournalTab::Notes;
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
@@ -6705,19 +7652,19 @@ mod tests {
         s.journal_notes_editing = true;
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
         assert_eq!(key_to_action(&s, right), Action::JournalNotesKey(right));
+        let word_left = KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL);
         assert_eq!(
-            key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
-            Action::JournalStepTab(false)
+            key_to_action(&s, word_left),
+            Action::JournalNotesKey(word_left)
+        );
+        let select_word_right =
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(
+            key_to_action(&s, select_word_right),
+            Action::JournalNotesKey(select_word_right)
         );
         assert_eq!(
-            key_to_action(&s, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
-            Action::JournalStepTab(true)
-        );
-        assert_eq!(
-            key_to_action(
-                &s,
-                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
-            ),
+            key_to_action(&s, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
             Action::CutNotesSelection
         );
         for key in ['z', 'y'] {
@@ -6727,7 +7674,20 @@ mod tests {
     }
 
     #[test]
-    fn alt_journal_tab_shortcut_saves_notes_before_leaving_editor() {
+    fn files_subtab_shortcut_switches_between_hints_and_documents() {
+        let mut s = AppState::default();
+        let mut m = Mapper::default();
+        s.set_journal_tab(crate::journal::JournalTab::Hints);
+        let key = KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(key_to_action(&s, key), Action::JournalStepFilesSubtab);
+        apply_action(Action::JournalStepFilesSubtab, &mut s, &mut m);
+        assert!(s.documents_tab_visible());
+        apply_action(Action::JournalStepFilesSubtab, &mut s, &mut m);
+        assert!(s.hints_tab_visible());
+    }
+
+    #[test]
+    fn leaving_notes_through_journal_navigation_saves_before_switching() {
         let mut s = AppState::default();
         let game_dir = crate::scratch_dir("journal-notes-alt-tab");
         s.game_dir = game_dir.clone();
@@ -6736,11 +7696,13 @@ mod tests {
         s.journal_notes = "remember the brass key".into();
         s.journal_notes_editing = true;
 
-        let action = key_to_action(&s, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
-        assert_eq!(action, Action::JournalStepTab(false));
-        apply_action(action, &mut s, &mut Mapper::default());
+        apply_action(
+            Action::SetJournalTab(crate::journal::JournalTab::Room),
+            &mut s,
+            &mut Mapper::default(),
+        );
 
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Documents);
+        assert_eq!(s.journal_tab, crate::journal::JournalTab::Room);
         assert!(!s.journal_notes_editing);
         assert_eq!(
             crate::styles::read_per_game_journal_notes(&game_dir),
@@ -6757,12 +7719,26 @@ mod tests {
     fn the_room_tab_is_not_an_overlay() {
         let mut s = AppState::default();
         let mut m = Mapper::default();
-        apply_action(Action::SetJournalTab(crate::journal::JournalTab::Room), &mut s, &mut m);
+        apply_action(
+            Action::SetJournalTab(crate::journal::JournalTab::Room),
+            &mut s,
+            &mut m,
+        );
         assert_eq!(s.journal_tab, crate::journal::JournalTab::Room);
-        assert!(!s.any_overlay_open(), "an open room panel is not an overlay");
-        assert!(!s.any_modal_overlay_open(), "…and certainly not a modal one");
+        assert!(
+            !s.any_overlay_open(),
+            "an open room panel is not an overlay"
+        );
+        assert!(
+            !s.any_modal_overlay_open(),
+            "…and certainly not a modal one"
+        );
 
-        apply_action(Action::PinRoomDock(3, crate::state::RoomDockView::Diagnostics), &mut s, &mut m);
+        apply_action(
+            Action::PinRoomDock(3, crate::state::RoomDockView::Diagnostics),
+            &mut s,
+            &mut m,
+        );
         assert!(!s.any_overlay_open(), "nor is a PINNED dock");
     }
 
@@ -6783,14 +7759,29 @@ mod tests {
         assert!(s.room_dock_pinned());
         assert_eq!(s.room_dock_view, RoomDockView::Info);
 
-        apply_action(Action::PinRoomDock(5, RoomDockView::Diagnostics), &mut s, &mut m);
+        apply_action(
+            Action::PinRoomDock(5, RoomDockView::Diagnostics),
+            &mut s,
+            &mut m,
+        );
         assert_eq!(s.selected_room, Some(5));
-        assert_eq!(s.room_dock_view, RoomDockView::Diagnostics, "re-pinning with an explicit view sets it");
+        assert_eq!(
+            s.room_dock_view,
+            RoomDockView::Diagnostics,
+            "re-pinning with an explicit view sets it"
+        );
 
         apply_action(Action::UnpinRoomDock, &mut s, &mut m);
-        assert_eq!(s.selected_room, None, "unpinned: the dock follows the player again");
+        assert_eq!(
+            s.selected_room, None,
+            "unpinned: the dock follows the player again"
+        );
         assert!(!s.room_dock_pinned());
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Map, "…and the tab is untouched");
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Map,
+            "…and the tab is untouched"
+        );
     }
 
     // ── Equivalence guard for the KeyMap refactor ──────────────────────────────
@@ -6805,41 +7796,87 @@ mod tests {
 
         // ── Game focus (default) ──────────────────────────────────────────────
         let s = AppState::default(); // focus = Game
-        // Direct ctrl commands work without the dialog.
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state"));
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('r'))), KeyResolve::Command(c, _) if c == "restore-state"));
+                                     // Direct ctrl commands work without the dialog.
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state")
+        );
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('r'))), KeyResolve::Command(c, _) if c == "restore-state")
+        );
         // Non-direct ctrl commands return None when dialog is closed. Ctrl+D is
         // not one of them since SQ-1228 (transcript half-page-down).
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('g'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('g'))),
+            Action::None
+        ));
         assert!(matches!(
             key_to_action(&s, ctrl(KeyCode::Char('d'))),
             Action::TranscriptScrollHalfPage(-1)
         ));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('l'))), Action::None));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('t'))), Action::None));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('y'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('l'))),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('t'))),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('y'))),
+            Action::None
+        ));
         // Ctrl+A/E/P are no longer None in Game focus (SQ-0447): Ctrl+A/E are the
         // readline move-to-start/end shortcuts at the story prompt, and Ctrl+P is
         // now the hotkey-dialog prefix (moved off Ctrl+K).
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('a'))), Action::CursorHome));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('e'))), Action::CursorEnd));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('p'))), Action::OpenHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('a'))),
+            Action::CursorHome
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('e'))),
+            Action::CursorEnd
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('p'))),
+            Action::OpenHotkeyDialog
+        ));
         // Ctrl+Left/Right and F6-F9 are unbound (room nudging removed,
         // SQ-0600). Ctrl+Up/Down are the exception (SQ-0677): they recall
         // command history, restoring the plain arrows' shell-style behaviour
         // under a modifier now that the command band claims plain ↑/↓ for
         // its own row navigation while open.
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Left)), Action::None));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Right)), Action::None));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Up)), Action::HistoryPrev));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Down)), Action::HistoryNext));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Left)),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Right)),
+            Action::None
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Up)),
+            Action::HistoryPrev
+        ));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Down)),
+            Action::HistoryNext
+        ));
         for f in [6u8, 7, 8, 9] {
-            assert!(matches!(key_to_action(&s, key(KeyCode::F(f))), Action::None));
+            assert!(matches!(
+                key_to_action(&s, key(KeyCode::F(f))),
+                Action::None
+            ));
         }
         // Tab → ToggleFocus (no input, no suggestions)
-        assert!(matches!(key_to_action(&s, key(KeyCode::Tab)), Action::ToggleFocus));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Tab)),
+            Action::ToggleFocus
+        ));
         // Text entry
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('n'))), Action::InputChar('n')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('n'))),
+            Action::InputChar('n')
+        ));
 
         // ── Story focus: the old map-focus key set is typing now (SQ-0599) ────
         let mut s = AppState::default();
@@ -6851,74 +7888,189 @@ mod tests {
             );
         }
         // Plain arrows edit the line; Shift+Arrows pan the map from right here.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Right)), Action::CursorRight));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Left)), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Right)), Action::Pan(1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Up)), Action::Pan(0, -1)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::CursorLeft
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Right)),
+            Action::CursorRight
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Left)),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Right)),
+            Action::Pan(1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Up)),
+            Action::Pan(0, -1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
         // Direct ctrl globals are unaffected.
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state"));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Left)), Action::None));
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state")
+        );
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Left)),
+            Action::None
+        ));
 
         // ── Leader dialog open ────────────────────────────────────────────────
         s.overlays.hotkey_dialog = true;
         // Dialog-only commands now fire via their authored leader letters (SQ-0446).
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('n'))), Action::EditNotes));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('p'))), Action::MoveRegion(ref a) if a == "new"));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('m'))), Action::MoveRegion(ref a) if a == "parent"));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('r'))), Action::RenameRoom));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('n'))),
+            Action::EditNotes
+        ));
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Char('p'))), Action::MoveRegion(ref a) if a == "new")
+        );
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Char('m'))), Action::MoveRegion(ref a) if a == "parent")
+        );
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('r'))),
+            Action::RenameRoom
+        ));
         // 't' was Retidy until the Layout group left the panel; unauthored letters
         // close the dialog rather than firing, so it belongs with the group below.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('t'))), Action::CloseHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('t'))),
+            Action::CloseHotkeyDialog
+        ));
         // Unauthored keys (shift-modified letters, brackets, dropped letters)
         // close the dialog instead of firing.
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Char('N'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char(']'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('['))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('r'))), Action::RenameRoom));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Char('N'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char(']'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('['))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('r'))),
+            Action::RenameRoom
+        ));
         // 'o' (old edit-notes letter) is now unbound → closes the dialog.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('o'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('d'))), Action::DeleteSelectedConnection));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('e'))), Action::RelabelSelectedEdge));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::SetJournalTab(crate::journal::JournalTab::Inventory)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('o'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('d'))),
+            Action::DeleteSelectedConnection
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('e'))),
+            Action::RelabelSelectedEdge
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::SetJournalTab(crate::journal::JournalTab::Inventory)
+        ));
         // 'q' is deliberately unassigned → it closes the dialog (quit convention).
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('q'))), Action::CloseHotkeyDialog));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('q'))),
+            Action::CloseHotkeyDialog
+        ));
         s.overlays.hotkey_dialog = false;
 
         // ── Anim sub-mode ─────────────────────────────────────────────────────
         let mut s = AppState::default();
         s.focus = Focus::Map;
-        let frame = |l: &str| TidyFrame { label: l.into(), graph: mapper::graph::MapGraph::new(), description: String::new(), stats: mapper::layout::TidyStats::default(), stage_start: false, manifest: None };
-        s.tidy_anim = Some(TidyAnim::new(vec![frame("a"), frame("b")], mapper::layer::MAIN_LAYER));
+        let frame = |l: &str| TidyFrame {
+            label: l.into(),
+            graph: mapper::graph::MapGraph::new(),
+            description: String::new(),
+            stats: mapper::layout::TidyStats::default(),
+            stage_start: false,
+            manifest: None,
+        };
+        s.tidy_anim = Some(TidyAnim::new(
+            vec![frame("a"), frame("b")],
+            mapper::layer::MAIN_LAYER,
+        ));
         // Step
-        assert!(matches!(key_to_action(&s, key(KeyCode::Left)), Action::AnimStep(-1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Right)), Action::AnimStep(1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::AnimStep(-1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Right)),
+            Action::AnimStep(1)
+        ));
         // Play/pause
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char(' '))), Action::AnimTogglePlay));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char(' '))),
+            Action::AnimTogglePlay
+        ));
         // Exit
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::AnimExit));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Enter)), Action::AnimExit));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Esc)),
+            Action::AnimExit
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Enter)),
+            Action::AnimExit
+        ));
         // Pan in anim: hjkl + shift-arrows (SQ-0416). Plain arrows step stages, so
         // shift+Arrow is the arrow-key pan path during playback.
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Left)), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Right)), Action::Pan(1, 0)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Up)), Action::Pan(0, -1)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('h'))), Action::Pan(-1, 0)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('j'))), Action::Pan(0, 1)));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Left)),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Right)),
+            Action::Pan(1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Up)),
+            Action::Pan(0, -1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('h'))),
+            Action::Pan(-1, 0)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('j'))),
+            Action::Pan(0, 1)
+        ));
         // Zoom in anim
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('+'))), Action::ZoomIn));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('-'))), Action::ZoomOut));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('+'))),
+            Action::ZoomIn
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('-'))),
+            Action::ZoomOut
+        ));
         // Anim does NOT fall through to Global: unknown key → None
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('s'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('s'))),
+            Action::None
+        ));
     }
 
     // ── Saves-manager sub-mode tests ──────────────────────────────────────────
 
     fn state_with_saves_open() -> AppState {
-        use crate::state::{SavesState};
         use crate::persist_files::SaveInfo;
+        use crate::state::SavesState;
         use std::path::PathBuf;
         let mut s = AppState::default();
         s.overlays.saves = Some(SavesState {
@@ -6928,14 +8080,20 @@ mod tests {
                     name: "(default)".to_string(),
                     turns: 0,
                     saved_at: String::new(),
-                    location: None, score: None, is_default: true, trigger: crate::archive::SaveTrigger::HostState,
+                    location: None,
+                    score: None,
+                    is_default: true,
+                    trigger: crate::archive::SaveTrigger::HostState,
                 },
                 SaveInfo {
                     path: PathBuf::from("/tmp/named.lanthorn"),
                     name: "before-troll".to_string(),
                     turns: 10,
                     saved_at: "2026-06-18T10:00:00Z".to_string(),
-                    location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState,
+                    location: None,
+                    score: None,
+                    is_default: false,
+                    trigger: crate::archive::SaveTrigger::HostState,
                 },
             ],
             scroll: Default::default(),
@@ -6966,8 +8124,15 @@ mod tests {
         apply_action(a, &mut s, &mut Mapper::default());
         // SavesSaveAs now opens the common-dialog save-name modal (not a bottom-bar
         // prompt), prefilled with a greyed date-time default, focused on the field.
-        assert!(s.overlays.text_entry.is_none(), "no text-entry dialog is opened for save-as");
-        let dlg = s.overlays.save_name_dialog.as_ref().expect("save-name dialog opened");
+        assert!(
+            s.overlays.text_entry.is_none(),
+            "no text-entry dialog is opened for save-as"
+        );
+        let dlg = s
+            .overlays
+            .save_name_dialog
+            .as_ref()
+            .expect("save-name dialog opened");
         assert!(!dlg.active, "opens greyed (placeholder) until edited");
         assert!(!dlg.ingame, "host Save State context");
         assert!(!dlg.field.value.is_empty(), "prefilled with a default name");
@@ -6982,8 +8147,14 @@ mod tests {
         let a = key_to_action(&s, key(KeyCode::Char('d')));
         assert!(matches!(a, Action::SavesDelete));
         apply_action(a, &mut s, &mut Mapper::default());
-        assert!(s.overlays.confirm_delete_save.is_some(), "SavesDelete opens the confirm-delete dialog");
-        assert_eq!(s.overlays.dialog_focus, 1, "focus starts on Cancel (the safe default)");
+        assert!(
+            s.overlays.confirm_delete_save.is_some(),
+            "SavesDelete opens the confirm-delete dialog"
+        );
+        assert_eq!(
+            s.overlays.dialog_focus, 1,
+            "focus starts on Cancel (the safe default)"
+        );
     }
 
     #[test]
@@ -6992,7 +8163,10 @@ mod tests {
         let a = key_to_action(&s, key(KeyCode::Esc));
         assert!(matches!(a, Action::SavesClose));
         apply_action(a, &mut s, &mut Mapper::default());
-        assert!(s.overlays.saves.is_none(), "Esc should close the saves modal");
+        assert!(
+            s.overlays.saves.is_none(),
+            "Esc should close the saves modal"
+        );
     }
 
     #[test]
@@ -7006,38 +8180,76 @@ mod tests {
     fn ctrl_o_opens_saves_in_game_and_map_focus() {
         // open_saves is not in the direct set: Ctrl+O returns None when dialog is closed.
         let s = AppState::default();
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('o'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('o'))),
+            Action::None
+        ));
         let mut s = AppState::default();
         s.toggle_focus();
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('o'))), Action::None));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('o'))),
+            Action::None
+        ));
         s.overlays.hotkey_dialog = true;
         // Ctrl-combos always close the dialog now (never fire). open-saves has no
         // leader letter; the SQ-0446 leader letter 's' opens the settings screen
         // (open-settings), reached via the saves dialog / Ctrl+R otherwise.
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('o'))), Action::CloseHotkeyDialog));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('s'))), Action::OpenConfig));
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('o'))),
+            Action::CloseHotkeyDialog
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('s'))),
+            Action::OpenConfig
+        ));
     }
 
     #[test]
     fn saves_nav_wraps_around() {
-        use crate::state::SavesState;
         use crate::persist_files::SaveInfo;
+        use crate::state::SavesState;
         use std::path::PathBuf;
         let mut s = AppState::default();
         s.overlays.saves = Some(SavesState {
             entries: vec![
-                SaveInfo { path: PathBuf::from("/tmp/a.lanthorn"), name: "a".into(), turns: 0, saved_at: String::new(), location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState },
-                SaveInfo { path: PathBuf::from("/tmp/b.lanthorn"), name: "b".into(), turns: 0, saved_at: String::new(), location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState },
+                SaveInfo {
+                    path: PathBuf::from("/tmp/a.lanthorn"),
+                    name: "a".into(),
+                    turns: 0,
+                    saved_at: String::new(),
+                    location: None,
+                    score: None,
+                    is_default: false,
+                    trigger: crate::archive::SaveTrigger::HostState,
+                },
+                SaveInfo {
+                    path: PathBuf::from("/tmp/b.lanthorn"),
+                    name: "b".into(),
+                    turns: 0,
+                    saved_at: String::new(),
+                    location: None,
+                    score: None,
+                    is_default: false,
+                    trigger: crate::archive::SaveTrigger::HostState,
+                },
             ],
             scroll: Default::default(),
         });
         s.overlays.saves.as_mut().unwrap().scroll.selected = 1;
         // Down from last wraps to first.
         apply_action(Action::SavesNav(1), &mut s, &mut Mapper::default());
-        assert_eq!(s.overlays.saves.as_ref().unwrap().scroll.selected, 0, "should wrap to 0 after last");
+        assert_eq!(
+            s.overlays.saves.as_ref().unwrap().scroll.selected,
+            0,
+            "should wrap to 0 after last"
+        );
         // Up from first wraps to last.
         apply_action(Action::SavesNav(-1), &mut s, &mut Mapper::default());
-        assert_eq!(s.overlays.saves.as_ref().unwrap().scroll.selected, 1, "should wrap to last");
+        assert_eq!(
+            s.overlays.saves.as_ref().unwrap().scroll.selected,
+            1,
+            "should wrap to last"
+        );
     }
 
     // ── Command palette dispatch tests (SQ-0419) ──────────────────────────────
@@ -7046,9 +8258,15 @@ mod tests {
     fn slash_at_empty_prompt_opens_palette() {
         let mut s = AppState::default(); // Game focus, empty input line.
         let a = key_to_action(&s, key(KeyCode::Char('/')));
-        assert!(matches!(a, Action::OpenCommandPalette { from_hotkey: false }));
+        assert!(matches!(
+            a,
+            Action::OpenCommandPalette { from_hotkey: false }
+        ));
         apply_action(a, &mut s, &mut Mapper::default());
-        assert!(s.overlays.palette.is_some(), "'/' at an empty prompt opens the palette");
+        assert!(
+            s.overlays.palette.is_some(),
+            "'/' at an empty prompt opens the palette"
+        );
     }
 
     #[test]
@@ -7056,7 +8274,10 @@ mod tests {
         let mut s = AppState::default();
         s.input = crate::text_field::TextField::new("go");
         // '/' with a non-empty line is an ordinary character, not a palette trigger.
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('/'))), Action::InputChar('/')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('/'))),
+            Action::InputChar('/')
+        ));
     }
 
     #[test]
@@ -7064,33 +8285,59 @@ mod tests {
         let mut s = AppState::default();
         s.overlays.hotkey_dialog = true;
         let a = key_to_action(&s, key(KeyCode::Char('/')));
-        assert!(matches!(a, Action::OpenCommandPalette { from_hotkey: true }));
+        assert!(matches!(
+            a,
+            Action::OpenCommandPalette { from_hotkey: true }
+        ));
         apply_action(a, &mut s, &mut Mapper::default());
-        assert!(s.overlays.palette.is_some(), "'/' in the hotkey dialog opens the palette");
-        assert!(!s.overlays.hotkey_dialog, "the hotkey dialog closes when the palette opens");
+        assert!(
+            s.overlays.palette.is_some(),
+            "'/' in the hotkey dialog opens the palette"
+        );
+        assert!(
+            !s.overlays.hotkey_dialog,
+            "the hotkey dialog closes when the palette opens"
+        );
     }
 
     #[test]
     fn palette_esc_closes_and_preserves_empty_prompt() {
         let mut s = AppState::default();
         // '/' promotes the empty prompt; Esc returns to it unchanged (still empty).
-        apply_action(key_to_action(&s, key(KeyCode::Char('/'))), &mut s, &mut Mapper::default());
+        apply_action(
+            key_to_action(&s, key(KeyCode::Char('/'))),
+            &mut s,
+            &mut Mapper::default(),
+        );
         let a = key_to_action(&s, key(KeyCode::Esc));
         assert!(matches!(a, Action::PaletteClose));
         apply_action(a, &mut s, &mut Mapper::default());
         assert!(s.overlays.palette.is_none(), "Esc closes the palette");
-        assert!(!s.overlays.hotkey_dialog, "prompt-promoted palette does not reopen the hotkey dialog");
-        assert!(s.input.value.is_empty(), "the story prompt is preserved (empty)");
+        assert!(
+            !s.overlays.hotkey_dialog,
+            "prompt-promoted palette does not reopen the hotkey dialog"
+        );
+        assert!(
+            s.input.value.is_empty(),
+            "the story prompt is preserved (empty)"
+        );
     }
 
     #[test]
     fn palette_esc_returns_to_hotkey_dialog_when_promoted_from_it() {
         let mut s = AppState::default();
         s.overlays.hotkey_dialog = true;
-        apply_action(key_to_action(&s, key(KeyCode::Char('/'))), &mut s, &mut Mapper::default());
+        apply_action(
+            key_to_action(&s, key(KeyCode::Char('/'))),
+            &mut s,
+            &mut Mapper::default(),
+        );
         apply_action(Action::PaletteClose, &mut s, &mut Mapper::default());
         assert!(s.overlays.palette.is_none());
-        assert!(s.overlays.hotkey_dialog, "Esc returns to the hotkey dialog it was promoted from");
+        assert!(
+            s.overlays.hotkey_dialog,
+            "Esc returns to the hotkey dialog it was promoted from"
+        );
     }
 
     #[test]
@@ -7102,13 +8349,25 @@ mod tests {
         // (SQ-1535: the story browser's commands never reach the in-game palette).
         let n = crate::complete::palette_candidates("").len();
         // Down moves to index 1.
-        apply_action(key_to_action(&s, key(KeyCode::Down)), &mut s, &mut Mapper::default());
+        apply_action(
+            key_to_action(&s, key(KeyCode::Down)),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.overlays.palette.as_ref().unwrap().scroll.selected, 1);
         // Shift-Tab reverses back to 0.
-        apply_action(key_to_action(&s, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)), &mut s, &mut Mapper::default());
+        apply_action(
+            key_to_action(&s, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.overlays.palette.as_ref().unwrap().scroll.selected, 0);
         // Shift-Tab again wraps to the last entry (reverse of Down's wrap).
-        apply_action(key_to_action(&s, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)), &mut s, &mut Mapper::default());
+        apply_action(
+            key_to_action(&s, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.overlays.palette.as_ref().unwrap().scroll.selected, n - 1);
     }
 
@@ -7121,7 +8380,10 @@ mod tests {
         }
         // Best match for "zoom" is zoom-map; Tab completes the first token.
         apply_action(Action::PaletteComplete, &mut s, &mut Mapper::default());
-        assert_eq!(s.overlays.palette.as_ref().unwrap().input.value, "zoom-map ");
+        assert_eq!(
+            s.overlays.palette.as_ref().unwrap().input.value,
+            "zoom-map "
+        );
     }
 
     #[test]
@@ -7143,10 +8405,15 @@ mod tests {
         assert_eq!(cmd, "toggle-alignment");
         // Dispatch it exactly like the run loop's Command arm.
         match crate::slash::parse_in_context(&cmd, '/', ctx) {
-            crate::slash::SlashOutcome::Action(a) => apply_action(a, &mut s, &mut Mapper::default()),
+            crate::slash::SlashOutcome::Action(a) => {
+                apply_action(a, &mut s, &mut Mapper::default())
+            }
             other => panic!("expected an Action outcome, got {other:?}"),
         }
-        assert_ne!(s.show_alignment, before, "the toggle command mutated state end-to-end");
+        assert_ne!(
+            s.show_alignment, before,
+            "the toggle command mutated state end-to-end"
+        );
     }
 
     // ── SQ-1535: dispatch-time hardening (defense in depth) ───────────────────
@@ -7165,7 +8432,8 @@ mod tests {
         // fetch-story is Context::Browser. Gating its dispatch against its OWN
         // declared context (the bug) always "succeeds", because it is
         // definitionally the same value on both sides of the comparison.
-        let spec = crate::slash::find_command("fetch-story").expect("fetch-story is in the registry");
+        let spec =
+            crate::slash::find_command("fetch-story").expect("fetch-story is in the registry");
         assert_eq!(spec.context, Context::Browser);
         let outcome = crate::slash::parse_in_context("fetch-story", '/', spec.context);
         assert!(
@@ -7238,8 +8506,13 @@ mod tests {
     fn dialog_closed_direct_cmd_still_works() {
         // With the dialog closed, direct commands still fire on their own keys.
         let s = AppState::default();
-        assert!(matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state"));
-        assert!(matches!(key_to_action(&s, ctrl(KeyCode::Char('q'))), Action::Quit));
+        assert!(
+            matches!(key_to_command(&s, ctrl(KeyCode::Char('s'))), KeyResolve::Command(c, _) if c == "save-state")
+        );
+        assert!(matches!(
+            key_to_action(&s, ctrl(KeyCode::Char('q'))),
+            Action::Quit
+        ));
     }
 
     #[test]
@@ -7307,9 +8580,15 @@ mod tests {
         let mut s = AppState::default();
         s.focus = Focus::Map;
         s.overlays.hotkey_dialog = true;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('r'))), Action::RenameRoom));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('r'))),
+            Action::RenameRoom
+        ));
         // toggle-inventory-panel fires too (SQ-0446 gave 'i' to inventory).
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('i'))), Action::SetJournalTab(crate::journal::JournalTab::Inventory)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('i'))),
+            Action::SetJournalTab(crate::journal::JournalTab::Inventory)
+        ));
     }
 
     #[test]
@@ -7322,7 +8601,8 @@ mod tests {
         // add. Gating its dispatch against its OWN declared context always
         // "succeeds" for the same reason SQ-1535's palette bug did: it is
         // definitionally the same value on both sides of the comparison.
-        let spec = crate::slash::find_command("fetch-story").expect("fetch-story is in the registry");
+        let spec =
+            crate::slash::find_command("fetch-story").expect("fetch-story is in the registry");
         assert_eq!(spec.context, Context::Browser);
         let outcome = crate::slash::parse_in_context("fetch-story", '/', spec.context);
         assert!(
@@ -7339,7 +8619,10 @@ mod tests {
         // trusting the bound command's own `spec.context`.
         let mut s = AppState::default(); // Focus::Game, no tidy_anim.
         s.overlays.hotkey_dialog = true;
-        s.hotkeys.groups = vec![("Test".to_string(), vec![('x', "fetch-story".to_string(), None)])];
+        s.hotkeys.groups = vec![(
+            "Test".to_string(),
+            vec![('x', "fetch-story".to_string(), None)],
+        )];
 
         let resolved = key_to_command(&s, key(KeyCode::Char('x')));
         let (cmd, ctx) = match resolved {
@@ -7347,7 +8630,11 @@ mod tests {
             other => panic!("expected a Command, got {other:?}"),
         };
         assert_eq!(cmd, "fetch-story");
-        assert_ne!(ctx, Context::Browser, "must gate against the live context, not fetch-story's own");
+        assert_ne!(
+            ctx,
+            Context::Browser,
+            "must gate against the live context, not fetch-story's own"
+        );
         assert_eq!(ctx, live_slash_context(&s));
 
         // And dispatching through parse_in_context with the resolved context
@@ -7385,9 +8672,15 @@ mod tests {
         let mut s = AppState::default();
         s.config.record_turn_history = false;
         apply_action(Action::OpenHistory, &mut s, &mut m);
-        assert!(s.overlays.history_prompt, "the prompt must open when recording is off");
+        assert!(
+            s.overlays.history_prompt,
+            "the prompt must open when recording is off"
+        );
         assert!(s.overlays.replay.is_none(), "there is nothing to replay");
-        assert_eq!(s.overlays.dialog_focus, 0, "focus starts on the affirmative button");
+        assert_eq!(
+            s.overlays.dialog_focus, 0,
+            "focus starts on the affirmative button"
+        );
 
         // Recording ON but nothing yet → say so; do not offer what is already on.
         // SQ-1045: said in the assist voice now, in the transcript, rather than as
@@ -7396,14 +8689,20 @@ mod tests {
         s.config.record_turn_history = true;
         s.assist_preamble_shown = true; // the once-per-session introduction has its own case
         apply_action(Action::OpenHistory, &mut s, &mut m);
-        assert!(!s.overlays.history_prompt, "no prompt when the setting is already on");
+        assert!(
+            !s.overlays.history_prompt,
+            "no prompt when the setting is already on"
+        );
         let told = s.transcript.last().cloned().unwrap_or_default();
         // The line carries no marker of its own — on screen the mark in the gutter
         // is what identifies it, and the kind tag is what `/filter` and the
         // exporter separate on. Both are `assist_voice`'s business; naming the
         // variant here would trip its one-producer guard, which is the guard doing
         // its job.
-        assert!(told.contains("rewind"), "the player is told why nothing opened: {told:?}");
+        assert!(
+            told.contains("rewind"),
+            "the player is told why nothing opened: {told:?}"
+        );
 
         // History present → open the replay, whatever the setting says.
         let mut s = AppState::default();
@@ -7412,8 +8711,14 @@ mod tests {
             crate::history::record_turn(&mut s.history, t, "n", vec![t as u8], &m, false, "");
         }
         apply_action(Action::OpenHistory, &mut s, &mut m);
-        assert!(!s.overlays.history_prompt, "nothing to offer when there is history to show");
-        assert!(s.overlays.replay.is_some(), "the replay opens, seeded at the last turn");
+        assert!(
+            !s.overlays.history_prompt,
+            "nothing to offer when there is history to show"
+        );
+        assert!(
+            s.overlays.replay.is_some(),
+            "the replay opens, seeded at the last turn"
+        );
     }
 
     #[test]
@@ -7422,7 +8727,10 @@ mod tests {
         let mut m = Mapper::default();
         s.overlays.hotkey_dialog = true;
         apply_action(Action::OpenSaves, &mut s, &mut m);
-        assert!(!s.overlays.hotkey_dialog, "OpenSaves should clear the hotkey dialog");
+        assert!(
+            !s.overlays.hotkey_dialog,
+            "OpenSaves should clear the hotkey dialog"
+        );
     }
 
     // ── is_direct as sole direct-vs-prefix determiner ─────────────────────────
@@ -7430,7 +8738,7 @@ mod tests {
     /// Promoting a command via config makes it reachable directly (dialog closed).
     #[test]
     fn direct_config_promotes_retidy_to_direct() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
             direct: Some(vec!["tidy-map".into()]),
@@ -7446,7 +8754,12 @@ mod tests {
         // tidy-map has no default keymap binding now (leader-only command), so a
         // user promoting it to direct via config would also bind a key for it.
         s.keymap.bindings.push((
-            crate::keymap::KeySpec { code: KeyCode::Char('t'), ctrl: true, shift: false, alt: false },
+            crate::keymap::KeySpec {
+                code: KeyCode::Char('t'),
+                ctrl: true,
+                shift: false,
+                alt: false,
+            },
             "tidy-map".to_string(),
             crate::keymap::Context::Global,
         ));
@@ -7476,7 +8789,10 @@ mod tests {
         s.overlays.hotkey_dialog = true;
         // Ctrl-combos close the dialog rather than firing, as they always did.
         assert!(
-            matches!(key_to_action(&s, ctrl(KeyCode::Char('t'))), Action::CloseHotkeyDialog),
+            matches!(
+                key_to_action(&s, ctrl(KeyCode::Char('t'))),
+                Action::CloseHotkeyDialog
+            ),
             "Ctrl-combos close the hotkey dialog rather than firing"
         );
         // And a bare `t` now fires nothing: no group authors that letter.
@@ -7494,7 +8810,12 @@ mod tests {
         row: u16,
         modifiers: KeyModifiers,
     ) -> crossterm::event::MouseEvent {
-        crossterm::event::MouseEvent { kind, column: col, row, modifiers }
+        crossterm::event::MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers,
+        }
     }
 
     fn map_rect() -> ratatui::layout::Rect {
@@ -7506,12 +8827,16 @@ mod tests {
     }
 
     /// Build a room_rects slice for a single room at a given cell using Compact zoom.
-    fn room_rects_for_compact(id: u16, cell: (i32, i32), area: ratatui::layout::Rect) -> Vec<(mapper::graph::RoomId, ratatui::layout::Rect)> {
-        use crate::state::{AppState, Zoom};
+    fn room_rects_for_compact(
+        id: u16,
+        cell: (i32, i32),
+        area: ratatui::layout::Rect,
+    ) -> Vec<(mapper::graph::RoomId, ratatui::layout::Rect)> {
         use crate::render::map::room_screen_rects;
+        use crate::state::{AppState, Zoom};
         use mapper::graph::MapGraph;
-        use mapper::render::render_layer;
         use mapper::layer::MAIN_LAYER;
+        use mapper::render::render_layer;
 
         let mut g = MapGraph::new();
         g.upsert_room(id.into(), "Room".into());
@@ -7572,17 +8897,30 @@ mod tests {
 
     fn wheel_up() -> crossterm::event::MouseEvent {
         // Position (10, 10) is inside map_rect (0,0,80,40).
-        mouse_event(crossterm::event::MouseEventKind::ScrollUp, 10, 10, KeyModifiers::NONE)
+        mouse_event(
+            crossterm::event::MouseEventKind::ScrollUp,
+            10,
+            10,
+            KeyModifiers::NONE,
+        )
     }
     fn wheel_down() -> crossterm::event::MouseEvent {
-        mouse_event(crossterm::event::MouseEventKind::ScrollDown, 10, 10, KeyModifiers::NONE)
+        mouse_event(
+            crossterm::event::MouseEventKind::ScrollDown,
+            10,
+            10,
+            KeyModifiers::NONE,
+        )
     }
 
     #[test]
     fn wheel_drives_saves_selection() {
         use crate::state::SavesState;
         let mut s = AppState::default();
-        s.overlays.saves = Some(SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         assert!(matches!(
             mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None),
             Action::ListWheel(-1)
@@ -7599,7 +8937,10 @@ mod tests {
     fn wheel_drives_the_config_screen() {
         let mut s = AppState::default();
         apply_action(Action::OpenConfig, &mut s, &mut Mapper::default());
-        assert!(s.overlays.config_screen.is_some(), "sanity: the screen opened");
+        assert!(
+            s.overlays.config_screen.is_some(),
+            "sanity: the screen opened"
+        );
         assert!(matches!(
             mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None),
             Action::ListWheel(-1)
@@ -7631,7 +8972,8 @@ mod tests {
         let mut s = AppState::default();
         s.overlays.file_browser = Some(FileBrowserState::build(
             std::env::temp_dir(),
-            FbMode::PickFile));
+            FbMode::PickFile,
+        ));
         assert!(matches!(
             mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None),
             Action::ListWheel(-1)
@@ -7653,19 +8995,29 @@ mod tests {
         let closed = mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None);
         open_band(&mut s);
         let open = mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None);
-        assert_eq!(open, closed, "the band does not intercept wheels outside its rect");
-        assert_ne!(closed, Action::None, "sanity: the wheel does something out there");
+        assert_eq!(
+            open, closed,
+            "the band does not intercept wheels outside its rect"
+        );
+        assert_ne!(
+            closed,
+            Action::None,
+            "sanity: the wheel does something out there"
+        );
     }
 
     #[test]
     fn wheel_modal_precedence_beats_open_dialog_chrome() {
         // Saves open WITH a dialog present: the wheel must still drive the saves
         // list (not be swallowed by the dialog chrome block).
-        use crate::state::SavesState;
         use crate::render::dialog::DialogRects;
+        use crate::state::SavesState;
         use ratatui::layout::Rect;
         let mut s = AppState::default();
-        s.overlays.saves = Some(SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         let dialog = Some(DialogRects {
             area: Rect::new(10, 5, 40, 15),
             content: Rect::new(11, 7, 38, 10),
@@ -7686,7 +9038,10 @@ mod tests {
         // to the DOWN action and ScrollDown to the UP action.
         use crate::state::SavesState;
         let mut s = AppState::default();
-        s.overlays.saves = Some(SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         s.config.mouse_wheel_invert = true;
         assert!(matches!(
             mouse_to_action(&s, wheel_up(), map_rect(), story_rect(), &[], &None),
@@ -7714,7 +9069,10 @@ mod tests {
             s.config.animation.enabled = false;
             s.config.mouse_wheel_invert = invert;
             s.modal_list_viewport = 5;
-            s.overlays.saves = Some(SavesState { entries: entries.clone(), scroll: Default::default() });
+            s.overlays.saves = Some(SavesState {
+                entries: entries.clone(),
+                scroll: Default::default(),
+            });
             // Start mid-list so both directions have room to move.
             apply_action(Action::SavesNav(20), &mut s, &mut Mapper::default());
             let base = s.overlays.saves.as_ref().unwrap().scroll.target_offset();
@@ -7723,7 +9081,11 @@ mod tests {
             let after = s.overlays.saves.as_ref().unwrap().scroll.target_offset();
             settled.push(after as i64 - base as i64);
         }
-        assert_eq!(settled, vec![1, -1], "one ScrollDown scrolls +1 row, or -1 inverted — never 0");
+        assert_eq!(
+            settled,
+            vec![1, -1],
+            "one ScrollDown scrolls +1 row, or -1 inverted — never 0"
+        );
     }
 
     /// SQ-0831, the whole point: a notch moves the LIST, not the cursor. The
@@ -7756,18 +9118,30 @@ mod tests {
         // rather than being scrolled off the screen.
         apply_action(Action::ListWheel(1), &mut s, &mut m);
         apply_action(Action::ListWheel(1), &mut s, &mut m);
-        assert_eq!((off(&s), sel(&s)), (3, 3), "cursor pinned to the first visible row");
+        assert_eq!(
+            (off(&s), sel(&s)),
+            (3, 3),
+            "cursor pinned to the first visible row"
+        );
 
         // The far end: the offset stops with the last entry on the bottom row.
         for _ in 0..100 {
             apply_action(Action::ListWheel(1), &mut s, &mut m);
         }
-        assert_eq!(off(&s), 35, "40 entries, 5 rows → the last window starts at 35");
+        assert_eq!(
+            off(&s),
+            35,
+            "40 entries, 5 rows → the last window starts at 35"
+        );
         assert_eq!(sel(&s), 35);
         for _ in 0..100 {
             apply_action(Action::ListWheel(-1), &mut s, &mut m);
         }
-        assert_eq!((off(&s), sel(&s)), (0, 4), "…and the bottom row at the top of the list");
+        assert_eq!(
+            (off(&s), sel(&s)),
+            (0, 4),
+            "…and the bottom row at the top of the list"
+        );
     }
 
     /// A list shorter than its window has nothing to scroll — and the wheel must
@@ -7787,7 +9161,11 @@ mod tests {
         for d in [1, 1, -1, -1] {
             apply_action(Action::ListWheel(d), &mut s, &mut m);
             let sc = &s.overlays.saves.as_ref().unwrap().scroll;
-            assert_eq!((sc.target_offset(), sc.selected), (0, 1), "nothing to scroll, cursor untouched");
+            assert_eq!(
+                (sc.target_offset(), sc.selected),
+                (0, 1),
+                "nothing to scroll, cursor untouched"
+            );
         }
     }
 
@@ -7803,14 +9181,20 @@ mod tests {
         // A synthetic, long-enough list: the temp dir's real contents are not
         // something a test may assume anything about.
         fb.entries = (0..20)
-            .map(|i| crate::state::FbEntry { name: format!("e{i}"), is_dir: false })
+            .map(|i| crate::state::FbEntry {
+                name: format!("e{i}"),
+                is_dir: false,
+            })
             .collect();
         s.overlays.file_browser = Some(fb);
         let mut m = Mapper::default();
         apply_action(Action::ListWheel(1), &mut s, &mut m);
         let sc = &s.overlays.file_browser.as_ref().unwrap().scroll;
         assert_eq!(sc.target_offset(), 1, "the browser list scrolled");
-        assert_eq!(sc.selected, 1, "cursor pinned to the top of the window, not stepped past it");
+        assert_eq!(
+            sc.selected, 1,
+            "cursor pinned to the top of the window, not stepped past it"
+        );
     }
 
     #[test]
@@ -7821,7 +9205,10 @@ mod tests {
         let mut m = Mapper::default();
         apply_action(Action::OpenConfig, &mut s, &mut m);
         apply_action(Action::ConfigNav(2), &mut s, &mut m);
-        assert_eq!(s.overlays.config_screen.as_ref().unwrap().scroll.selected, 2);
+        assert_eq!(
+            s.overlays.config_screen.as_ref().unwrap().scroll.selected,
+            2
+        );
         apply_action(Action::ListWheel(1), &mut s, &mut m);
         let sc = &s.overlays.config_screen.as_ref().unwrap().scroll;
         assert_eq!(sc.target_offset(), 1, "the settings list scrolled");
@@ -7848,13 +9235,20 @@ mod tests {
 
         // Premise: Main draws a ghost for room 2 (the thing the click lands on).
         let rm = mapper::render::render_layer(&m.graph, mapper::layer::MAIN_LAYER);
-        assert!(rm.rooms.iter().any(|r| r.id == 2 && r.ghost.as_ref().is_some_and(|g| g.layer == cellar)));
+        assert!(rm
+            .rooms
+            .iter()
+            .any(|r| r.id == 2 && r.ghost.as_ref().is_some_and(|g| g.layer == cellar)));
         s.set_viewed_layer(None); // MoveRegion left the view on the new layer
         assert_eq!(s.active_layer(&m.graph), mapper::layer::MAIN_LAYER);
 
         // Single click on the ghost.
         end_map_click(&mut s, &m, Some(MapClick::Room(2)), t0);
-        assert_eq!(s.active_layer(&m.graph), cellar, "the view followed the room's layer");
+        assert_eq!(
+            s.active_layer(&m.graph),
+            cellar,
+            "the view followed the room's layer"
+        );
         assert_eq!(s.selected_room, Some(2), "the REAL room is pinned");
         assert_eq!(s.journal_tab, JournalTab::Map);
 
@@ -7889,16 +9283,36 @@ mod tests {
 
         let mut s = AppState::default();
         end_map_click(&mut s, &m, Some(MapClick::Room(2)), t0);
-        end_map_click(&mut s, &m, Some(MapClick::Empty), t0 + Duration::from_millis(200));
+        end_map_click(
+            &mut s,
+            &m,
+            Some(MapClick::Empty),
+            t0 + Duration::from_millis(200),
+        );
         assert_eq!(s.selected_room, Some(2), "the REAL room stays pinned");
-        assert_eq!(m.graph.layer_of(s.selected_room.unwrap()), s.active_layer(&m.graph));
+        assert_eq!(
+            m.graph.layer_of(s.selected_room.unwrap()),
+            s.active_layer(&m.graph)
+        );
         assert_eq!(s.active_layer(&m.graph), cellar);
-        assert_eq!(s.journal_tab, JournalTab::Map, "no Room-tab switch for a ghost");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Map,
+            "no Room-tab switch for a ghost"
+        );
 
         let mut s = AppState::default();
         end_map_click(&mut s, &m, Some(MapClick::Room(2)), t0);
-        end_map_click(&mut s, &m, Some(MapClick::Empty), t0 + Duration::from_millis(900));
-        assert_eq!(s.selected_room, None, "after the window an empty click unpins");
+        end_map_click(
+            &mut s,
+            &m,
+            Some(MapClick::Empty),
+            t0 + Duration::from_millis(900),
+        );
+        assert_eq!(
+            s.selected_room, None,
+            "after the window an empty click unpins"
+        );
     }
 
     /// SQ-0692: a left-click on a room used to open a floating Room Info popup.
@@ -7912,8 +9326,8 @@ mod tests {
     /// still resolves to exactly what the old immediate-on-Down click did.
     #[test]
     fn left_down_on_room_cell_pins_the_dock_keeping_the_current_view() {
-        use crossterm::event::MouseEventKind;
         use crate::state::{MapClick, RoomDockView, Zoom};
+        use crossterm::event::MouseEventKind;
 
         // Simulates a plain click (no drag motion): Down begins the gesture,
         // Up at the same cell ends it, replaying the deferred click.
@@ -7923,36 +9337,64 @@ mod tests {
             col: u16,
             row: u16,
         ) {
-            let down = mouse_event(MouseEventKind::Down(MouseButton::Left), col, row, KeyModifiers::NONE);
+            let down = mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                col,
+                row,
+                KeyModifiers::NONE,
+            );
             let begin = mouse_to_action(s, down, map_rect(), story_rect(), rects, &None);
             apply_action(begin, s, &mut Mapper::default());
-            let up = mouse_event(MouseEventKind::Up(MouseButton::Left), col, row, KeyModifiers::NONE);
+            let up = mouse_event(
+                MouseEventKind::Up(MouseButton::Left),
+                col,
+                row,
+                KeyModifiers::NONE,
+            );
             let end = mouse_to_action(s, up, map_rect(), story_rect(), rects, &None);
-            assert!(matches!(end, Action::EndDragPan), "an unmoved release resolves to EndDragPan, got {:?}", end);
+            assert!(
+                matches!(end, Action::EndDragPan),
+                "an unmoved release resolves to EndDragPan, got {:?}",
+                end
+            );
             apply_action(end, s, &mut Mapper::default());
         }
 
         let mut s = AppState::default();
         s.zoom = Zoom::Compact; // step = (12, 5)
         s.scroll = (0, 0);
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Map, "the Journal starts on the Map");
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Map,
+            "the Journal starts on the Map"
+        );
         assert_eq!(s.room_dock_view, RoomDockView::Info, "the default view");
 
         // Room 1 at cell (0,0). Build room_rects using render pipeline.
         let rects = room_rects_for_compact(1, (0, 0), map_rect());
 
         // Down alone only records the deferred target — it does not pin yet.
-        let m = mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0, KeyModifiers::NONE);
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &rects, &None);
         assert!(
             matches!(action, Action::BeginMapDrag(0, 0, MapClick::Room(1))),
-            "left-down on a room begins a click-or-drag-pan targeting it, got {:?}", action
+            "left-down on a room begins a click-or-drag-pan targeting it, got {:?}",
+            action
         );
 
         // Click at (0,0) which is inside the Compact box (8x3) — Down then Up,
         // no motion, resolves to the same pin the old immediate click gave.
         press_release(&mut s, &rects, 0, 0);
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Map, "a plain click pins without leaving the map");
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Map,
+            "a plain click pins without leaving the map"
+        );
         assert_eq!(s.selected_room, Some(1));
 
         // SQ-1265: with Diagnostics showing (switched some other way — a tab
@@ -7960,12 +9402,19 @@ mod tests {
         s.room_dock_view = RoomDockView::Diagnostics;
         s.selected_room = None; // so the click pins rather than unpinning
         press_release(&mut s, &rects, 0, 0);
-        assert_eq!(s.room_dock_view, RoomDockView::Diagnostics, "…still Diagnostics");
+        assert_eq!(
+            s.room_dock_view,
+            RoomDockView::Diagnostics,
+            "…still Diagnostics"
+        );
         assert_eq!(s.selected_room, Some(1), "…and pinned again");
 
         // With the dock already open and pinned, the same click on the SAME room unpins.
         press_release(&mut s, &rects, 0, 0);
-        assert_eq!(s.selected_room, None, "a click on the already-pinned room unpins");
+        assert_eq!(
+            s.selected_room, None,
+            "a click on the already-pinned room unpins"
+        );
     }
 
     /// SQ-1265: right-click no longer switches to Diagnostics — it opens the
@@ -7974,8 +9423,8 @@ mod tests {
     /// room is meant.
     #[test]
     fn right_down_on_room_cell_opens_the_room_menu_and_pins_the_dock() {
-        use crossterm::event::MouseEventKind;
         use crate::state::{RoomDockView, Zoom};
+        use crossterm::event::MouseEventKind;
 
         let mut s = AppState::default();
         s.zoom = Zoom::Compact;
@@ -7984,17 +9433,31 @@ mod tests {
 
         let rects = room_rects_for_compact(2, (0, 0), map_rect());
 
-        let m = mouse_event(MouseEventKind::Down(MouseButton::Right), 0, 0, KeyModifiers::NONE);
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Right),
+            0,
+            0,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &rects, &None);
         assert!(
             matches!(action, Action::OpenRoomMenu(2, 0, 0)),
-            "right-down on a room opens its context menu anchored at the click, got {:?}", action
+            "right-down on a room opens its context menu anchored at the click, got {:?}",
+            action
         );
         apply_action(action, &mut s, &mut Mapper::default());
 
         assert_eq!(s.selected_room, Some(2), "the right-click pins the dock");
-        assert_eq!(s.room_dock_view, RoomDockView::Info, "…keeping the current (default) view");
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Map, "…without leaving the map the menu is anchored on");
+        assert_eq!(
+            s.room_dock_view,
+            RoomDockView::Info,
+            "…keeping the current (default) view"
+        );
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Map,
+            "…without leaving the map the menu is anchored on"
+        );
         let menu = s.overlays.room_menu.expect("the menu is open");
         assert_eq!(menu.room, 2);
         assert_eq!(menu.anchor, (0, 0));
@@ -8003,7 +9466,12 @@ mod tests {
         // A right-click on empty map space is the same "unpin only" as a left
         // click there — no menu, nothing to open it on.
         let empty_rects: Vec<(mapper::graph::RoomId, ratatui::layout::Rect)> = Vec::new();
-        let m = mouse_event(MouseEventKind::Down(MouseButton::Right), 5, 5, KeyModifiers::NONE);
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Right),
+            5,
+            5,
+            KeyModifiers::NONE,
+        );
         assert!(
             matches!(
                 mouse_to_action(&s, m, map_rect(), story_rect(), &empty_rects, &None),
@@ -8018,15 +9486,27 @@ mod tests {
     #[test]
     fn plain_up_down_recall_history_in_game_focus() {
         let s = AppState::default(); // Game focus
-        assert!(matches!(key_to_action(&s, key(KeyCode::Up)), Action::HistoryPrev));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Down)), Action::HistoryNext));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Up)),
+            Action::HistoryPrev
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Down)),
+            Action::HistoryNext
+        ));
     }
 
     #[test]
     fn shift_up_down_still_pan_in_game_focus() {
         let s = AppState::default(); // Game focus
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Up)), Action::Pan(0, -1)));
-        assert!(matches!(key_to_action(&s, shift(KeyCode::Down)), Action::Pan(0, 1)));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Up)),
+            Action::Pan(0, -1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, shift(KeyCode::Down)),
+            Action::Pan(0, 1)
+        ));
     }
 
     #[test]
@@ -8200,8 +9680,8 @@ mod tests {
     /// wanted when you clicked away from a room in the first place.
     #[test]
     fn left_down_on_gutter_unpins_without_taking_focus() {
-        use crossterm::event::MouseEventKind;
         use crate::state::{MapClick, Zoom};
+        use crossterm::event::MouseEventKind;
 
         let mut s = AppState::default();
         s.zoom = Zoom::Compact; // step = (12, 5)
@@ -8213,22 +9693,44 @@ mod tests {
 
         // SQ-1325: Down defers to a click-or-drag-pan rather than unpinning
         // immediately, so the map gutter can also be dragged to pan.
-        let down = mouse_event(MouseEventKind::Down(MouseButton::Left), 50, 0, KeyModifiers::NONE);
+        let down = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            50,
+            0,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, down, map_rect(), story_rect(), &rects, &None);
         assert!(
             matches!(action, Action::BeginMapDrag(50, 0, MapClick::Empty)),
-            "left-down on the map gutter begins a click-or-drag-pan with no target, got {:?}", action
+            "left-down on the map gutter begins a click-or-drag-pan with no target, got {:?}",
+            action
         );
-        assert_eq!(s.focus, Focus::Game, "must not hand the keyboard to the map (SQ-0599)");
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "must not hand the keyboard to the map (SQ-0599)"
+        );
         apply_action(action, &mut s, &mut Mapper::default());
 
         // Release with no motion in between replays the deferred unpin.
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Left), 50, 0, KeyModifiers::NONE);
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            50,
+            0,
+            KeyModifiers::NONE,
+        );
         let end = mouse_to_action(&s, up, map_rect(), story_rect(), &rects, &None);
         assert!(matches!(end, Action::EndDragPan));
         apply_action(end, &mut s, &mut Mapper::default());
-        assert_eq!(s.selected_room, None, "an unmoved release on the gutter unpins");
-        assert_eq!(s.focus, Focus::Game, "…and still never hands the keyboard to the map (SQ-0599)");
+        assert_eq!(
+            s.selected_room, None,
+            "an unmoved release on the gutter unpins"
+        );
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "…and still never hands the keyboard to the map (SQ-0599)"
+        );
     }
 
     #[test]
@@ -8236,40 +9738,72 @@ mod tests {
         use crossterm::event::MouseEventKind;
         let mut s = AppState::default();
         // col 85 is inside story_rect (x=80..120).
-        let m = mouse_event(MouseEventKind::Down(MouseButton::Left), 85, 5, KeyModifiers::NONE);
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            85,
+            5,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
         assert!(
             matches!(action, Action::StartSelection(85, 5)),
-            "left-down in story pane should start a selection, got {:?}", action
+            "left-down in story pane should start a selection, got {:?}",
+            action
         );
         // Applying it activates the game pane and sets the selection anchor.
         // Publish geometry so screen cells map to absolute wrapped-row Points.
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: story_rect(), first_abs_row: 0, total_rows: 100,
-        }));
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: story_rect(),
+                first_abs_row: 0,
+                total_rows: 100,
+            }));
         apply_action(action, &mut s, &mut Mapper::default());
         assert_eq!(s.focus, Focus::Game);
         // col 85 → col 5 within the story band (x=80); row 5 → abs row 5.
-        assert_eq!(s.selection.map(|sel| sel.anchor), Some(crate::clipboard::Point { row: 5, col: 5 }));
+        assert_eq!(
+            s.selection.map(|sel| sel.anchor),
+            Some(crate::clipboard::Point { row: 5, col: 5 })
+        );
     }
 
     #[test]
     fn left_drag_then_up_extends_and_ends_selection() {
         use crossterm::event::MouseEventKind;
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: story_rect(), first_abs_row: 0, total_rows: 100,
-        }));
-        apply_action(Action::StartSelection(85, 5), &mut s, &mut Mapper::default());
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: story_rect(),
+                first_abs_row: 0,
+                total_rows: 100,
+            }));
+        apply_action(
+            Action::StartSelection(85, 5),
+            &mut s,
+            &mut Mapper::default(),
+        );
 
-        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 90, 7, KeyModifiers::NONE);
+        let drag = mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            90,
+            7,
+            KeyModifiers::NONE,
+        );
         let a = mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None);
         assert!(matches!(a, Action::ExtendSelection(90, 7)));
         apply_action(a, &mut s, &mut Mapper::default());
         // col 90 → col 10; row 7 (interior) → abs row 7.
-        assert_eq!(s.selection.map(|sel| sel.head), Some(crate::clipboard::Point { row: 7, col: 10 }));
+        assert_eq!(
+            s.selection.map(|sel| sel.head),
+            Some(crate::clipboard::Point { row: 7, col: 10 })
+        );
 
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Left), 90, 7, KeyModifiers::NONE);
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            90,
+            7,
+            KeyModifiers::NONE,
+        );
         assert!(matches!(
             mouse_to_action(&s, up, map_rect(), story_rect(), &[], &None),
             Action::EndSelection
@@ -8279,31 +9813,54 @@ mod tests {
     #[test]
     fn screen_to_point_maps_row_and_col() {
         let g = crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(0, 0, 20, 10), first_abs_row: 5, total_rows: 100,
+            area: ratatui::layout::Rect::new(0, 0, 20, 10),
+            first_abs_row: 5,
+            total_rows: 100,
         };
-        assert_eq!(screen_to_point(g, 3, 2), Some(crate::clipboard::Point { row: 7, col: 3 }));
+        assert_eq!(
+            screen_to_point(g, 3, 2),
+            Some(crate::clipboard::Point { row: 7, col: 3 })
+        );
         // row past the bottom clamps to first_abs_row + height - 1.
-        assert_eq!(screen_to_point(g, 3, 99), Some(crate::clipboard::Point { row: 14, col: 3 }));
+        assert_eq!(
+            screen_to_point(g, 3, 99),
+            Some(crate::clipboard::Point { row: 14, col: 3 })
+        );
         // col past the right clamps to width - 1.
-        assert_eq!(screen_to_point(g, 99, 2), Some(crate::clipboard::Point { row: 7, col: 19 }));
+        assert_eq!(
+            screen_to_point(g, 99, 2),
+            Some(crate::clipboard::Point { row: 7, col: 19 })
+        );
     }
 
     #[test]
     fn screen_to_point_clamps_to_total_rows() {
         // total_rows smaller than first_abs_row + dy: clamp to total_rows - 1.
         let g = crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(0, 0, 20, 10), first_abs_row: 5, total_rows: 8,
+            area: ratatui::layout::Rect::new(0, 0, 20, 10),
+            first_abs_row: 5,
+            total_rows: 8,
         };
-        assert_eq!(screen_to_point(g, 0, 9), Some(crate::clipboard::Point { row: 7, col: 0 }));
+        assert_eq!(
+            screen_to_point(g, 0, 9),
+            Some(crate::clipboard::Point { row: 7, col: 0 })
+        );
     }
 
     #[test]
     fn start_selection_sets_anchor_from_geom() {
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(80, 0, 40, 40), first_abs_row: 10, total_rows: 100,
-        }));
-        apply_action(Action::StartSelection(85, 5), &mut s, &mut Mapper::default());
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: ratatui::layout::Rect::new(80, 0, 40, 40),
+                first_abs_row: 10,
+                total_rows: 100,
+            }));
+        apply_action(
+            Action::StartSelection(85, 5),
+            &mut s,
+            &mut Mapper::default(),
+        );
         let sel = s.selection.expect("selection set");
         let expected = crate::clipboard::Point { row: 15, col: 5 };
         assert_eq!(sel.anchor, expected);
@@ -8313,44 +9870,91 @@ mod tests {
     #[test]
     fn extend_selection_at_bottom_edge_autoscrolls_and_grows_head() {
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(80, 0, 40, 20), first_abs_row: 30, total_rows: 100,
-        }));
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: ratatui::layout::Rect::new(80, 0, 40, 20),
+                first_abs_row: 30,
+                total_rows: 100,
+            }));
         s.transcript_scroll = 10; // mid-range (max = 100 - 20 = 80)
-        apply_action(Action::StartSelection(85, 5), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::StartSelection(85, 5),
+            &mut s,
+            &mut Mapper::default(),
+        );
         // Bottom edge row: area.bottom() - 1 = 19 → maps to abs row 30 + 19 = 49;
         // autoscroll then grows the head one more row → 50.
-        apply_action(Action::ExtendSelection(90, 19), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::ExtendSelection(90, 19),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.selection_edge, 1);
-        assert_eq!(s.transcript_scroll, 9, "bottom edge scrolls toward newer (scroll -1)");
-        assert_eq!(s.selection.unwrap().head.row, 50, "head grows downward past the edge row");
+        assert_eq!(
+            s.transcript_scroll, 9,
+            "bottom edge scrolls toward newer (scroll -1)"
+        );
+        assert_eq!(
+            s.selection.unwrap().head.row,
+            50,
+            "head grows downward past the edge row"
+        );
     }
 
     #[test]
     fn extend_selection_at_top_edge_autoscrolls_and_grows_head() {
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(80, 0, 40, 20), first_abs_row: 30, total_rows: 100,
-        }));
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: ratatui::layout::Rect::new(80, 0, 40, 20),
+                first_abs_row: 30,
+                total_rows: 100,
+            }));
         s.transcript_scroll = 10;
-        apply_action(Action::StartSelection(85, 5), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::StartSelection(85, 5),
+            &mut s,
+            &mut Mapper::default(),
+        );
         // Top edge row: area.y = 0 → maps to abs row 30; autoscroll grows the head
         // one row upward → 29.
-        apply_action(Action::ExtendSelection(90, 0), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::ExtendSelection(90, 0),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.selection_edge, -1);
-        assert_eq!(s.transcript_scroll, 11, "top edge scrolls toward older (scroll +1)");
-        assert_eq!(s.selection.unwrap().head.row, 29, "head grows upward past the edge row");
+        assert_eq!(
+            s.transcript_scroll, 11,
+            "top edge scrolls toward older (scroll +1)"
+        );
+        assert_eq!(
+            s.selection.unwrap().head.row,
+            29,
+            "head grows upward past the edge row"
+        );
     }
 
     #[test]
     fn extend_selection_interior_sets_edge_zero_no_scroll() {
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(80, 0, 40, 20), first_abs_row: 30, total_rows: 100,
-        }));
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: ratatui::layout::Rect::new(80, 0, 40, 20),
+                first_abs_row: 30,
+                total_rows: 100,
+            }));
         s.transcript_scroll = 10;
-        apply_action(Action::StartSelection(85, 5), &mut s, &mut Mapper::default());
-        apply_action(Action::ExtendSelection(90, 10), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::StartSelection(85, 5),
+            &mut s,
+            &mut Mapper::default(),
+        );
+        apply_action(
+            Action::ExtendSelection(90, 10),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.selection_edge, 0);
         assert_eq!(s.transcript_scroll, 10, "interior drag does not scroll");
     }
@@ -8362,26 +9966,40 @@ mod tests {
         // ExtendSelection, so this arm runs with `state.selection == None` — and
         // used to set an autoscroll edge and scroll the transcript anyway.
         let mut s = AppState::default();
-        s.transcript_geom.set(Some(crate::clipboard::TranscriptGeom {
-            area: ratatui::layout::Rect::new(80, 0, 40, 20), first_abs_row: 30, total_rows: 100,
-        }));
+        s.transcript_geom
+            .set(Some(crate::clipboard::TranscriptGeom {
+                area: ratatui::layout::Rect::new(80, 0, 40, 20),
+                first_abs_row: 30,
+                total_rows: 100,
+            }));
         s.transcript_scroll = 10;
         assert!(s.selection.is_none(), "no selection was ever started");
 
         // Bottom boundary row, then the top one.
-        apply_action(Action::ExtendSelection(90, 19), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::ExtendSelection(90, 19),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.selection_edge, 0, "no selection → no edge tracking");
         assert_eq!(s.transcript_scroll, 10, "no selection → no autoscroll");
         assert!(s.selection.is_none());
 
-        apply_action(Action::ExtendSelection(90, 0), &mut s, &mut Mapper::default());
+        apply_action(
+            Action::ExtendSelection(90, 0),
+            &mut s,
+            &mut Mapper::default(),
+        );
         assert_eq!(s.selection_edge, 0);
         assert_eq!(s.transcript_scroll, 10);
 
         // And the tick-driven step is inert too, even if an edge were left set.
         s.selection_edge = 1;
         apply_selection_autoscroll(&mut s);
-        assert_eq!(s.transcript_scroll, 10, "autoscroll no-ops without a selection");
+        assert_eq!(
+            s.transcript_scroll, 10,
+            "autoscroll no-ops without a selection"
+        );
     }
 
     /// SQ-0692 flipped the second half of this test. `ActivatePane` used to CLOSE
@@ -8398,14 +10016,30 @@ mod tests {
 
         // ActivatePane(Game) sets game focus and leaves the dock exactly as it was.
         apply_action(Action::ActivatePane(Focus::Game), &mut s, &mut m);
-        assert_eq!(s.focus, Focus::Game, "ActivatePane(Game) must set focus to Game");
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Room, "ActivatePane must NOT leave the Room tab");
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "ActivatePane(Game) must set focus to Game"
+        );
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Room,
+            "ActivatePane must NOT leave the Room tab"
+        );
         assert_eq!(s.selected_room, Some(1), "…nor unpin it");
-        assert_eq!(s.room_dock_view, crate::state::RoomDockView::Diagnostics, "…nor change its view");
+        assert_eq!(
+            s.room_dock_view,
+            crate::state::RoomDockView::Diagnostics,
+            "…nor change its view"
+        );
 
         // ActivatePane(Map) sets map focus.
         apply_action(Action::ActivatePane(Focus::Map), &mut s, &mut m);
-        assert_eq!(s.focus, Focus::Map, "ActivatePane(Map) must set focus to Map");
+        assert_eq!(
+            s.focus,
+            Focus::Map,
+            "ActivatePane(Map) must set focus to Map"
+        );
     }
 
     #[test]
@@ -8414,7 +10048,10 @@ mod tests {
         let s = AppState::default();
         let m = mouse_event(MouseEventKind::ScrollUp, 10, 10, KeyModifiers::NONE);
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::Pan(0, -1)), "scroll up in map without modifier -> Pan(0,-1)");
+        assert!(
+            matches!(action, Action::Pan(0, -1)),
+            "scroll up in map without modifier -> Pan(0,-1)"
+        );
     }
 
     #[test]
@@ -8423,7 +10060,10 @@ mod tests {
         let s = AppState::default();
         let m = mouse_event(MouseEventKind::ScrollDown, 10, 10, KeyModifiers::NONE);
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::Pan(0, 1)), "scroll down in map without modifier -> Pan(0,1)");
+        assert!(
+            matches!(action, Action::Pan(0, 1)),
+            "scroll down in map without modifier -> Pan(0,1)"
+        );
     }
 
     #[test]
@@ -8432,7 +10072,10 @@ mod tests {
         let s = AppState::default();
         let m = mouse_event(MouseEventKind::ScrollUp, 10, 10, KeyModifiers::SHIFT);
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::Pan(-1, 0)), "scroll up + Shift -> Pan(-1,0)");
+        assert!(
+            matches!(action, Action::Pan(-1, 0)),
+            "scroll up + Shift -> Pan(-1,0)"
+        );
     }
 
     #[test]
@@ -8443,7 +10086,10 @@ mod tests {
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
         // The wheel keeps the FINE step (SQ-0350): three notches to a visible change, so a fast
         // ctrl+scroll cannot skip past Compact. The keyboard's `+`/`-` move a whole step instead.
-        assert!(matches!(action, Action::ZoomInFine), "scroll up + Ctrl -> ZoomInFine");
+        assert!(
+            matches!(action, Action::ZoomInFine),
+            "scroll up + Ctrl -> ZoomInFine"
+        );
     }
 
     #[test]
@@ -8453,30 +10099,60 @@ mod tests {
         // col 85 is inside story_rect (x=80..120).
         let m_up = mouse_event(MouseEventKind::ScrollUp, 85, 5, KeyModifiers::NONE);
         let action_up = mouse_to_action(&s, m_up, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action_up, Action::TranscriptScroll(1)), "scroll up in story -> TranscriptScroll(1) (older)");
+        assert!(
+            matches!(action_up, Action::TranscriptScroll(1)),
+            "scroll up in story -> TranscriptScroll(1) (older)"
+        );
 
         let m_dn = mouse_event(MouseEventKind::ScrollDown, 85, 5, KeyModifiers::NONE);
         let action_dn = mouse_to_action(&s, m_dn, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action_dn, Action::TranscriptScroll(-1)), "scroll down in story -> TranscriptScroll(-1) (newer)");
+        assert!(
+            matches!(action_dn, Action::TranscriptScroll(-1)),
+            "scroll down in story -> TranscriptScroll(-1) (newer)"
+        );
     }
 
     #[test]
     fn middle_down_produces_begin_drag_pan() {
         use crossterm::event::MouseEventKind;
         let s = AppState::default();
-        let m = mouse_event(MouseEventKind::Down(MouseButton::Middle), 20, 15, KeyModifiers::NONE);
+        let m = mouse_event(
+            MouseEventKind::Down(MouseButton::Middle),
+            20,
+            15,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, m, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::BeginDragPan(20, 15)), "middle-down -> BeginDragPan");
+        assert!(
+            matches!(action, Action::BeginDragPan(20, 15)),
+            "middle-down -> BeginDragPan"
+        );
     }
 
     #[test]
     fn middle_drag_and_up_produce_drag_actions() {
         use crossterm::event::MouseEventKind;
         let s = AppState::default();
-        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Middle), 25, 18, KeyModifiers::NONE);
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Middle), 25, 18, KeyModifiers::NONE);
-        assert!(matches!(mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None), Action::DragPanTo(25, 18)));
-        assert!(matches!(mouse_to_action(&s, up, map_rect(), story_rect(), &[], &None), Action::EndDragPan));
+        let drag = mouse_event(
+            MouseEventKind::Drag(MouseButton::Middle),
+            25,
+            18,
+            KeyModifiers::NONE,
+        );
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Middle),
+            25,
+            18,
+            KeyModifiers::NONE,
+        );
+        assert!(matches!(
+            mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None),
+            Action::DragPanTo(25, 18)
+        ));
+        assert!(matches!(
+            mouse_to_action(&s, up, map_rect(), story_rect(), &[], &None),
+            Action::EndDragPan
+        ));
     }
 
     // ── Drag-pan accumulator tests ────────────────────────────────────────────
@@ -8491,18 +10167,31 @@ mod tests {
 
         // Begin at (10, 10).
         apply_action(Action::BeginDragPan(10, 10), &mut s, &mut m);
-        assert!(s.drag.is_some(), "drag state should be set after BeginDragPan");
+        assert!(
+            s.drag.is_some(),
+            "drag state should be set after BeginDragPan"
+        );
 
         // New behavior: drag goes directly into char_pan at 1-char precision.
         // Grab-and-drag: drag 11 columns right → char_pan.0 = +11, scroll unchanged.
         apply_action(Action::DragPanTo(21, 10), &mut s, &mut m); // dx=11
-        assert_eq!(s.char_pan.0, 11, "11-col drag right should set char_pan.0 to +11");
+        assert_eq!(
+            s.char_pan.0, 11,
+            "11-col drag right should set char_pan.0 to +11"
+        );
         assert_eq!(s.scroll, (0, 0), "scroll should not change during drag");
 
         // Drag 1 more column right: char_pan.0 = +12, scroll still unchanged.
         apply_action(Action::DragPanTo(22, 10), &mut s, &mut m); // dx=1
-        assert_eq!(s.char_pan.0, 12, "additional 1-col drag should set char_pan.0 to +12");
-        assert_eq!(s.scroll, (0, 0), "scroll must remain unchanged (char_pan handles it)");
+        assert_eq!(
+            s.char_pan.0, 12,
+            "additional 1-col drag should set char_pan.0 to +12"
+        );
+        assert_eq!(
+            s.scroll,
+            (0, 0),
+            "scroll must remain unchanged (char_pan handles it)"
+        );
     }
 
     #[test]
@@ -8516,8 +10205,15 @@ mod tests {
         apply_action(Action::BeginDragPan(0, 0), &mut s, &mut m);
         // Move 5 cols right: goes into char_pan, scroll unchanged.
         apply_action(Action::DragPanTo(5, 0), &mut s, &mut m);
-        assert_eq!(s.scroll, (0, 0), "scroll must not change; char_pan absorbs the delta");
-        assert_eq!(s.char_pan.0, 5, "char_pan.0 should be +5 after 5-col drag right (grab)");
+        assert_eq!(
+            s.scroll,
+            (0, 0),
+            "scroll must not change; char_pan absorbs the delta"
+        );
+        assert_eq!(
+            s.char_pan.0, 5,
+            "char_pan.0 should be +5 after 5-col drag right (grab)"
+        );
     }
 
     #[test]
@@ -8532,8 +10228,14 @@ mod tests {
         apply_action(Action::BeginDragPan(20, 0), &mut s, &mut m);
         // Drag left by 12 columns: dx = -12, char_pan.0 += dx = -12.
         apply_action(Action::DragPanTo(8, 0), &mut s, &mut m);
-        assert_eq!(s.char_pan.0, -12, "dragging left moves content left (grab): char_pan.0 = -12");
-        assert_eq!(s.scroll.0, 0, "scroll must not change; char_pan handles the delta");
+        assert_eq!(
+            s.char_pan.0, -12,
+            "dragging left moves content left (grab): char_pan.0 = -12"
+        );
+        assert_eq!(
+            s.scroll.0, 0,
+            "scroll must not change; char_pan handles the delta"
+        );
     }
 
     #[test]
@@ -8555,36 +10257,73 @@ mod tests {
     /// bounds" as keyboard panning already leaves it.
     #[test]
     fn left_drag_on_empty_map_pans_by_the_exact_delta_and_release_ends_it() {
-        use crossterm::event::MouseEventKind;
         use crate::state::{MapClick, Zoom};
+        use crossterm::event::MouseEventKind;
 
         let mut s = AppState::default();
         s.zoom = Zoom::Boxes;
         let mut m = Mapper::default();
 
         // Down on empty map space (no rooms at all).
-        let down = mouse_event(MouseEventKind::Down(MouseButton::Left), 30, 20, KeyModifiers::NONE);
+        let down = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            30,
+            20,
+            KeyModifiers::NONE,
+        );
         let begin = mouse_to_action(&s, down, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(begin, Action::BeginMapDrag(30, 20, MapClick::Empty)));
+        assert!(matches!(
+            begin,
+            Action::BeginMapDrag(30, 20, MapClick::Empty)
+        ));
         apply_action(begin, &mut s, &mut m);
         assert!(s.drag.is_some());
 
         // Drag by (dx, dy) = (-7, 4) cells of pointer motion.
-        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 23, 24, KeyModifiers::NONE);
+        let drag = mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            23,
+            24,
+            KeyModifiers::NONE,
+        );
         let pan = mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(pan, Action::DragPanTo(23, 24)), "a left-drag while state.drag is set pans, got {:?}", pan);
+        assert!(
+            matches!(pan, Action::DragPanTo(23, 24)),
+            "a left-drag while state.drag is set pans, got {:?}",
+            pan
+        );
         apply_action(pan, &mut s, &mut m);
-        assert_eq!(s.char_pan, (-7, 4), "the viewport moved by exactly the pointer's motion");
-        assert_eq!(s.scroll, (0, 0), "scroll (the whole-grid-cell offset) is untouched by the drag");
+        assert_eq!(
+            s.char_pan,
+            (-7, 4),
+            "the viewport moved by exactly the pointer's motion"
+        );
+        assert_eq!(
+            s.scroll,
+            (0, 0),
+            "scroll (the whole-grid-cell offset) is untouched by the drag"
+        );
 
         // Release ends the pan; no click fires (selected_room is untouched).
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Left), 23, 24, KeyModifiers::NONE);
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            23,
+            24,
+            KeyModifiers::NONE,
+        );
         let end = mouse_to_action(&s, up, map_rect(), story_rect(), &[], &None);
         assert!(matches!(end, Action::EndDragPan));
         apply_action(end, &mut s, &mut m);
         assert!(s.drag.is_none(), "the drag ends on release");
-        assert_eq!(s.selected_room, None, "a genuine drag never fires the deferred click");
-        assert_eq!(s.char_pan, (-7, 4), "the pan the drag made is kept after release");
+        assert_eq!(
+            s.selected_room, None,
+            "a genuine drag never fires the deferred click"
+        );
+        assert_eq!(
+            s.char_pan,
+            (-7, 4),
+            "the pan the drag made is kept after release"
+        );
     }
 
     /// A press-release with NO motion in between keeps today's behaviour exactly
@@ -8603,22 +10342,53 @@ mod tests {
         let rects = room_rects_for_compact(1, (0, 0), map_rect());
         s.zoom = crate::state::Zoom::Compact;
 
-        let down = mouse_event(MouseEventKind::Down(MouseButton::Left), 50, 0, KeyModifiers::NONE);
-        apply_action(mouse_to_action(&s, down, map_rect(), story_rect(), &rects, &None), &mut s, &mut m);
+        let down = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            50,
+            0,
+            KeyModifiers::NONE,
+        );
+        apply_action(
+            mouse_to_action(&s, down, map_rect(), story_rect(), &rects, &None),
+            &mut s,
+            &mut m,
+        );
 
         // A Drag event at the SAME cell: dx=dy=0, but `DragPanTo` still runs and
         // sets `moved = true` — a real terminal can and does report these.
-        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 50, 0, KeyModifiers::NONE);
-        apply_action(mouse_to_action(&s, drag, map_rect(), story_rect(), &rects, &None), &mut s, &mut m);
+        let drag = mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            50,
+            0,
+            KeyModifiers::NONE,
+        );
+        apply_action(
+            mouse_to_action(&s, drag, map_rect(), story_rect(), &rects, &None),
+            &mut s,
+            &mut m,
+        );
         assert_eq!(s.char_pan, (0, 0), "a zero-delta drag pans by nothing");
 
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Left), 50, 0, KeyModifiers::NONE);
-        apply_action(mouse_to_action(&s, up, map_rect(), story_rect(), &rects, &None), &mut s, &mut m);
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            50,
+            0,
+            KeyModifiers::NONE,
+        );
+        apply_action(
+            mouse_to_action(&s, up, map_rect(), story_rect(), &rects, &None),
+            &mut s,
+            &mut m,
+        );
         // `moved` is now true (a Drag event occurred), so the deferred unpin is
         // suppressed — documenting today's actual behaviour rather than
         // asserting the click still fires (it does not: any Drag event marks
         // the gesture as a pan, whatever its delta).
-        assert_eq!(s.selected_room, Some(1), "any Drag event, even a zero-delta one, is treated as a pan");
+        assert_eq!(
+            s.selected_room,
+            Some(1),
+            "any Drag event, even a zero-delta one, is treated as a pan"
+        );
     }
 
     /// SQ-1325: there is no mouse gesture that drags a ROOM to move it —
@@ -8629,27 +10399,64 @@ mod tests {
     /// space; only a press-release with no motion still pins/unpins.
     #[test]
     fn left_drag_starting_on_a_room_also_pans_since_there_is_no_room_drag_feature() {
-        use crossterm::event::MouseEventKind;
         use crate::state::{MapClick, Zoom};
+        use crossterm::event::MouseEventKind;
 
         let mut s = AppState::default();
         s.zoom = Zoom::Compact;
         let mut m = Mapper::default();
         let rects = room_rects_for_compact(1, (0, 0), map_rect());
 
-        let down = mouse_event(MouseEventKind::Down(MouseButton::Left), 0, 0, KeyModifiers::NONE);
+        let down = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+            KeyModifiers::NONE,
+        );
         let begin = mouse_to_action(&s, down, map_rect(), story_rect(), &rects, &None);
-        assert!(matches!(begin, Action::BeginMapDrag(0, 0, MapClick::Room(1))));
+        assert!(matches!(
+            begin,
+            Action::BeginMapDrag(0, 0, MapClick::Room(1))
+        ));
         apply_action(begin, &mut s, &mut m);
 
-        let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 6, 3, KeyModifiers::NONE);
-        apply_action(mouse_to_action(&s, drag, map_rect(), story_rect(), &rects, &None), &mut s, &mut m);
-        assert_eq!(s.char_pan, (6, 3), "a drag that started on a room still pans the viewport");
+        let drag = mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            6,
+            3,
+            KeyModifiers::NONE,
+        );
+        apply_action(
+            mouse_to_action(&s, drag, map_rect(), story_rect(), &rects, &None),
+            &mut s,
+            &mut m,
+        );
+        assert_eq!(
+            s.char_pan,
+            (6, 3),
+            "a drag that started on a room still pans the viewport"
+        );
 
-        let up = mouse_event(MouseEventKind::Up(MouseButton::Left), 6, 3, KeyModifiers::NONE);
-        apply_action(mouse_to_action(&s, up, map_rect(), story_rect(), &rects, &None), &mut s, &mut m);
-        assert_eq!(s.selected_room, None, "the room under the original press is never pinned once the pointer moved");
-        assert_eq!(s.journal_tab, crate::journal::JournalTab::Map, "…nor does the Journal change tab");
+        let up = mouse_event(
+            MouseEventKind::Up(MouseButton::Left),
+            6,
+            3,
+            KeyModifiers::NONE,
+        );
+        apply_action(
+            mouse_to_action(&s, up, map_rect(), story_rect(), &rects, &None),
+            &mut s,
+            &mut m,
+        );
+        assert_eq!(
+            s.selected_room, None,
+            "the room under the original press is never pinned once the pointer moved"
+        );
+        assert_eq!(
+            s.journal_tab,
+            crate::journal::JournalTab::Map,
+            "…nor does the Journal change tab"
+        );
     }
 
     /// The drag-to-pan gesture is zoom-agnostic (SQ-1325): `char_pan` is a raw
@@ -8657,19 +10464,42 @@ mod tests {
     /// step, so it works identically at Boxes, Compact and Overview.
     #[test]
     fn left_drag_pans_at_every_zoom_level() {
-        use crossterm::event::MouseEventKind;
         use crate::state::Zoom;
+        use crossterm::event::MouseEventKind;
 
         for zoom in [Zoom::Boxes, Zoom::Compact, Zoom::Overview] {
             let mut s = AppState::default();
             s.zoom = zoom;
             let mut m = Mapper::default();
 
-            let down = mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10, KeyModifiers::NONE);
-            apply_action(mouse_to_action(&s, down, map_rect(), story_rect(), &[], &None), &mut s, &mut m);
-            let drag = mouse_event(MouseEventKind::Drag(MouseButton::Left), 13, 8, KeyModifiers::NONE);
-            apply_action(mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None), &mut s, &mut m);
-            assert_eq!(s.char_pan, (3, -2), "{:?}: drag-pan should apply at every zoom level", zoom);
+            let down = mouse_event(
+                MouseEventKind::Down(MouseButton::Left),
+                10,
+                10,
+                KeyModifiers::NONE,
+            );
+            apply_action(
+                mouse_to_action(&s, down, map_rect(), story_rect(), &[], &None),
+                &mut s,
+                &mut m,
+            );
+            let drag = mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                13,
+                8,
+                KeyModifiers::NONE,
+            );
+            apply_action(
+                mouse_to_action(&s, drag, map_rect(), story_rect(), &[], &None),
+                &mut s,
+                &mut m,
+            );
+            assert_eq!(
+                s.char_pan,
+                (3, -2),
+                "{:?}: drag-pan should apply at every zoom level",
+                zoom
+            );
         }
     }
 
@@ -8683,11 +10513,22 @@ mod tests {
         assert_eq!(s.focus, Focus::Game);
         let mut m = Mapper::default();
         apply_action(Action::PinRoomDock(1, RoomDockView::Info), &mut s, &mut m);
-        assert_eq!(s.focus, Focus::Game, "pinning the dock must NOT steal keyboard focus");
-        assert_eq!(s.selected_room, Some(1), "the room is still selected for rendering");
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "pinning the dock must NOT steal keyboard focus"
+        );
+        assert_eq!(
+            s.selected_room,
+            Some(1),
+            "the room is still selected for rendering"
+        );
         // And a letter reaches the story prompt rather than the map.
         assert!(
-            matches!(key_to_action(&s, key(KeyCode::Char('n'))), Action::InputChar('n')),
+            matches!(
+                key_to_action(&s, key(KeyCode::Char('n'))),
+                Action::InputChar('n')
+            ),
             "with the dock open a letter must type, not drive the map"
         );
     }
@@ -8697,9 +10538,21 @@ mod tests {
         use crate::state::RoomDockView;
         let mut s = AppState::default(); // starts as Focus::Game
         let mut m = Mapper::default();
-        apply_action(Action::PinRoomDock(2, RoomDockView::Diagnostics), &mut s, &mut m);
-        assert_eq!(s.focus, Focus::Game, "pinning to Diagnostics must NOT steal keyboard focus either");
-        assert_eq!(s.selected_room, Some(2), "the room is still selected for rendering");
+        apply_action(
+            Action::PinRoomDock(2, RoomDockView::Diagnostics),
+            &mut s,
+            &mut m,
+        );
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "pinning to Diagnostics must NOT steal keyboard focus either"
+        );
+        assert_eq!(
+            s.selected_room,
+            Some(2),
+            "the room is still selected for rendering"
+        );
     }
 
     // ── Deferred v6 game click (SQ-1378) ──────────────────────────────────────
@@ -8715,7 +10568,9 @@ mod tests {
     fn compass_press() -> crossterm::event::MouseEvent {
         mouse_event(
             crossterm::event::MouseEventKind::Down(MouseButton::Left),
-            39, 0, KeyModifiers::NONE,
+            39,
+            0,
+            KeyModifiers::NONE,
         )
     }
 
@@ -8738,7 +10593,13 @@ mod tests {
         );
         // A line read takes one only when the story lists a click terminator.
         assert_eq!(
-            v6_mouse_outcome(None, Some(InputKind::Line), Some(254), north, &compass_press()),
+            v6_mouse_outcome(
+                None,
+                Some(InputKind::Line),
+                Some(254),
+                north,
+                &compass_press()
+            ),
             V6MouseOutcome::DeferAndRoute(PendingV6Click {
                 game_px: (322, 12),
                 cell: (39, 0),
@@ -8759,7 +10620,13 @@ mod tests {
             "a press that maps to no game pixel records nothing"
         );
         assert_eq!(
-            v6_mouse_outcome(None, Some(InputKind::Event), Some(254), north, &compass_press()),
+            v6_mouse_outcome(
+                None,
+                Some(InputKind::Event),
+                Some(254),
+                north,
+                &compass_press()
+            ),
             V6MouseOutcome::Route,
             "a story waiting on an event has no read a click can answer"
         );
@@ -8772,9 +10639,9 @@ mod tests {
 
     #[test]
     fn a_drag_cancels_the_deferred_v6_click_and_a_release_delivers_it() {
-        use crossterm::event::MouseEventKind;
         use crate::session::InputKind;
         use crate::state::{PendingV6Click, V6ClickRead};
+        use crossterm::event::MouseEventKind;
 
         let click = PendingV6Click {
             game_px: (322, 12),
@@ -8785,12 +10652,24 @@ mod tests {
         let (read, term) = (Some(InputKind::Line), Some(254));
 
         assert_eq!(
-            v6_mouse_outcome(Some(click), read, term, None, &at(MouseEventKind::Drag(MouseButton::Left))),
+            v6_mouse_outcome(
+                Some(click),
+                read,
+                term,
+                None,
+                &at(MouseEventKind::Drag(MouseButton::Left))
+            ),
             V6MouseOutcome::ForgetAndRoute,
             "the gesture turned out to be a text selection"
         );
         assert_eq!(
-            v6_mouse_outcome(Some(click), read, term, None, &at(MouseEventKind::Up(MouseButton::Left))),
+            v6_mouse_outcome(
+                Some(click),
+                read,
+                term,
+                None,
+                &at(MouseEventKind::Up(MouseButton::Left))
+            ),
             V6MouseOutcome::Deliver(click),
             "an unmoved release delivers exactly the click the press recorded"
         );
@@ -8800,7 +10679,13 @@ mod tests {
             "pointer motion with no button held is not part of the gesture"
         );
         assert_eq!(
-            v6_mouse_outcome(None, read, term, None, &at(MouseEventKind::Up(MouseButton::Left))),
+            v6_mouse_outcome(
+                None,
+                read,
+                term,
+                None,
+                &at(MouseEventKind::Up(MouseButton::Left))
+            ),
             V6MouseOutcome::Route,
             "with nothing deferred a release is an ordinary end-of-selection"
         );
@@ -8808,7 +10693,10 @@ mod tests {
         // aimed at a prompt that is no longer there.
         assert_eq!(
             v6_mouse_outcome(
-                Some(click), Some(InputKind::Char), None, None,
+                Some(click),
+                Some(InputKind::Char),
+                None,
+                None,
                 &at(MouseEventKind::Up(MouseButton::Left)),
             ),
             V6MouseOutcome::ForgetAndRoute,
@@ -8818,17 +10706,31 @@ mod tests {
 
     #[test]
     fn a_key_event_clears_a_deferred_v6_click_and_a_mouse_event_does_not() {
-        use crossterm::event::{Event, MouseEventKind};
         use crate::state::{PendingV6Click, V6ClickRead};
+        use crossterm::event::{Event, MouseEventKind};
 
-        let click = PendingV6Click { game_px: (322, 12), cell: (39, 0), read: V6ClickRead::Char };
+        let click = PendingV6Click {
+            game_px: (322, 12),
+            cell: (39, 0),
+            read: V6ClickRead::Char,
+        };
         let mut s = AppState::default();
 
         s.pending_v6_click = Some(click);
-        v6_click_interrupt(&mut s, &Event::Mouse(mouse_event(
-            MouseEventKind::Drag(MouseButton::Left), 41, 0, KeyModifiers::NONE,
-        )));
-        assert_eq!(s.pending_v6_click, Some(click), "a mouse event is the gesture itself");
+        v6_click_interrupt(
+            &mut s,
+            &Event::Mouse(mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                41,
+                0,
+                KeyModifiers::NONE,
+            )),
+        );
+        assert_eq!(
+            s.pending_v6_click,
+            Some(click),
+            "a mouse event is the gesture itself"
+        );
 
         v6_click_interrupt(&mut s, &Event::Key(key(KeyCode::Char('n'))));
         assert_eq!(
@@ -8847,24 +10749,42 @@ mod tests {
         // `StartSelection`; delivering the click on the release must not turn
         // that into a clipboard write or a "Copied 0 chars" line.
         let mut s = AppState::default();
-        s.selection = Some(crate::clipboard::Selection::new(crate::clipboard::Point { row: 3, col: 5 }));
+        s.selection = Some(crate::clipboard::Selection::new(crate::clipboard::Point {
+            row: 3,
+            col: 5,
+        }));
         s.selection_edge = 1;
         *s.selection_text.borrow_mut() = Some(String::new());
         let before = s.transcript.len();
         discard_selection(&mut s);
-        assert!(s.selection.is_none() && s.selection_edge == 0, "the anchor is gone");
-        assert!(s.selection_text.borrow().is_none(), "and nothing is left to copy");
-        assert_eq!(s.transcript.len(), before, "no meta line for a click that was not a copy");
+        assert!(
+            s.selection.is_none() && s.selection_edge == 0,
+            "the anchor is gone"
+        );
+        assert!(
+            s.selection_text.borrow().is_none(),
+            "and nothing is left to copy"
+        );
+        assert_eq!(
+            s.transcript.len(),
+            before,
+            "no meta line for a click that was not a copy"
+        );
 
         // A drag that really selected text reports the copy, and hands the text
         // back for the run loop to put on the clipboard.
-        s.selection = Some(crate::clipboard::Selection::new(crate::clipboard::Point { row: 3, col: 5 }));
+        s.selection = Some(crate::clipboard::Selection::new(crate::clipboard::Point {
+            row: 3,
+            col: 5,
+        }));
         *s.selection_text.borrow_mut() = Some("west of house".to_string());
         let copied = finish_selection(&mut s);
         assert_eq!(copied.as_deref(), Some("west of house"));
         assert!(s.selection.is_none(), "the selection is released");
         assert!(
-            s.transcript.iter().any(|l| l.contains("Copied 13 chars to clipboard")),
+            s.transcript
+                .iter()
+                .any(|l| l.contains("Copied 13 chars to clipboard")),
             "the copy is reported in the story output: {:?}",
             s.transcript
         );
@@ -8896,8 +10816,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let game_dir = std::env::temp_dir()
-            .join(format!("bm-togglemap-{}-{}.save", std::process::id(), n));
+        let game_dir =
+            std::env::temp_dir().join(format!("bm-togglemap-{}-{}.save", std::process::id(), n));
         std::fs::create_dir_all(&game_dir).unwrap();
 
         let mut s = AppState::default();
@@ -8907,7 +10827,10 @@ mod tests {
         // Hide the map → show_map = false persisted.
         apply_action(Action::ToggleMap, &mut s, &mut m);
         assert!(matches!(s.layout, Layout::TranscriptFull));
-        assert_eq!(crate::styles::read_per_game_show_map(&game_dir), Some(false));
+        assert_eq!(
+            crate::styles::read_per_game_show_map(&game_dir),
+            Some(false)
+        );
 
         // Show it again → show_map = true persisted.
         apply_action(Action::ToggleMap, &mut s, &mut m);
@@ -8925,8 +10848,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let game_dir = std::env::temp_dir()
-            .join(format!("bm-bandopen-{}-{}.save", std::process::id(), n));
+        let game_dir =
+            std::env::temp_dir().join(format!("bm-bandopen-{}-{}.save", std::process::id(), n));
         std::fs::create_dir_all(&game_dir).unwrap();
 
         let mut s = AppState::default();
@@ -8942,7 +10865,8 @@ mod tests {
 
         apply_action(Action::OpenCommandBand, &mut s, &mut m);
         assert_eq!(
-            crate::styles::read_per_game_panel(&game_dir), Some(crate::state::SidePanel::None),
+            crate::styles::read_per_game_panel(&game_dir),
+            Some(crate::state::SidePanel::None),
             "closing is a choice too, and an explicit None is not an absence",
         );
 
@@ -8952,7 +10876,8 @@ mod tests {
         crate::styles::write_per_game_panel(&game_dir, None).unwrap();
         open_command_band(&mut s, &mut m, true);
         assert_eq!(
-            crate::styles::read_per_game_panel(&game_dir), None,
+            crate::styles::read_per_game_panel(&game_dir),
+            None,
             "startup's own open leaves the sidecar alone",
         );
         let _ = std::fs::remove_dir_all(&game_dir);
@@ -8964,8 +10889,11 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("bm-cyclepanel-{tag}-{}-{}.save", std::process::id(), n));
+        let dir = std::env::temp_dir().join(format!(
+            "bm-cyclepanel-{tag}-{}-{}.save",
+            std::process::id(),
+            n
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -8988,7 +10916,11 @@ mod tests {
         assert_eq!(s.current_side_panel(), SidePanel::None);
 
         apply_action(Action::CyclePanel, &mut s, &mut m);
-        assert_eq!(s.current_side_panel(), SidePanel::Command, "the cycle wraps");
+        assert_eq!(
+            s.current_side_panel(),
+            SidePanel::Command,
+            "the cycle wraps"
+        );
     }
 
     /// The command panel and the Journal's Inventory tab are independent: the
@@ -9005,11 +10937,18 @@ mod tests {
         assert!(s.band_dock.open);
         apply_action(Action::SetJournalTab(JournalTab::Inventory), &mut s, &mut m);
         assert_eq!(s.journal_tab, JournalTab::Inventory);
-        assert!(s.band_dock.open, "switching tab leaves the command panel open");
+        assert!(
+            s.band_dock.open,
+            "switching tab leaves the command panel open"
+        );
 
         apply_action(Action::CyclePanel, &mut s, &mut m);
         assert!(!s.band_dock.open, "the cycle closes the command panel");
-        assert_eq!(s.journal_tab, JournalTab::Inventory, "…and leaves the tab alone");
+        assert_eq!(
+            s.journal_tab,
+            JournalTab::Inventory,
+            "…and leaves the tab alone"
+        );
     }
 
     /// The panel state round-trips through the per-game sidecar (SQ-1123).
@@ -9022,10 +10961,16 @@ mod tests {
         let mut m = Mapper::default();
 
         apply_action(Action::CyclePanel, &mut s, &mut m);
-        assert_eq!(crate::styles::read_per_game_panel(&game_dir), Some(SidePanel::Command));
+        assert_eq!(
+            crate::styles::read_per_game_panel(&game_dir),
+            Some(SidePanel::Command)
+        );
 
         apply_action(Action::CyclePanel, &mut s, &mut m);
-        assert_eq!(crate::styles::read_per_game_panel(&game_dir), Some(SidePanel::None));
+        assert_eq!(
+            crate::styles::read_per_game_panel(&game_dir),
+            Some(SidePanel::None)
+        );
 
         let _ = std::fs::remove_dir_all(&game_dir);
     }
@@ -9041,17 +10986,30 @@ mod tests {
         let mut s = AppState::default();
         s.game_dir = game_dir.clone();
         let mut m = Mapper::default();
-        assert_eq!(crate::styles::read_per_game_journal_tab(&game_dir), None, "no sidecar yet");
+        assert_eq!(
+            crate::styles::read_per_game_journal_tab(&game_dir),
+            None,
+            "no sidecar yet"
+        );
 
         apply_action(Action::SetJournalTab(JournalTab::Inventory), &mut s, &mut m);
-        assert_eq!(crate::styles::read_per_game_journal_tab(&game_dir), Some(JournalTab::Inventory));
+        assert_eq!(
+            crate::styles::read_per_game_journal_tab(&game_dir),
+            Some(JournalTab::Inventory)
+        );
 
         apply_action(Action::JournalStepTab(false), &mut s, &mut m);
-        assert_eq!(crate::styles::read_per_game_journal_tab(&game_dir), Some(JournalTab::Room));
+        assert_eq!(
+            crate::styles::read_per_game_journal_tab(&game_dir),
+            Some(JournalTab::Room)
+        );
 
         // A panel write (same file) keeps it.
         apply_action(Action::CyclePanel, &mut s, &mut m);
-        assert_eq!(crate::styles::read_per_game_journal_tab(&game_dir), Some(JournalTab::Room));
+        assert_eq!(
+            crate::styles::read_per_game_journal_tab(&game_dir),
+            Some(JournalTab::Room)
+        );
 
         let _ = std::fs::remove_dir_all(&game_dir);
     }
@@ -9072,11 +11030,19 @@ mod tests {
         let mut s = AppState::default();
         let mut m = Mapper::default();
         let none = find(&s);
-        assert!(none.hint[0].to_lowercase().contains("closed"), "{:?}", none.hint);
+        assert!(
+            none.hint[0].to_lowercase().contains("closed"),
+            "{:?}",
+            none.hint
+        );
 
         apply_action(Action::CyclePanel, &mut s, &mut m);
         let command = find(&s);
-        assert!(command.hint[0].to_lowercase().contains("command panel"), "{:?}", command.hint);
+        assert!(
+            command.hint[0].to_lowercase().contains("command panel"),
+            "{:?}",
+            command.hint
+        );
 
         assert_ne!(none.glyph, command.glyph);
     }
@@ -9090,9 +11056,15 @@ mod tests {
         let mut m = Mapper::default();
         assert!(!s.overlays.reset_dialog, "dialog must start closed");
         apply_action(Action::ResetGame, &mut s, &mut m);
-        assert!(s.overlays.reset_dialog, "ResetGame must set reset_dialog = true");
+        assert!(
+            s.overlays.reset_dialog,
+            "ResetGame must set reset_dialog = true"
+        );
         assert!(!s.overlays.reset_clear_map, "checkbox must start unchecked");
-        assert!(s.overlays.text_entry.is_none(), "no text-entry dialog should be opened");
+        assert!(
+            s.overlays.text_entry.is_none(),
+            "no text-entry dialog should be opened"
+        );
     }
 
     // ── reset-game is now leader-only; F5 has no default binding ──────────────
@@ -9113,7 +11085,10 @@ mod tests {
         let mut s2 = AppState::default();
         let mut m = Mapper::default();
         apply_action(Action::ResetGame, &mut s2, &mut m);
-        assert!(s2.overlays.reset_dialog, "reset-game must open the confirmation dialog, not instant-wipe");
+        assert!(
+            s2.overlays.reset_dialog,
+            "reset-game must open the confirmation dialog, not instant-wipe"
+        );
     }
 
     // ── Leaf 2: minizork fixture reset test ───────────────────────────────────
@@ -9131,7 +11106,8 @@ mod tests {
         let story_bytes = std::fs::read(&fixture_path).expect("read minizork.z3");
 
         // Build the initial session and seed the start room.
-        let mut session = GameSession::new(story_bytes.clone(), true, false, None).expect("GameSession::new");
+        let mut session =
+            GameSession::new(story_bytes.clone(), true, false, None).expect("GameSession::new");
         let mut mapper = Mapper::default();
         let mut state = crate::state::AppState::default();
 
@@ -9161,8 +11137,8 @@ mod tests {
                 transcript_elems: Vec::new(),
                 prose_retired: None,
                 declared_exit: None,
-            description: None,
-            items: Vec::new(),
+                description: None,
+                items: Vec::new(),
             };
             apply_turn(&mut mapper, "", &seed_result, &mut Default::default());
             state.select_room(Some(snap_number as mapper::graph::RoomId));
@@ -9172,11 +11148,16 @@ mod tests {
 
         // Simulate some game turns to advance state.
         let r1 = session.submit("look");
-        state.push_transcript_runs(&r1.transcript, crate::state::TranscriptKind::Story, &r1.transcript_runs);
+        state.push_transcript_runs(
+            &r1.transcript,
+            crate::state::TranscriptKind::Story,
+            &r1.transcript_runs,
+        );
         state.turns = 5;
 
         // Rebuild session from story_bytes (what the reset flow does on confirm).
-        let mut new_session = GameSession::new(story_bytes.clone(), true, false, None).expect("GameSession::new for reset");
+        let mut new_session = GameSession::new(story_bytes.clone(), true, false, None)
+            .expect("GameSession::new for reset");
         let new_start_loc = current_location(&new_session.machine);
         let new_room_number = new_start_loc.as_ref().map(|s| s.number);
 
@@ -9217,8 +11198,8 @@ mod tests {
                 transcript_elems: Vec::new(),
                 prose_retired: None,
                 declared_exit: None,
-            description: None,
-            items: Vec::new(),
+                description: None,
+                items: Vec::new(),
             };
             apply_turn(&mut mapper, "", &seed_result, &mut Default::default());
             state.select_room(Some(snap_number as mapper::graph::RoomId));
@@ -9231,7 +11212,10 @@ mod tests {
             "post-reset current location must equal opening room"
         );
         // Mapper is kept (rooms are still in the graph).
-        assert!(mapper.graph.rooms().count() > 0, "mapper must still have rooms after reset");
+        assert!(
+            mapper.graph.rooms().count() > 0,
+            "mapper must still have rooms after reset"
+        );
     }
 
     // ── Verb menu tests ───────────────────────────────────────────────────────
@@ -9294,20 +11278,21 @@ mod tests {
         // excluded from the VERB column (SQ-0667, direction-aware; narrowed by
         // SQ-1128, which put `look` back), so give the table a synthetic bare
         // verb rather than leaning on which built-ins survive the filter.
-        s.overlays
-            .command_band
-            .as_mut()
-            .unwrap()
-            .verbs
-            .push(crate::render::command_band::VerbEntry::new(
+        s.overlays.command_band.as_mut().unwrap().verbs.push(
+            crate::render::command_band::VerbEntry::new(
                 "pray",
                 vec![crate::render::command_band::VerbLine::bare()],
-            ));
+            ),
+        );
         pick_text(&mut s, &mut mapper, COL_VERB, "pray");
-        assert!(!band(&s).col_reachable(COL_HERE), "a solo verb offers no object");
+        assert!(
+            !band(&s).col_reachable(COL_HERE),
+            "a solo verb offers no object"
+        );
         assert!(band(&s).complete());
         assert_eq!(
-            band(&s).focus, COL_VERB,
+            band(&s).focus,
+            COL_VERB,
             "nothing left to pick — SQ-0667 retired the trailing phrase-line stop, so focus \
              clamps at the last reachable column instead"
         );
@@ -9316,7 +11301,10 @@ mod tests {
         band_reset(&mut s);
         pick_text(&mut s, &mut mapper, COL_VERB, "take");
         assert!(band(&s).col_reachable(COL_HERE) && band(&s).col_reachable(COL_CARRIED));
-        assert!(!band(&s).col_reachable(COL_SECOND), "no second slot for an object verb");
+        assert!(
+            !band(&s).col_reachable(COL_SECOND),
+            "no second slot for an object verb"
+        );
         assert!(!band(&s).complete(), "`take` alone is not a command");
         pick_text(&mut s, &mut mapper, COL_HERE, "iron door");
         assert!(band(&s).complete());
@@ -9325,15 +11313,24 @@ mod tests {
         band_reset(&mut s);
         pick_text(&mut s, &mut mapper, COL_VERB, "search");
         assert!(band(&s).complete(), "`search` alone is valid");
-        assert!(band(&s).col_reachable(COL_HERE), "…but an object may still be added");
+        assert!(
+            band(&s).col_reachable(COL_HERE),
+            "…but an object may still be added"
+        );
 
         // pair: the second column stays shut until the first object is picked.
         band_reset(&mut s);
         pick_text(&mut s, &mut mapper, COL_VERB, "unlock");
-        assert!(!band(&s).col_reachable(COL_SECOND), "WITH… is unreachable before WHAT");
+        assert!(
+            !band(&s).col_reachable(COL_SECOND),
+            "WITH… is unreachable before WHAT"
+        );
         assert!(!band(&s).complete());
         pick_text(&mut s, &mut mapper, COL_HERE, "iron door");
-        assert!(band(&s).col_reachable(COL_SECOND), "WITH… opens once WHAT is filled");
+        assert!(
+            band(&s).col_reachable(COL_SECOND),
+            "WITH… opens once WHAT is filled"
+        );
         assert!(!band(&s).complete(), "a pair verb needs both objects");
         pick_text(&mut s, &mut mapper, COL_SECOND, "brass key");
         assert!(band(&s).complete());
@@ -9365,7 +11362,11 @@ mod tests {
         pick_text(&mut s, &mut mapper, COL_VERB, "put");
         pick_text(&mut s, &mut mapper, COL_HERE, "mailbox");
         pick_text(&mut s, &mut mapper, COL_SECOND, "lantern");
-        assert_eq!(band(&s).phrase_text(), "put mailbox in lantern", "the verb's own preposition");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "put mailbox in lantern",
+            "the verb's own preposition"
+        );
     }
 
     /// **The SQ-0676 headline.** Typing reaches the story prompt with the band
@@ -9415,10 +11416,18 @@ mod tests {
         let mut s = AppState::default();
         let mut mapper = Mapper::default();
         open_band(&mut s);
-        let n = band(&s).quick.iter().position(|q| q == "n").expect("n in the quick row");
+        let n = band(&s)
+            .quick
+            .iter()
+            .position(|q| q == "n")
+            .expect("n in the quick row");
 
         apply_action(Action::BandQuickPick(n), &mut s, &mut mapper);
-        assert_eq!(band(&s).phrase_text(), "", "a quick pick fires directly — it never fills the phrase");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "",
+            "a quick pick fires directly — it never fills the phrase"
+        );
         assert_eq!(s.input.value, "", "the story input line is untouched");
     }
 
@@ -9429,17 +11438,37 @@ mod tests {
     fn quick_pick_command_resolves_the_word() {
         let mut s = AppState::default();
         open_band(&mut s);
-        let n = band(&s).quick.iter().position(|q| q == "n").expect("n in the quick row");
-        let look = band(&s).quick.iter().position(|q| q == "look").expect("look in the quick row");
+        let n = band(&s)
+            .quick
+            .iter()
+            .position(|q| q == "n")
+            .expect("n in the quick row");
+        let look = band(&s)
+            .quick
+            .iter()
+            .position(|q| q == "look")
+            .expect("look in the quick row");
 
         // Direction abbreviations submit spelled out: Scott Adams vocabularies
         // hold only NORTH/SOUTH/…, so sending the displayed `n` fails there.
         assert_eq!(band_quick_pick_command(&s, n), Some("north".to_string()));
-        assert_eq!(band_quick_pick_command(&s, look), Some("look".to_string()), "non-directions pass through");
-        assert_eq!(band_quick_pick_command(&s, 9999), None, "a stale index is a no-op, not a panic");
+        assert_eq!(
+            band_quick_pick_command(&s, look),
+            Some("look".to_string()),
+            "non-directions pass through"
+        );
+        assert_eq!(
+            band_quick_pick_command(&s, 9999),
+            None,
+            "a stale index is a no-op, not a panic"
+        );
 
         s.overlays.command_band = None;
-        assert_eq!(band_quick_pick_command(&s, n), None, "nothing to resolve once the band is closed");
+        assert_eq!(
+            band_quick_pick_command(&s, n),
+            None,
+            "nothing to resolve once the band is closed"
+        );
     }
 
     /// SQ-1130, the sharpest edge of the same reuse: the expansion that turns
@@ -9455,7 +11484,10 @@ mod tests {
         let mut s = AppState::default();
         open_band(&mut s);
         let band_mut = s.overlays.command_band.as_mut().unwrap();
-        band_mut.quick = ["bow", "port", "starboard", "n"].iter().map(|w| w.to_string()).collect();
+        band_mut.quick = ["bow", "port", "starboard", "n"]
+            .iter()
+            .map(|w| w.to_string())
+            .collect();
 
         for (idx, word) in [(0, "bow"), (1, "port"), (2, "starboard")] {
             assert_eq!(
@@ -9484,7 +11516,11 @@ mod tests {
         pick_text(&mut s, &mut mapper, COL_HERE, "iron door");
         assert_eq!(band(&s).phrase_text(), "unlock iron door");
 
-        let n = band(&s).quick.iter().position(|q| q == "n").expect("n in the quick row");
+        let n = band(&s)
+            .quick
+            .iter()
+            .position(|q| q == "n")
+            .expect("n in the quick row");
         assert_eq!(
             band_quick_pick_command(&s, n),
             Some("north".to_string()),
@@ -9511,12 +11547,22 @@ mod tests {
 
         let all = band(&s).items(COL_VERB).len();
         type_text(&mut s, &mut mapper, "unl");
-        assert_eq!(band(&s).items(COL_VERB).len(), all, "the list never narrows now");
+        assert_eq!(
+            band(&s).items(COL_VERB).len(),
+            all,
+            "the list never narrows now"
+        );
 
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`unl` matches `unlock`");
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`unl` matches `unlock`");
         assert_eq!(col, COL_VERB, "the first word looks in the VERB column");
         assert_eq!(band(&s).items(col)[idx], "unlock");
-        assert_eq!(band(&s).scroll[COL_VERB].selected, idx, "…and the column scrolls to it");
+        assert_eq!(
+            band(&s).scroll[COL_VERB].selected,
+            idx,
+            "…and the column scrolls to it"
+        );
     }
 
     /// The nearest match follows the grammar into the object columns, and
@@ -9530,15 +11576,25 @@ mod tests {
         open_band(&mut s);
 
         type_text(&mut s, &mut mapper, "unlock do");
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`do` matches `iron door`");
-        assert_eq!(col, COL_HERE, "after a verb, the object columns are what's expected");
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`do` matches `iron door`");
+        assert_eq!(
+            col, COL_HERE,
+            "after a verb, the object columns are what's expected"
+        );
         assert_eq!(band(&s).items(col)[idx], "iron door");
 
         // Once the pair verb's own preposition is typed, the second-object
         // column is the one being matched against.
         type_text(&mut s, &mut mapper, "or with bra");
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`bra` matches `brass key`");
-        assert_eq!(col, COL_SECOND, "past the preposition, the WITH… column takes over");
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`bra` matches `brass key`");
+        assert_eq!(
+            col, COL_SECOND,
+            "past the preposition, the WITH… column takes over"
+        );
         assert_eq!(band(&s).items(col)[idx], "brass key");
     }
 
@@ -9554,9 +11610,18 @@ mod tests {
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "well, take mai");
 
-        assert_eq!(band(&s).phrase_text(), "take mai", "anchored on `take`, not on `well,`");
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`mai` matches `mailbox`");
-        assert_eq!((col, band(&s).items(col)[idx].as_str()), (COL_HERE, "mailbox"));
+        assert_eq!(
+            band(&s).phrase_text(),
+            "take mai",
+            "anchored on `take`, not on `well,`"
+        );
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`mai` matches `mailbox`");
+        assert_eq!(
+            (col, band(&s).items(col)[idx].as_str()),
+            (COL_HERE, "mailbox")
+        );
     }
 
     /// Backspace edits the prompt exactly as it does with the band closed
@@ -9569,7 +11634,11 @@ mod tests {
         let mut mapper = Mapper::default();
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "unlock iron door");
-        assert_eq!(band(&s).phrase_text(), "unlock iron door", "typed, not picked");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "unlock iron door",
+            "typed, not picked"
+        );
 
         let a = key_to_action(&s, key(KeyCode::Backspace));
         assert_eq!(a, Action::Backspace, "Backspace belongs to the prompt now");
@@ -9577,7 +11646,11 @@ mod tests {
             apply_action(Action::Backspace, &mut s, &mut mapper);
         }
         assert_eq!(s.input.value, "unlock iron");
-        assert_eq!(band(&s).phrase_text(), "unlock iron", "the phrase tracks the line");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "unlock iron",
+            "the phrase tracks the line"
+        );
     }
 
     /// Esc's ladder is two rungs (SQ-0677): clear an EXPLICIT row highlight,
@@ -9600,7 +11673,10 @@ mod tests {
 
         apply_action(Action::BandEscape, &mut s, &mut mapper);
         assert!(!s.band_dock.open, "rung 2: close");
-        assert_eq!(s.input.value, "take", "closing never eats the typed line either");
+        assert_eq!(
+            s.input.value, "take",
+            "closing never eats the typed line either"
+        );
     }
 
     /// Bug fix (SQ-0677, reported against the shipped build): Esc-Esc must
@@ -9629,7 +11705,10 @@ mod tests {
         let mut mapper = Mapper::default();
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "unl");
-        assert!(band(&s).nearest_match(&s.input.value).is_some(), "sanity: a passive match exists");
+        assert!(
+            band(&s).nearest_match(&s.input.value).is_some(),
+            "sanity: a passive match exists"
+        );
         assert_eq!(band(&s).row_sel, None, "sanity: nothing explicitly armed");
         apply_action(Action::BandEscape, &mut s, &mut mapper);
         apply_action(Action::BandEscape, &mut s, &mut mapper);
@@ -9658,7 +11737,10 @@ mod tests {
         assert!(s.band_dock.open, "first press opens");
         apply_action(Action::OpenCommandBand, &mut s, &mut mapper);
         assert!(!s.band_dock.open, "second press closes");
-        assert!(s.overlays.command_band.is_some(), "content persists for the slide-out, same as BandClose");
+        assert!(
+            s.overlays.command_band.is_some(),
+            "content persists for the slide-out, same as BandClose"
+        );
     }
 
     /// Re-picking an earlier slot invalidates everything downstream of it —
@@ -9678,8 +11760,15 @@ mod tests {
         // `drop`, not `look` — `look` is excluded from the VERB column by
         // SQ-0667, since it's already on the quick row.
         pick_text(&mut s, &mut mapper, COL_VERB, "drop");
-        assert_eq!(band(&s).phrase_text(), "drop", "the object went with the old verb");
-        assert_eq!(s.input.value, "drop", "…and so did its mirror on the real prompt");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "drop",
+            "the object went with the old verb"
+        );
+        assert_eq!(
+            s.input.value, "drop",
+            "…and so did its mirror on the real prompt"
+        );
     }
 
     /// SQ-0667 (2026-08-05): picks compose directly onto the real story input
@@ -9698,10 +11787,16 @@ mod tests {
         open_band(&mut s);
         pick_text(&mut s, &mut mapper, COL_VERB, "take");
         pick_text(&mut s, &mut mapper, COL_HERE, "mailbox");
-        assert_eq!(s.input.value, "well, take mailbox", "picks append onto the pre-existing text");
+        assert_eq!(
+            s.input.value, "well, take mailbox",
+            "picks append onto the pre-existing text"
+        );
 
         apply_action(Action::BandClose, &mut s, &mut mapper);
-        assert_eq!(s.input.value, "well, take mailbox", "closing the band does not clear it");
+        assert_eq!(
+            s.input.value, "well, take mailbox",
+            "closing the band does not clear it"
+        );
     }
 
     /// SQ-1230, repro 1: autocompleting `examine` and pressing SPACE leaves
@@ -9720,10 +11815,16 @@ mod tests {
         pick_text(&mut s, &mut mapper, COL_VERB, "examine");
         assert_eq!(s.input.value, "examine");
         type_text(&mut s, &mut mapper, " ");
-        assert_eq!(s.input.value, "examine ", "sanity: the trailing space landed");
+        assert_eq!(
+            s.input.value, "examine ",
+            "sanity: the trailing space landed"
+        );
 
         pick_text(&mut s, &mut mapper, COL_HERE, "mailbox");
-        assert_eq!(s.input.value, "examine mailbox", "not `examine examine mailbox`");
+        assert_eq!(
+            s.input.value, "examine mailbox",
+            "not `examine examine mailbox`"
+        );
     }
 
     /// SQ-1230, repro 2: a partial word typed at the VERB column (`exa`,
@@ -9741,7 +11842,10 @@ mod tests {
         assert_eq!(s.input.value, "exa");
 
         pick_text(&mut s, &mut mapper, COL_VERB, "examine");
-        assert_eq!(s.input.value, "examine", "the partial word was REPLACED, not appended to");
+        assert_eq!(
+            s.input.value, "examine",
+            "the partial word was REPLACED, not appended to"
+        );
     }
 
     /// Tab with NOTHING highlighted is pure column movement (SQ-0677):
@@ -9756,15 +11860,29 @@ mod tests {
         open_band(&mut s);
         // Only VERB is reachable yet, so Tab clamps in place — but it is
         // still `BandColumnStep`, not a consumed no-op.
-        assert_eq!(command_band_intercept(key(KeyCode::Tab), &s), Some(Action::BandColumnStep(1)));
+        assert_eq!(
+            command_band_intercept(key(KeyCode::Tab), &s),
+            Some(Action::BandColumnStep(1))
+        );
         apply_action(Action::BandColumnStep(1), &mut s, &mut mapper);
-        assert_eq!(band(&s).focus, COL_VERB, "clamped: nowhere else reachable yet");
+        assert_eq!(
+            band(&s).focus,
+            COL_VERB,
+            "clamped: nowhere else reachable yet"
+        );
 
         pick_text(&mut s, &mut mapper, COL_VERB, "unlock");
         assert_eq!(band(&s).focus, COL_HERE, "picking advanced focus here");
-        assert_eq!(command_band_intercept(key(KeyCode::Tab), &s), Some(Action::BandColumnStep(1)));
+        assert_eq!(
+            command_band_intercept(key(KeyCode::Tab), &s),
+            Some(Action::BandColumnStep(1))
+        );
         apply_action(Action::BandColumnStep(1), &mut s, &mut mapper);
-        assert_eq!(band(&s).focus, COL_CARRIED, "Tab moved to the next reachable column");
+        assert_eq!(
+            band(&s).focus,
+            COL_CARRIED,
+            "Tab moved to the next reachable column"
+        );
     }
 
     /// **The SQ-0677 headline pin.** Typing `ta` highlights `take` in the
@@ -9779,7 +11897,9 @@ mod tests {
         let mut mapper = Mapper::default();
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "ta");
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`ta` matches `take`");
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`ta` matches `take`");
         assert_eq!(col, COL_VERB);
 
         assert_eq!(
@@ -9787,8 +11907,15 @@ mod tests {
             Some(Action::BandTabPick(COL_VERB, idx))
         );
         apply_action(Action::BandTabPick(COL_VERB, idx), &mut s, &mut mapper);
-        assert_eq!(s.input.value, "take", "the partial word was REPLACED, not appended to");
-        assert_eq!(band(&s).focus, COL_HERE, "…and focus advanced to the next column");
+        assert_eq!(
+            s.input.value, "take",
+            "the partial word was REPLACED, not appended to"
+        );
+        assert_eq!(
+            band(&s).focus,
+            COL_HERE,
+            "…and focus advanced to the next column"
+        );
     }
 
     /// Tab also picks an EXPLICIT row highlight (`↑`/`↓`), the same as the
@@ -9811,7 +11938,9 @@ mod tests {
         let row = band(&s).row_sel.expect("still armed");
         let word = band(&s).items(COL_VERB)[row].clone();
         assert!(
-            band(&s).verb_by_word(&word).is_some_and(|v| v.max_nouns() > 0),
+            band(&s)
+                .verb_by_word(&word)
+                .is_some_and(|v| v.max_nouns() > 0),
             "`{word}` must be a verb the band can carry an object for"
         );
         assert_eq!(
@@ -9819,7 +11948,10 @@ mod tests {
             Some(Action::BandTabPick(COL_VERB, row))
         );
         apply_action(Action::BandTabPick(COL_VERB, row), &mut s, &mut mapper);
-        assert!(!s.input.value.is_empty(), "the armed verb composed onto the prompt");
+        assert!(
+            !s.input.value.is_empty(),
+            "the armed verb composed onto the prompt"
+        );
         assert_eq!(band(&s).focus, COL_HERE, "…and focus advanced");
     }
 
@@ -9840,7 +11972,9 @@ mod tests {
         let mut mapper = Mapper::default();
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "take mai");
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`mai` matches `mailbox`");
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`mai` matches `mailbox`");
         assert_eq!(col, COL_HERE);
 
         let a = key_to_action(&s, key(KeyCode::Tab));
@@ -9860,7 +11994,10 @@ mod tests {
         s.dict_words = vec!["unladen".to_string()];
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "unl");
-        assert!(!s.suggestions.is_empty(), "the dictionary has a candidate too");
+        assert!(
+            !s.suggestions.is_empty(),
+            "the dictionary has a candidate too"
+        );
 
         let a = key_to_action(&s, key(KeyCode::Tab));
         assert!(
@@ -9868,7 +12005,10 @@ mod tests {
             "the open band claims Tab over the dictionary autocomplete: {a:?}"
         );
         apply_action(a, &mut s, &mut mapper);
-        assert_eq!(s.input.value, "unlock", "…the band's word, not the dictionary's");
+        assert_eq!(
+            s.input.value, "unlock",
+            "…the band's word, not the dictionary's"
+        );
 
         // Closed, Tab is the dictionary autocomplete again — unchanged.
         s.overlays.command_band = None;
@@ -9888,14 +12028,20 @@ mod tests {
         let mut mapper = Mapper::default();
         open_band(&mut s);
         type_text(&mut s, &mut mapper, "ta");
-        assert!(band(&s).nearest_match(&s.input.value).is_some(), "sanity: a match exists");
+        assert!(
+            band(&s).nearest_match(&s.input.value).is_some(),
+            "sanity: a match exists"
+        );
         assert_eq!(
             command_band_intercept(key(KeyCode::BackTab), &s),
             Some(Action::BandColumnStep(-1)),
             "Shift-Tab is movement regardless of any highlight"
         );
         apply_action(Action::BandColumnStep(-1), &mut s, &mut mapper);
-        assert_eq!(s.input.value, "ta", "…and nothing was picked — the typed text is untouched");
+        assert_eq!(
+            s.input.value, "ta",
+            "…and nothing was picked — the typed text is untouched"
+        );
     }
 
     /// `Enter` NEVER picks (SQ-0677 supersedes the SQ-0676 armed-Enter-fires
@@ -9916,7 +12062,10 @@ mod tests {
             Action::SubmitCommand("take".to_string()),
             "Enter always submits — the band never claims it"
         );
-        assert!(command_band_intercept(key(KeyCode::Enter), &s).is_none(), "not consumed by the band");
+        assert!(
+            command_band_intercept(key(KeyCode::Enter), &s).is_none(),
+            "not consumed by the band"
+        );
     }
 
     /// Left/Right are plain cursor movement on the edit line (SQ-0677) — the
@@ -9926,8 +12075,14 @@ mod tests {
     fn left_right_are_not_claimed_by_the_band() {
         let mut s = AppState::default();
         open_band(&mut s);
-        assert!(command_band_intercept(key(KeyCode::Left), &s).is_none(), "falls through to CursorLeft");
-        assert!(command_band_intercept(key(KeyCode::Right), &s).is_none(), "falls through to CursorRight");
+        assert!(
+            command_band_intercept(key(KeyCode::Left), &s).is_none(),
+            "falls through to CursorLeft"
+        );
+        assert!(
+            command_band_intercept(key(KeyCode::Right), &s).is_none(),
+            "falls through to CursorRight"
+        );
         assert_eq!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft);
         assert_eq!(key_to_action(&s, key(KeyCode::Right)), Action::CursorRight);
     }
@@ -9941,10 +12096,18 @@ mod tests {
         let mut s = AppState::default();
         let mut mapper = Mapper::default();
         open_band(&mut s);
-        assert_eq!(band(&s).row_sel, None, "the band opens with nothing highlighted");
+        assert_eq!(
+            band(&s).row_sel,
+            None,
+            "the band opens with nothing highlighted"
+        );
 
         apply_action(Action::BandRowNav(1), &mut s, &mut mapper);
-        assert_eq!(band(&s).row_sel, Some(0), "first press only starts the highlight");
+        assert_eq!(
+            band(&s).row_sel,
+            Some(0),
+            "first press only starts the highlight"
+        );
 
         apply_action(Action::BandRowNav(1), &mut s, &mut mapper);
         assert_eq!(band(&s).row_sel, Some(1), "second press actually moves it");
@@ -9975,27 +12138,42 @@ mod tests {
             b.here = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
             b.focus = COL_HERE;
         }
-        assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 0, "sanity: window starts at the top");
+        assert_eq!(
+            band(&s).scroll[COL_HERE].target_offset(),
+            0,
+            "sanity: window starts at the top"
+        );
 
         // Walk down past the 3-row window (first press only arms row 0 —
         // SQ-0677 — so 5 presses reach row 4, the last item).
         for _ in 0..5 {
             apply_action(Action::BandRowNav(1), &mut s, &mut mapper);
         }
-        assert_eq!(band(&s).row_sel, Some(4), "sanity: stepped to the last item");
+        assert_eq!(
+            band(&s).row_sel,
+            Some(4),
+            "sanity: stepped to the last item"
+        );
         let offset = band(&s).scroll[COL_HERE].target_offset();
         assert!(
             offset <= 4 && 4 < offset + 3,
             "row 4 must be inside the [offset, offset+3) window, got offset {offset}"
         );
-        assert!(offset > 0, "the window must have scrolled down from the top");
+        assert!(
+            offset > 0,
+            "the window must have scrolled down from the top"
+        );
 
         // And back up to the top scrolls the window back with it.
         for _ in 0..5 {
             apply_action(Action::BandRowNav(-1), &mut s, &mut mapper);
         }
         assert_eq!(band(&s).row_sel, Some(0));
-        assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 0, "scrolled back to the top");
+        assert_eq!(
+            band(&s).scroll[COL_HERE].target_offset(),
+            0,
+            "scrolled back to the top"
+        );
     }
 
     /// SQ-0682: PageUp/PageDown are new on the band (it previously had none
@@ -10022,16 +12200,25 @@ mod tests {
         );
         apply_action(Action::BandRowPage(1), &mut s, &mut mapper);
         let after_one_page = band(&s).row_sel.expect("armed by the page");
-        assert!(after_one_page >= 1, "PageDown must advance roughly a viewport");
+        assert!(
+            after_one_page >= 1,
+            "PageDown must advance roughly a viewport"
+        );
         let offset = band(&s).scroll[COL_HERE].target_offset();
         assert!(
             offset <= after_one_page && after_one_page < offset + 3,
             "the paged-to row must be inside the window"
         );
 
-        assert_eq!(key_to_action(&s, key(KeyCode::PageUp)), Action::BandRowPage(-1));
+        assert_eq!(
+            key_to_action(&s, key(KeyCode::PageUp)),
+            Action::BandRowPage(-1)
+        );
         apply_action(Action::BandRowPage(-1), &mut s, &mut mapper);
-        assert!(band(&s).row_sel.unwrap() < after_one_page, "PageUp must retreat");
+        assert!(
+            band(&s).row_sel.unwrap() < after_one_page,
+            "PageUp must retreat"
+        );
     }
 
     /// SQ-0682: Home/End are new on the band — jump the current column's row
@@ -10053,12 +12240,23 @@ mod tests {
         apply_action(Action::BandRowEnd, &mut s, &mut mapper);
         assert_eq!(band(&s).row_sel, Some(19), "End jumps to the last item");
         let offset = band(&s).scroll[COL_HERE].target_offset();
-        assert!(offset <= 19 && 19 < offset + 3, "the last row must be inside the window");
+        assert!(
+            offset <= 19 && 19 < offset + 3,
+            "the last row must be inside the window"
+        );
 
         assert_eq!(key_to_action(&s, key(KeyCode::Home)), Action::BandRowHome);
         apply_action(Action::BandRowHome, &mut s, &mut mapper);
-        assert_eq!(band(&s).row_sel, Some(0), "Home jumps back to the first item");
-        assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 0, "…and the window follows to the top");
+        assert_eq!(
+            band(&s).row_sel,
+            Some(0),
+            "Home jumps back to the first item"
+        );
+        assert_eq!(
+            band(&s).scroll[COL_HERE].target_offset(),
+            0,
+            "…and the window follows to the top"
+        );
     }
 
     /// SQ-0682: the passive typed nearest-match highlight must scroll into
@@ -10085,7 +12283,10 @@ mod tests {
             .expect("default verb table has more than 5 entries");
         let prefix = &word[..word.len() - 1];
         type_text(&mut s, &mut mapper, prefix);
-        assert_eq!(band(&s).nearest_match(&s.input.value), Some((COL_VERB, idx)));
+        assert_eq!(
+            band(&s).nearest_match(&s.input.value),
+            Some((COL_VERB, idx))
+        );
         let offset = band(&s).scroll[COL_VERB].target_offset();
         assert!(
             offset <= idx && idx < offset + 3,
@@ -10144,8 +12345,16 @@ mod tests {
         // on the row the window just left — rides its top edge rather than
         // being stepped down the list.
         apply_action(Action::BandWheel(COL_HERE, 1), &mut s, &mut mapper);
-        assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 1, "the list moved under the cursor");
-        assert_eq!(band(&s).scroll[COL_HERE].selected, 1, "the cursor rides the top edge, not off it");
+        assert_eq!(
+            band(&s).scroll[COL_HERE].target_offset(),
+            1,
+            "the list moved under the cursor"
+        );
+        assert_eq!(
+            band(&s).scroll[COL_HERE].selected,
+            1,
+            "the cursor rides the top edge, not off it"
+        );
         assert_eq!(band(&s).focus, COL_HERE, "focus unchanged");
 
         // …and the other direction, on the column the band is NOT pointing at:
@@ -10153,9 +12362,21 @@ mod tests {
         // slides, and only starts riding the bottom edge once caught.
         apply_action(Action::BandWheel(COL_CARRIED, -1), &mut s, &mut mapper);
         assert_eq!(band(&s).scroll[COL_CARRIED].target_offset(), 2);
-        assert_eq!(band(&s).scroll[COL_CARRIED].selected, 5, "clamped to the window's last row");
-        assert_eq!(band(&s).focus, COL_HERE, "…still without moving the band's attention");
-        assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 1, "and without touching the other column");
+        assert_eq!(
+            band(&s).scroll[COL_CARRIED].selected,
+            5,
+            "clamped to the window's last row"
+        );
+        assert_eq!(
+            band(&s).focus,
+            COL_HERE,
+            "…still without moving the band's attention"
+        );
+        assert_eq!(
+            band(&s).scroll[COL_HERE].target_offset(),
+            1,
+            "and without touching the other column"
+        );
     }
 
     /// A column the frame never drew has no window, so its wheel is inert —
@@ -10175,7 +12396,11 @@ mod tests {
         }
         apply_action(Action::BandWheel(COL_HERE, 1), &mut s, &mut mapper);
         assert_eq!(band(&s).scroll[COL_HERE].target_offset(), 0);
-        assert_eq!(band(&s).scroll[COL_HERE].selected, 0, "not stepped as a consolation");
+        assert_eq!(
+            band(&s).scroll[COL_HERE].selected,
+            0,
+            "not stepped as a consolation"
+        );
     }
 
     /// Opening/closing follows the drawer pattern the inventory dock uses.
@@ -10186,17 +12411,30 @@ mod tests {
         apply_action(Action::OpenCommandBand, &mut s, &mut mapper);
         assert!(s.band_dock.open, "armed toward open");
         assert!(s.overlays.command_band.is_some());
-        assert_eq!(band(&s).row_sel, None, "the band opens with nothing highlighted");
+        assert_eq!(
+            band(&s).row_sel,
+            None,
+            "the band opens with nothing highlighted"
+        );
 
         apply_action(Action::BandClose, &mut s, &mut mapper);
         assert!(!s.band_dock.open, "armed toward closed");
-        assert!(s.overlays.command_band.is_some(), "content persists during the slide-out");
+        assert!(
+            s.overlays.command_band.is_some(),
+            "content persists during the slide-out"
+        );
         s.settle_command_band();
-        assert!(s.overlays.command_band.is_some(), "…including while the slide may still run");
+        assert!(
+            s.overlays.command_band.is_some(),
+            "…including while the slide may still run"
+        );
 
         s.band_dock.toggle_to(false, true);
         s.settle_command_band();
-        assert!(s.overlays.command_band.is_none(), "cleared once the slide-out settles");
+        assert!(
+            s.overlays.command_band.is_none(),
+            "cleared once the slide-out settles"
+        );
     }
 
     /// `toggle-command-panel`/F2 is now a TOGGLE (SQ-0677): re-invoking it while
@@ -10215,11 +12453,18 @@ mod tests {
 
         apply_action(Action::OpenCommandBand, &mut s, &mut mapper); // toggle: closes
         assert!(!s.band_dock.open);
-        assert!(s.overlays.command_band.is_some(), "content persists mid-slide-out");
+        assert!(
+            s.overlays.command_band.is_some(),
+            "content persists mid-slide-out"
+        );
 
         apply_action(Action::OpenCommandBand, &mut s, &mut mapper); // toggle: reopens
         assert!(s.band_dock.open);
-        assert_eq!(band(&s).phrase_text(), "take", "the phrase survived the close/reopen");
+        assert_eq!(
+            band(&s).phrase_text(),
+            "take",
+            "the phrase survived the close/reopen"
+        );
         assert_eq!(s.input.value, "take", "…and its mirror on the real prompt");
     }
 
@@ -10284,18 +12529,31 @@ mod tests {
 
         assert!(apply_paste(&mut s, "take lan"), "consumed");
         assert_eq!(s.input.value, "take lan", "the story input line takes it");
-        assert_eq!(band(&s).row_sel, None, "a paste is a text change — it disarms too");
+        assert_eq!(
+            band(&s).row_sel,
+            None,
+            "a paste is a text change — it disarms too"
+        );
 
         // `take` opens the object columns; focus lands on HERE (the
         // grammar's first expected column — SQ-0677 no longer auto-jumps to
         // whichever column happens to match best). Tab to CARRIED to find
         // `lantern` there, since the nearest match is scoped to the CURRENT
         // column now.
-        assert_eq!(band(&s).focus, COL_HERE, "the first expected column, not a match-driven jump");
+        assert_eq!(
+            band(&s).focus,
+            COL_HERE,
+            "the first expected column, not a match-driven jump"
+        );
         apply_action(Action::BandColumnStep(1), &mut s, &mut mapper);
         assert_eq!(band(&s).focus, COL_CARRIED);
-        let (col, idx) = band(&s).nearest_match(&s.input.value).expect("`lan` matches `lantern`");
-        assert_eq!((col, band(&s).items(col)[idx].as_str()), (COL_CARRIED, "lantern"));
+        let (col, idx) = band(&s)
+            .nearest_match(&s.input.value)
+            .expect("`lan` matches `lantern`");
+        assert_eq!(
+            (col, band(&s).items(col)[idx].as_str()),
+            (COL_CARRIED, "lantern")
+        );
     }
 
     // ── SQ-0237: interactive pane resize mode ─────────────────────────────────
@@ -10319,7 +12577,10 @@ mod tests {
         assert_eq!(s.pane_sizes.split_ratio, 50);
         apply_action(Action::ResizeNav(ResizeNavKind::Right), &mut s, &mut mapper);
         assert_eq!(s.pane_sizes.split_ratio, 53);
-        assert_eq!(s.config.split_ratio, 53, "config must mirror pane_sizes after nav");
+        assert_eq!(
+            s.config.split_ratio, 53,
+            "config must mirror pane_sizes after nav"
+        );
         for _ in 0..20 {
             apply_action(Action::ResizeNav(ResizeNavKind::Right), &mut s, &mut mapper);
         }
@@ -10349,9 +12610,15 @@ mod tests {
 
         apply_action(Action::ResizeReset, &mut s, &mut mapper);
         assert_eq!(s.pane_sizes.split_ratio, 50);
-        assert_eq!(s.pane_sizes.band_height, crate::render::command_band::DEFAULT_BAND_ROWS);
+        assert_eq!(
+            s.pane_sizes.band_height,
+            crate::render::command_band::DEFAULT_BAND_ROWS
+        );
         assert_eq!(s.config.split_ratio, 50);
-        assert_eq!(s.config.command_band.height, crate::render::command_band::DEFAULT_BAND_ROWS);
+        assert_eq!(
+            s.config.command_band.height,
+            crate::render::command_band::DEFAULT_BAND_ROWS
+        );
     }
 
     #[test]
@@ -10395,18 +12662,27 @@ mod tests {
         let mut mapper = Mapper::default();
         s.layout = crate::state::Layout::TranscriptFull;
         apply_action(Action::ResizePanes, &mut s, &mut mapper);
-        assert!(!s.resize_mode, "no visible pane → resize mode does not open");
+        assert!(
+            !s.resize_mode,
+            "no visible pane → resize mode does not open"
+        );
     }
 
     #[test]
     fn resize_targets_visible_matches_spec_order() {
         let mut s = AppState::default();
-        assert_eq!(s.resize_targets_visible(), vec![crate::state::ResizeTarget::StoryMap]);
+        assert_eq!(
+            s.resize_targets_visible(),
+            vec![crate::state::ResizeTarget::StoryMap]
+        );
 
         // The inventory is a Journal tab now (SQ-1684), not a resize target: no tab
         // adds one.
         s.journal_tab = crate::journal::JournalTab::Inventory;
-        assert_eq!(s.resize_targets_visible(), vec![crate::state::ResizeTarget::StoryMap]);
+        assert_eq!(
+            s.resize_targets_visible(),
+            vec![crate::state::ResizeTarget::StoryMap]
+        );
 
         s.layout = crate::state::Layout::TranscriptFull;
         assert!(s.resize_targets_visible().is_empty());
@@ -10421,7 +12697,10 @@ mod tests {
         open_band(&mut s);
         assert_eq!(
             s.resize_targets_visible(),
-            vec![crate::state::ResizeTarget::StoryMap, crate::state::ResizeTarget::CommandBand]
+            vec![
+                crate::state::ResizeTarget::StoryMap,
+                crate::state::ResizeTarget::CommandBand
+            ]
         );
     }
 
@@ -10439,18 +12718,28 @@ mod tests {
         assert_eq!(s.pane_sizes.band_height, DEFAULT_BAND_ROWS);
         apply_action(Action::ResizeNav(ResizeNavKind::Up), &mut s, &mut mapper);
         assert_eq!(s.pane_sizes.band_height, DEFAULT_BAND_ROWS + 1);
-        assert_eq!(s.config.command_band.height, DEFAULT_BAND_ROWS + 1, "config mirrors pane_sizes");
+        assert_eq!(
+            s.config.command_band.height,
+            DEFAULT_BAND_ROWS + 1,
+            "config mirrors pane_sizes"
+        );
         apply_action(Action::ResizeNav(ResizeNavKind::Down), &mut s, &mut mapper);
         assert_eq!(s.pane_sizes.band_height, DEFAULT_BAND_ROWS);
 
         for _ in 0..30 {
             apply_action(Action::ResizeNav(ResizeNavKind::Up), &mut s, &mut mapper);
         }
-        assert_eq!(s.pane_sizes.band_height, MAX_BAND_ROWS, "clamped at the top");
+        assert_eq!(
+            s.pane_sizes.band_height, MAX_BAND_ROWS,
+            "clamped at the top"
+        );
         for _ in 0..30 {
             apply_action(Action::ResizeNav(ResizeNavKind::Down), &mut s, &mut mapper);
         }
-        assert_eq!(s.pane_sizes.band_height, MIN_BAND_ROWS, "clamped at the bottom");
+        assert_eq!(
+            s.pane_sizes.band_height, MIN_BAND_ROWS,
+            "clamped at the bottom"
+        );
     }
 
     #[test]
@@ -10460,12 +12749,24 @@ mod tests {
         s.resize_target = crate::state::ResizeTarget::StoryMap;
 
         s.cycle_resize_target(true);
-        assert_eq!(s.resize_target, crate::state::ResizeTarget::CommandBand, "wraps forward");
+        assert_eq!(
+            s.resize_target,
+            crate::state::ResizeTarget::CommandBand,
+            "wraps forward"
+        );
         s.cycle_resize_target(true);
-        assert_eq!(s.resize_target, crate::state::ResizeTarget::StoryMap, "wraps forward again");
+        assert_eq!(
+            s.resize_target,
+            crate::state::ResizeTarget::StoryMap,
+            "wraps forward again"
+        );
 
         s.cycle_resize_target(false);
-        assert_eq!(s.resize_target, crate::state::ResizeTarget::CommandBand, "wraps backward");
+        assert_eq!(
+            s.resize_target,
+            crate::state::ResizeTarget::CommandBand,
+            "wraps backward"
+        );
 
         // Current target not visible → snaps to the first visible one.
         s.overlays.command_band = None;
@@ -10485,12 +12786,26 @@ mod tests {
         open_band(&mut s);
         assert_eq!(key_to_action(&s, key(KeyCode::Up)), Action::BandRowNav(-1));
         assert_eq!(key_to_action(&s, key(KeyCode::Down)), Action::BandRowNav(1));
-        assert_eq!(key_to_action(&s, key(KeyCode::Left)), Action::CursorLeft, "← is cursor movement");
-        assert_eq!(key_to_action(&s, key(KeyCode::Right)), Action::CursorRight, "→ is cursor movement");
-        assert!(matches!(key_to_action(&s, key(KeyCode::Esc)), Action::BandEscape));
+        assert_eq!(
+            key_to_action(&s, key(KeyCode::Left)),
+            Action::CursorLeft,
+            "← is cursor movement"
+        );
+        assert_eq!(
+            key_to_action(&s, key(KeyCode::Right)),
+            Action::CursorRight,
+            "→ is cursor movement"
+        );
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Esc)),
+            Action::BandEscape
+        ));
 
         let shift_left = KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT);
-        assert!(command_band_intercept(shift_left, &s).is_none(), "Shift+Arrow still pans the map");
+        assert!(
+            command_band_intercept(shift_left, &s).is_none(),
+            "Shift+Arrow still pans the map"
+        );
     }
 
     /// SQ-0676 flips the retired
@@ -10501,11 +12816,20 @@ mod tests {
     fn letters_always_type_at_the_prompt() {
         let mut s = AppState::default();
         open_band(&mut s);
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('q'))), Action::InputChar('q')));
-        assert!(command_band_intercept(key(KeyCode::Char('q')), &s).is_none(), "not consumed");
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('q'))),
+            Action::InputChar('q')
+        ));
+        assert!(
+            command_band_intercept(key(KeyCode::Char('q')), &s).is_none(),
+            "not consumed"
+        );
 
         s.overlays.command_band = None;
-        assert!(matches!(key_to_action(&s, key(KeyCode::Char('q'))), Action::InputChar('q')));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Char('q'))),
+            Action::InputChar('q')
+        ));
     }
 
     /// Ctrl/Alt chords are never eaten by the band — app commands keep working
@@ -10526,7 +12850,12 @@ mod tests {
     fn f2_no_longer_opens_the_command_band_by_default() {
         use crate::keymap::{KeyMap, KeySpec};
         let km = KeyMap::default();
-        let spec = KeySpec { code: KeyCode::F(2), ctrl: false, shift: false, alt: false };
+        let spec = KeySpec {
+            code: KeyCode::F(2),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_eq!(km.lookup(&spec, crate::keymap::Context::Global), None);
         assert_eq!(
             km.primary_key("toggle-command-panel"),
@@ -10554,7 +12883,10 @@ mod tests {
     /// Build a state with saves open (for testing e/i dispatch).
     fn state_with_saves_for_fb_tests() -> AppState {
         let mut s = AppState::default();
-        s.overlays.saves = Some(crate::state::SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(crate::state::SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         s
     }
 
@@ -10571,14 +12903,20 @@ mod tests {
     fn saves_i_opens_import_browser_action() {
         let s = state_with_saves_for_fb_tests();
         let a = key_to_action(&s, key(KeyCode::Char('i')));
-        assert!(matches!(a, Action::SavesImport), "i in saves sub-mode should produce SavesImport");
+        assert!(
+            matches!(a, Action::SavesImport),
+            "i in saves sub-mode should produce SavesImport"
+        );
     }
 
     #[test]
     fn filebrowser_esc_produces_fb_close() {
         let s = state_with_filebrowser(crate::state::FbMode::PickFile);
         let a = key_to_action(&s, key(KeyCode::Esc));
-        assert!(matches!(a, Action::FbClose), "Esc in file browser should produce FbClose");
+        assert!(
+            matches!(a, Action::FbClose),
+            "Esc in file browser should produce FbClose"
+        );
     }
 
     #[test]
@@ -10586,21 +12924,33 @@ mod tests {
         // q-close removed from file browser; q now produces None in this sub-mode.
         let s = state_with_filebrowser(crate::state::FbMode::PickFile);
         let a = key_to_action(&s, key(KeyCode::Char('q')));
-        assert!(matches!(a, Action::None), "q should no longer close the file browser");
+        assert!(
+            matches!(a, Action::None),
+            "q should no longer close the file browser"
+        );
     }
 
     #[test]
     fn filebrowser_up_down_navigate() {
         let s = state_with_filebrowser(crate::state::FbMode::PickFile);
-        assert!(matches!(key_to_action(&s, key(KeyCode::Up)), Action::FbNav(-1)));
-        assert!(matches!(key_to_action(&s, key(KeyCode::Down)), Action::FbNav(1)));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Up)),
+            Action::FbNav(-1)
+        ));
+        assert!(matches!(
+            key_to_action(&s, key(KeyCode::Down)),
+            Action::FbNav(1)
+        ));
     }
 
     #[test]
     fn filebrowser_enter_produces_fb_enter() {
         let s = state_with_filebrowser(crate::state::FbMode::PickFile);
         let a = key_to_action(&s, key(KeyCode::Enter));
-        assert!(matches!(a, Action::FbEnter), "Enter in file browser should produce FbEnter");
+        assert!(
+            matches!(a, Action::FbEnter),
+            "Enter in file browser should produce FbEnter"
+        );
     }
 
     #[test]
@@ -10608,7 +12958,10 @@ mod tests {
         let mut s = state_with_filebrowser(crate::state::FbMode::PickFile);
         assert!(s.overlays.file_browser.is_some());
         apply_action(Action::FbClose, &mut s, &mut Mapper::default());
-        assert!(s.overlays.file_browser.is_none(), "FbClose should clear file_browser");
+        assert!(
+            s.overlays.file_browser.is_none(),
+            "FbClose should clear file_browser"
+        );
     }
 
     #[test]
@@ -10623,7 +12976,11 @@ mod tests {
         // Move up from 0 should wrap to last entry.
         apply_action(Action::FbNav(-1), &mut s, &mut Mapper::default());
         if let Some(fb) = &s.overlays.file_browser {
-            assert_eq!(fb.scroll.selected, fb.entries.len() - 1, "nav -1 from 0 should wrap to last");
+            assert_eq!(
+                fb.scroll.selected,
+                fb.entries.len() - 1,
+                "nav -1 from 0 should wrap to last"
+            );
         }
     }
 
@@ -10678,9 +13035,9 @@ mod tests {
 
     #[test]
     fn config_dialog_button_clicks_map_to_actions() {
-        use ratatui::layout::Rect;
         use crate::render::dialog::{ButtonId, DialogRects};
         use crate::state::ConfigScreenState;
+        use ratatui::layout::Rect;
 
         // Build known rects:
         // dialog area at (10, 5, 40, 15)
@@ -10688,11 +13045,11 @@ mod tests {
         // Save button at (20, 19, 8, 1)
         // Cancel button at (29, 19, 10, 1)
         let rects = DialogRects {
-            area:    Rect::new(10, 5, 40, 15),
+            area: Rect::new(10, 5, 40, 15),
             content: Rect::new(11, 7, 38, 10),
-            close:   Some(Rect::new(48, 5, 1, 1)),
+            close: Some(Rect::new(48, 5, 1, 1)),
             buttons: vec![
-                (ButtonId::Save,   Rect::new(20, 19, 8,  1)),
+                (ButtonId::Save, Rect::new(20, 19, 8, 1)),
                 (ButtonId::Cancel, Rect::new(29, 19, 10, 1)),
             ],
             field: None,
@@ -10701,28 +13058,75 @@ mod tests {
         // State with config_screen open (so dialog routing knows which modal).
         let mut state = AppState::default();
         let working = crate::input::clone_config(&state.config);
-        state.overlays.config_screen = Some(ConfigScreenState { working, scroll: Default::default() });
+        state.overlays.config_screen = Some(ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = Some(rects);
 
         // Close [X] → ConfigCancel
-        let a = mouse_to_action(&state, mouse_left_click(48, 5), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::ConfigCancel), "close click should produce ConfigCancel, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(48, 5),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::ConfigCancel),
+            "close click should produce ConfigCancel, got {:?}",
+            a
+        );
 
         // Save button → ConfigSave
-        let a = mouse_to_action(&state, mouse_left_click(22, 19), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::ConfigSave), "Save button should produce ConfigSave, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(22, 19),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::ConfigSave),
+            "Save button should produce ConfigSave, got {:?}",
+            a
+        );
 
         // Cancel button → ConfigCancel
-        let a = mouse_to_action(&state, mouse_left_click(32, 19), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::ConfigCancel), "Cancel button should produce ConfigCancel, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(32, 19),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::ConfigCancel),
+            "Cancel button should produce ConfigCancel, got {:?}",
+            a
+        );
 
         // Click outside dialog area → swallowed (Action::None)
-        let a = mouse_to_action(&state, mouse_left_click(0, 0), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::None), "outside-dialog click should be swallowed (None), got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(0, 0),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::None),
+            "outside-dialog click should be swallowed (None), got {:?}",
+            a
+        );
     }
 
     #[test]
@@ -10730,23 +13134,29 @@ mod tests {
         // ESC in config screen should produce ConfigCancel (same as [X] and Cancel button).
         let mut s = AppState::default();
         let working = crate::input::clone_config(&s.config);
-        s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
         let a = key_to_action(&s, key(KeyCode::Esc));
-        assert!(matches!(a, Action::ConfigCancel), "ESC in config screen should produce ConfigCancel");
+        assert!(
+            matches!(a, Action::ConfigCancel),
+            "ESC in config screen should produce ConfigCancel"
+        );
     }
 
     #[test]
     fn saves_dialog_x_and_done_produce_saves_close() {
-        use ratatui::layout::Rect;
+        use crate::persist_files::SaveInfo;
         use crate::render::dialog::{ButtonId, DialogRects};
         use crate::state::SavesState;
-        use crate::persist_files::SaveInfo;
+        use ratatui::layout::Rect;
         use std::path::PathBuf;
 
         let rects = DialogRects {
-            area:    Rect::new(10, 5, 40, 15),
+            area: Rect::new(10, 5, 40, 15),
             content: Rect::new(11, 7, 38, 10),
-            close:   Some(Rect::new(48, 5, 1, 1)),
+            close: Some(Rect::new(48, 5, 1, 1)),
             buttons: vec![(ButtonId::Done, Rect::new(40, 19, 8, 1))],
             field: None,
         };
@@ -10758,38 +13168,74 @@ mod tests {
                 name: "a".into(),
                 turns: 0,
                 saved_at: String::new(),
-                location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState,
+                location: None,
+                score: None,
+                is_default: false,
+                trigger: crate::archive::SaveTrigger::HostState,
             }],
             scroll: Default::default(),
         });
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = Some(rects);
 
         // Close [X] → SavesClose
-        let a = mouse_to_action(&state, mouse_left_click(48, 5), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::SavesClose), "saves [X] click should produce SavesClose, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(48, 5),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::SavesClose),
+            "saves [X] click should produce SavesClose, got {:?}",
+            a
+        );
 
         // Done button → SavesClose
-        let a = mouse_to_action(&state, mouse_left_click(42, 19), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::SavesClose), "saves [Done] click should produce SavesClose, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(42, 19),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::SavesClose),
+            "saves [Done] click should produce SavesClose, got {:?}",
+            a
+        );
 
         // Click outside → swallowed
-        let a = mouse_to_action(&state, mouse_left_click(0, 0), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::None), "outside saves dialog should be swallowed, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(0, 0),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::None),
+            "outside saves dialog should be swallowed, got {:?}",
+            a
+        );
     }
 
     #[test]
     fn filebrowser_dialog_x_and_done_produce_fb_close() {
-        use ratatui::layout::Rect;
         use crate::render::dialog::{ButtonId, DialogRects};
+        use ratatui::layout::Rect;
 
         let rects = DialogRects {
-            area:    Rect::new(8, 4, 50, 18),
+            area: Rect::new(8, 4, 50, 18),
             content: Rect::new(9, 6, 48, 13),
-            close:   Some(Rect::new(56, 4, 1, 1)),
+            close: Some(Rect::new(56, 4, 1, 1)),
             buttons: vec![(ButtonId::Done, Rect::new(48, 21, 8, 1))],
             field: None,
         };
@@ -10798,24 +13244,58 @@ mod tests {
         let tmp = std::env::temp_dir();
         state.overlays.file_browser = Some(crate::state::FileBrowserState::build(
             tmp,
-            crate::state::FbMode::PickFile));
+            crate::state::FbMode::PickFile,
+        ));
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = Some(rects);
 
         // Close [X] → FbClose
-        let a = mouse_to_action(&state, mouse_left_click(56, 4), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::FbClose), "filebrowser [X] click should produce FbClose, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(56, 4),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::FbClose),
+            "filebrowser [X] click should produce FbClose, got {:?}",
+            a
+        );
 
         // Done button → FbClose
-        let a = mouse_to_action(&state, mouse_left_click(50, 21), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::FbClose), "filebrowser [Done] click should produce FbClose, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(50, 21),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::FbClose),
+            "filebrowser [Done] click should produce FbClose, got {:?}",
+            a
+        );
 
         // Click outside → swallowed
-        let a = mouse_to_action(&state, mouse_left_click(0, 0), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::None), "outside filebrowser dialog should be swallowed, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(0, 0),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::None),
+            "outside filebrowser dialog should be swallowed, got {:?}",
+            a
+        );
     }
 
     /// SQ-0690: a second click on the same band row within the window is a double-click (the
@@ -10829,7 +13309,10 @@ mod tests {
         let fast = Duration::from_millis(100);
 
         assert!(!t.observe(1, 3, t0), "a first click is a pick");
-        assert!(t.observe(1, 3, t0 + fast), "the same row again, fast: double");
+        assert!(
+            t.observe(1, 3, t0 + fast),
+            "the same row again, fast: double"
+        );
         assert!(
             !t.observe(1, 3, t0 + fast * 2),
             "the click after a completed double is a FRESH pick — the submit emptied the prompt"
@@ -10837,7 +13320,10 @@ mod tests {
 
         let mut t = BandClickTracker::default();
         assert!(!t.observe(1, 3, t0));
-        assert!(!t.observe(1, 4, t0 + fast), "a different row is a pick, not a double");
+        assert!(
+            !t.observe(1, 4, t0 + fast),
+            "a different row is a pick, not a double"
+        );
         assert!(!t.observe(2, 4, t0 + fast * 2), "a different column too");
 
         let mut t = BandClickTracker::default();
@@ -10857,24 +13343,35 @@ mod tests {
         let mut state = AppState::default();
         open_band(&mut state);
 
-        let map   = Rect::new(30, 0, 50, 24);
+        let map = Rect::new(30, 0, 50, 24);
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = None;
 
-        let a = mouse_to_action(&state, mouse_left_click(40, 5), map, story, room_rects, &dialog);
-        assert!(!matches!(a, Action::None), "click in map should route normally with the band open, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(40, 5),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            !matches!(a, Action::None),
+            "click in map should route normally with the band open, got {:?}",
+            a
+        );
     }
 
     #[test]
     fn hotkey_dialog_x_and_done_produce_close_hotkey_dialog() {
-        use ratatui::layout::Rect;
         use crate::render::dialog::{ButtonId, DialogRects};
+        use ratatui::layout::Rect;
 
         let rects = DialogRects {
-            area:    Rect::new(10, 5, 60, 30),
+            area: Rect::new(10, 5, 60, 30),
             content: Rect::new(11, 7, 58, 26),
-            close:   Some(Rect::new(68, 5, 1, 1)),
+            close: Some(Rect::new(68, 5, 1, 1)),
             buttons: vec![(ButtonId::Done, Rect::new(60, 34, 8, 1))],
             field: None,
         };
@@ -10882,18 +13379,40 @@ mod tests {
         let mut state = AppState::default();
         state.overlays.hotkey_dialog = true;
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = Some(rects);
 
         // Close [X] → CloseHotkeyDialog
-        let a = mouse_to_action(&state, mouse_left_click(68, 5), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::CloseHotkeyDialog), "hotkey dialog [X] click should produce CloseHotkeyDialog, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(68, 5),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::CloseHotkeyDialog),
+            "hotkey dialog [X] click should produce CloseHotkeyDialog, got {:?}",
+            a
+        );
 
         // Done button → CloseHotkeyDialog
-        let a = mouse_to_action(&state, mouse_left_click(62, 34), map, story, room_rects, &dialog);
-        assert!(matches!(a, Action::CloseHotkeyDialog), "hotkey dialog [Done] click should produce CloseHotkeyDialog, got {:?}", a);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(62, 34),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
+        assert!(
+            matches!(a, Action::CloseHotkeyDialog),
+            "hotkey dialog [Done] click should produce CloseHotkeyDialog, got {:?}",
+            a
+        );
     }
 
     // ── ESC == [X] sweep ─────────────────────────────────────────────────────────
@@ -10907,21 +13426,21 @@ mod tests {
     /// Both must match the expected close action.
     #[test]
     fn esc_equals_x_click_for_every_modal() {
-        use ratatui::layout::Rect;
+        use crate::persist_files::SaveInfo;
         use crate::render::dialog::{ButtonId, DialogRects};
         use crate::state::SavesState;
-        use crate::persist_files::SaveInfo;
+        use ratatui::layout::Rect;
         use std::path::PathBuf;
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
 
         // Helper to build a DialogRects with [X] at (99, 0) and one Done button
         let make_rects = || DialogRects {
-            area:    Rect::new(5, 0, 70, 24),
+            area: Rect::new(5, 0, 70, 24),
             content: Rect::new(6, 1, 68, 20),
-            close:   Some(Rect::new(99, 0, 1, 1)),
+            close: Some(Rect::new(99, 0, 1, 1)),
             buttons: vec![(ButtonId::Done, Rect::new(90, 23, 8, 1))],
             field: None,
         };
@@ -10929,31 +13448,56 @@ mod tests {
         // 2. Saves: ESC → SavesClose, [X] → SavesClose
         {
             let mut s = AppState::default();
-            s.overlays.saves = Some(SavesState { entries: vec![SaveInfo {
-                path: PathBuf::from("/tmp/a.lanthorn"), name: "a".into(), turns: 0,
-                saved_at: String::new(), location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState,
-            }], scroll: Default::default() });
+            s.overlays.saves = Some(SavesState {
+                entries: vec![SaveInfo {
+                    path: PathBuf::from("/tmp/a.lanthorn"),
+                    name: "a".into(),
+                    turns: 0,
+                    saved_at: String::new(),
+                    location: None,
+                    score: None,
+                    is_default: false,
+                    trigger: crate::archive::SaveTrigger::HostState,
+                }],
+                scroll: Default::default(),
+            });
             let esc_action = key_to_action(&s, key(KeyCode::Esc));
-            assert!(matches!(esc_action, Action::SavesClose),
-                "saves ESC should produce SavesClose, got {:?}", esc_action);
+            assert!(
+                matches!(esc_action, Action::SavesClose),
+                "saves ESC should produce SavesClose, got {:?}",
+                esc_action
+            );
             let dialog = Some(make_rects());
-            let x_action = mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
-            assert!(matches!(x_action, Action::SavesClose),
-                "saves [X] click should produce SavesClose, got {:?}", x_action);
+            let x_action =
+                mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
+            assert!(
+                matches!(x_action, Action::SavesClose),
+                "saves [X] click should produce SavesClose, got {:?}",
+                x_action
+            );
         }
 
         // 3. File browser: ESC → FbClose, [X] → FbClose
         {
             let mut s = AppState::default();
             s.overlays.file_browser = Some(crate::state::FileBrowserState::build(
-                std::env::temp_dir(), crate::state::FbMode::PickFile));
+                std::env::temp_dir(),
+                crate::state::FbMode::PickFile,
+            ));
             let esc_action = key_to_action(&s, key(KeyCode::Esc));
-            assert!(matches!(esc_action, Action::FbClose),
-                "file browser ESC should produce FbClose, got {:?}", esc_action);
+            assert!(
+                matches!(esc_action, Action::FbClose),
+                "file browser ESC should produce FbClose, got {:?}",
+                esc_action
+            );
             let dialog = Some(make_rects());
-            let x_action = mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
-            assert!(matches!(x_action, Action::FbClose),
-                "file browser [X] click should produce FbClose, got {:?}", x_action);
+            let x_action =
+                mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
+            assert!(
+                matches!(x_action, Action::FbClose),
+                "file browser [X] click should produce FbClose, got {:?}",
+                x_action
+            );
         }
 
         // 4. The command band is a dock, not a centered modal with [X]/[Done]
@@ -10964,14 +13508,24 @@ mod tests {
         {
             let mut s = AppState::default();
             let working = clone_config(&s.config);
-            s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+            s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+                working,
+                scroll: Default::default(),
+            });
             let esc_action = key_to_action(&s, key(KeyCode::Esc));
-            assert!(matches!(esc_action, Action::ConfigCancel),
-                "config screen ESC should produce ConfigCancel, got {:?}", esc_action);
+            assert!(
+                matches!(esc_action, Action::ConfigCancel),
+                "config screen ESC should produce ConfigCancel, got {:?}",
+                esc_action
+            );
             let dialog = Some(make_rects());
-            let x_action = mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
-            assert!(matches!(x_action, Action::ConfigCancel),
-                "config screen [X] click should produce ConfigCancel, got {:?}", x_action);
+            let x_action =
+                mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
+            assert!(
+                matches!(x_action, Action::ConfigCancel),
+                "config screen [X] click should produce ConfigCancel, got {:?}",
+                x_action
+            );
         }
 
         // 6. Hotkey dialog: ESC → CloseHotkeyDialog, [X] → CloseHotkeyDialog
@@ -10979,42 +13533,64 @@ mod tests {
             let mut s = AppState::default();
             s.overlays.hotkey_dialog = true;
             let esc_action = key_to_action(&s, key(KeyCode::Esc));
-            assert!(matches!(esc_action, Action::CloseHotkeyDialog),
-                "hotkey dialog ESC should produce CloseHotkeyDialog, got {:?}", esc_action);
+            assert!(
+                matches!(esc_action, Action::CloseHotkeyDialog),
+                "hotkey dialog ESC should produce CloseHotkeyDialog, got {:?}",
+                esc_action
+            );
             let dialog = Some(make_rects());
-            let x_action = mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
-            assert!(matches!(x_action, Action::CloseHotkeyDialog),
-                "hotkey dialog [X] click should produce CloseHotkeyDialog, got {:?}", x_action);
+            let x_action =
+                mouse_to_action(&s, mouse_left_click(99, 0), map, story, room_rects, &dialog);
+            assert!(
+                matches!(x_action, Action::CloseHotkeyDialog),
+                "hotkey dialog [X] click should produce CloseHotkeyDialog, got {:?}",
+                x_action
+            );
         }
     }
 
     /// Assert no modal key handler still binds q to a close action.
     #[test]
     fn no_modal_binds_q_to_close() {
-        use crate::state::SavesState;
         use crate::persist_files::SaveInfo;
+        use crate::state::SavesState;
         use std::path::PathBuf;
 
         // Saves: q → not SavesClose
         {
             let mut s = AppState::default();
-            s.overlays.saves = Some(SavesState { entries: vec![SaveInfo {
-                path: PathBuf::from("/tmp/a.lanthorn"), name: "a".into(), turns: 0,
-                saved_at: String::new(), location: None, score: None, is_default: false, trigger: crate::archive::SaveTrigger::HostState,
-            }], scroll: Default::default() });
+            s.overlays.saves = Some(SavesState {
+                entries: vec![SaveInfo {
+                    path: PathBuf::from("/tmp/a.lanthorn"),
+                    name: "a".into(),
+                    turns: 0,
+                    saved_at: String::new(),
+                    location: None,
+                    score: None,
+                    is_default: false,
+                    trigger: crate::archive::SaveTrigger::HostState,
+                }],
+                scroll: Default::default(),
+            });
             let a = key_to_action(&s, key(KeyCode::Char('q')));
-            assert!(!matches!(a, Action::SavesClose),
-                "q must not close the saves modal");
+            assert!(
+                !matches!(a, Action::SavesClose),
+                "q must not close the saves modal"
+            );
         }
 
         // File browser: q → not FbClose
         {
             let mut s = AppState::default();
             s.overlays.file_browser = Some(crate::state::FileBrowserState::build(
-                std::env::temp_dir(), crate::state::FbMode::PickFile));
+                std::env::temp_dir(),
+                crate::state::FbMode::PickFile,
+            ));
             let a = key_to_action(&s, key(KeyCode::Char('q')));
-            assert!(!matches!(a, Action::FbClose),
-                "q must not close the file browser");
+            assert!(
+                !matches!(a, Action::FbClose),
+                "q must not close the file browser"
+            );
         }
 
         // Command band: q → not BandClose (it filters instead)
@@ -11022,18 +13598,25 @@ mod tests {
             let mut s = AppState::default();
             open_band(&mut s);
             let a = key_to_action(&s, key(KeyCode::Char('q')));
-            assert!(!matches!(a, Action::BandClose | Action::BandEscape),
-                "q must not close the command panel");
+            assert!(
+                !matches!(a, Action::BandClose | Action::BandEscape),
+                "q must not close the command panel"
+            );
         }
 
         // Config screen: q → not ConfigCancel
         {
             let mut s = AppState::default();
             let working = clone_config(&s.config);
-            s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+            s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+                working,
+                scroll: Default::default(),
+            });
             let a = key_to_action(&s, key(KeyCode::Char('q')));
-            assert!(!matches!(a, Action::ConfigCancel),
-                "q must not cancel the config screen");
+            assert!(
+                !matches!(a, Action::ConfigCancel),
+                "q must not cancel the config screen"
+            );
         }
 
         // Room dock: q → not a dock action
@@ -11041,8 +13624,10 @@ mod tests {
             let mut s = AppState::default();
             s.open_room_dock(crate::state::RoomDockView::Info);
             let a = key_to_action(&s, key(KeyCode::Char('q')));
-            assert!(!matches!(a, Action::CloseRoomDock | Action::UnpinRoomDock),
-                "q must not close or unpin the room panel");
+            assert!(
+                !matches!(a, Action::CloseRoomDock | Action::UnpinRoomDock),
+                "q must not close or unpin the room panel"
+            );
         }
     }
 
@@ -11057,14 +13642,14 @@ mod tests {
     /// on screen underneath.
     #[test]
     fn centered_modal_swallows_outside_clicks_even_with_the_room_dock_open() {
-        use ratatui::layout::Rect;
         use crate::render::dialog::{ButtonId, DialogRects};
         use crate::state::ConfigScreenState;
         use crate::state::Zoom;
+        use ratatui::layout::Rect;
 
         // Build a real map rect and room_rects so a click at (0,0) would normally
         // pin the dock if the dialog were not open.
-        let map_r = map_rect();   // Rect::new(0,0,80,40)
+        let map_r = map_rect(); // Rect::new(0,0,80,40)
         let story_r = story_rect();
         let live_room_rects = room_rects_for_compact(1, (0, 0), map_r);
 
@@ -11074,7 +13659,14 @@ mod tests {
         // for the full Down+Up round trip).
         {
             let s = AppState::default();
-            let a = mouse_to_action(&s, mouse_left_click(0, 0), map_r, story_r, &live_room_rects, &None);
+            let a = mouse_to_action(
+                &s,
+                mouse_left_click(0, 0),
+                map_r,
+                story_r,
+                &live_room_rects,
+                &None,
+            );
             assert!(
                 matches!(a, Action::BeginMapDrag(0, 0, crate::state::MapClick::Room(1))),
                 "sanity: without dialog, a click on a room begins a click-or-drag-pan targeting it, got {:?}", a
@@ -11086,20 +13678,30 @@ mod tests {
         state.zoom = Zoom::Compact;
         state.open_room_dock(crate::state::RoomDockView::Info);
         let working = clone_config(&state.config);
-        state.overlays.config_screen = Some(ConfigScreenState { working, scroll: Default::default() });
+        state.overlays.config_screen = Some(ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
 
         // The dialog rects represent the config screen's centered dialog (not covering (0,0)).
         let dialog = Some(DialogRects {
-            area:    Rect::new(5, 3, 70, 24),
+            area: Rect::new(5, 3, 70, 24),
             content: Rect::new(6, 5, 68, 19),
-            close:   Some(Rect::new(73, 3, 1, 1)),
+            close: Some(Rect::new(73, 3, 1, 1)),
             buttons: vec![(ButtonId::Done, Rect::new(65, 26, 8, 1))],
             field: None,
         });
 
         // Click OUTSIDE the config screen dialog (at (0,0), which is on the room).
         // Must be swallowed — NOT ShowRoomInfo or ActivatePane.
-        let a = mouse_to_action(&state, mouse_left_click(0, 0), map_r, story_r, &live_room_rects, &dialog);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(0, 0),
+            map_r,
+            story_r,
+            &live_room_rects,
+            &dialog,
+        );
         assert!(
             matches!(a, Action::None),
             "outside-config-screen click with the room panel also open must be swallowed (None), got {:?}", a
@@ -11131,12 +13733,16 @@ mod tests {
         apply_action(Action::MoveRegion("new".into()), &mut s, &mut m); // Cellar -> L1
         m.observe(3, "Vault", Some(Direction::E)); // joins L1
         m.observe(2, "Cellar", Some(Direction::W)); // walk back, so the Vault has a way out to cut
-        // Peel the Vault by standing IN it and cutting the way back out: a peel takes the selected
-        // room's own side (SQ-0364).
+                                                    // Peel the Vault by standing IN it and cutting the way back out: a peel takes the selected
+                                                    // room's own side (SQ-0364).
         s.select_room(Some(3));
         apply_action(Action::MoveRegion("new west".into()), &mut s, &mut m); // Vault -> L2
         let vault_layer = m.graph.layer_of(3);
-        assert_eq!(m.graph.layers()[&vault_layer].parent, Some(1), "L2 was peeled out of L1");
+        assert_eq!(
+            m.graph.layers()[&vault_layer].parent,
+            Some(1),
+            "L2 was peeled out of L1"
+        );
 
         // The player walks back up: they are on the TOP layer, nowhere near the Vault.
         m.observe(1, "Hall", Some(Direction::Up));
@@ -11145,7 +13751,11 @@ mod tests {
         s.set_viewed_layer(Some(vault_layer));
         apply_action(Action::MoveRegion("parent".into()), &mut s, &mut m);
 
-        assert_eq!(m.graph.layer_of(3), 1, "the Vault merges into its parent, the Cellar");
+        assert_eq!(
+            m.graph.layer_of(3),
+            1,
+            "the Vault merges into its parent, the Cellar"
+        );
         assert_eq!(
             s.active_layer(&m.graph),
             1,
@@ -11166,21 +13776,40 @@ mod tests {
         let maze = m.graph.layer_of(2);
         // The back door: a surface room discovered FROM the maze inherits the maze layer.
         m.observe(3, "Clearing", Some(Direction::E));
-        assert_eq!(m.graph.layer_of(3), maze, "the premise: the new room is stranded on the maze");
+        assert_eq!(
+            m.graph.layer_of(3),
+            maze,
+            "the premise: the new room is stranded on the maze"
+        );
         m.observe(2, "Maze", Some(Direction::W)); // walk back so the Clearing has a seam to cut
 
         s.select_room(Some(3));
         apply_action(Action::MoveRegion("new west".into()), &mut s, &mut m); // Clearing -> L2
         let peeled = m.graph.layer_of(3);
-        assert_eq!(m.graph.layers()[&peeled].parent, Some(maze), "a bare merge would round-trip");
+        assert_eq!(
+            m.graph.layers()[&peeled].parent,
+            Some(maze),
+            "a bare merge would round-trip"
+        );
 
         s.set_viewed_layer(Some(peeled));
         apply_action(Action::MoveRegion("main".into()), &mut s, &mut m); // case-insensitive
 
-        assert_eq!(m.graph.layer_of(3), mapper::layer::MAIN_LAYER, "the Clearing lands on Main");
+        assert_eq!(
+            m.graph.layer_of(3),
+            mapper::layer::MAIN_LAYER,
+            "the Clearing lands on Main"
+        );
         assert_eq!(m.graph.layer_of(2), maze, "the maze keeps its own rooms");
-        assert!(!m.graph.layers().contains_key(&peeled), "the peeled layer is gone");
-        assert_eq!(s.active_layer(&m.graph), mapper::layer::MAIN_LAYER, "the view follows the rooms");
+        assert!(
+            !m.graph.layers().contains_key(&peeled),
+            "the peeled layer is gone"
+        );
+        assert_eq!(
+            s.active_layer(&m.graph),
+            mapper::layer::MAIN_LAYER,
+            "the view follows the rooms"
+        );
     }
 
     /// A merge aimed at a name that resolves to nothing (or to several layers) must refuse with a
@@ -11197,15 +13826,34 @@ mod tests {
 
         apply_action(Action::MoveRegion("Attic".into()), &mut s, &mut m);
         assert_eq!(m.graph.layer_of(2), cellar, "an unknown name moves nothing");
-        let msg = s.notifications.latest_text().expect("the refusal must not be silent").to_string();
-        assert!(msg.contains("no layer named 'Attic'"), "says what was wrong: {msg:?}");
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("the refusal must not be silent")
+            .to_string();
+        assert!(
+            msg.contains("no layer named 'Attic'"),
+            "says what was wrong: {msg:?}"
+        );
 
         // Two layers named "Cellar": the peel named L1 after room 2's label, so rename Main too.
-        m.graph.set_layer_name(mapper::layer::MAIN_LAYER, "Cellar".into());
+        m.graph
+            .set_layer_name(mapper::layer::MAIN_LAYER, "Cellar".into());
         apply_action(Action::MoveRegion("Cellar".into()), &mut s, &mut m);
-        assert_eq!(m.graph.layer_of(2), cellar, "an ambiguous name moves nothing");
-        let msg = s.notifications.latest_text().expect("the refusal must not be silent").to_string();
-        assert!(msg.contains("rename one first"), "says how to fix it: {msg:?}");
+        assert_eq!(
+            m.graph.layer_of(2),
+            cellar,
+            "an ambiguous name moves nothing"
+        );
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("the refusal must not be silent")
+            .to_string();
+        assert!(
+            msg.contains("rename one first"),
+            "says how to fix it: {msg:?}"
+        );
     }
 
     // ── SQ-0439: peel and merge are one verb ─────────────────────────────────
@@ -11221,15 +13869,34 @@ mod tests {
 
         apply_action(Action::MoveRegion("new".into()), &mut s, &mut m);
         let cellar = m.graph.layer_of(2);
-        assert_ne!(cellar, mapper::layer::MAIN_LAYER, "`new` carved the cellar off");
-        assert_eq!(s.active_layer(&m.graph), cellar, "and the view follows the rooms");
+        assert_ne!(
+            cellar,
+            mapper::layer::MAIN_LAYER,
+            "`new` carved the cellar off"
+        );
+        assert_eq!(
+            s.active_layer(&m.graph),
+            cellar,
+            "and the view follows the rooms"
+        );
 
         // A whole layer, aimed at an EXISTING one. The old `WholeLayer` refusal blocked exactly
         // this shape; against a named target it was never an error, only a merge.
         apply_action(Action::MoveRegion("main".into()), &mut s, &mut m);
-        assert_eq!(m.graph.layer_of(2), mapper::layer::MAIN_LAYER, "`main` folded it back");
-        assert!(!m.graph.layers().contains_key(&cellar), "and the emptied layer is gone");
-        assert_eq!(s.active_layer(&m.graph), mapper::layer::MAIN_LAYER, "the view follows again");
+        assert_eq!(
+            m.graph.layer_of(2),
+            mapper::layer::MAIN_LAYER,
+            "`main` folded it back"
+        );
+        assert!(
+            !m.graph.layers().contains_key(&cellar),
+            "and the emptied layer is gone"
+        );
+        assert_eq!(
+            s.active_layer(&m.graph),
+            mapper::layer::MAIN_LAYER,
+            "the view follows again"
+        );
     }
 
     /// `MainSource` ("main cannot be a merge source") generalised to "you cannot EMPTY Main".
@@ -11250,17 +13917,39 @@ mod tests {
         // passage goes down to the Cellar layer, and Main keeps the Hall.
         s.select_room(Some(3));
         apply_action(Action::MoveRegion("Cellar west".into()), &mut s, &mut m);
-        assert_eq!(m.graph.layer_of(3), cellar, "a sub-region of Main moved onto another layer");
-        assert_eq!(m.graph.rooms_in_layer(mapper::layer::MAIN_LAYER), vec![1], "Main keeps the Hall");
+        assert_eq!(
+            m.graph.layer_of(3),
+            cellar,
+            "a sub-region of Main moved onto another layer"
+        );
+        assert_eq!(
+            m.graph.rooms_in_layer(mapper::layer::MAIN_LAYER),
+            vec![1],
+            "Main keeps the Hall"
+        );
 
         // What is LEFT of Main is now its whole contents: refused, and it says why — this is
         // about the MOVE refusing, not about which rooms were chosen.
         s.select_room(Some(1));
         apply_action(Action::MoveRegion("Cellar".into()), &mut s, &mut m);
-        assert_eq!(m.graph.layer_of(1), mapper::layer::MAIN_LAYER, "Main was not emptied");
-        let msg = s.notifications.latest_text().expect("the refusal must not be silent").to_string();
-        assert!(msg.contains("no rooms at all"), "says Main may not be emptied: {msg:?}");
-        assert!(m.graph.layers().contains_key(&cellar), "and nothing else changed either");
+        assert_eq!(
+            m.graph.layer_of(1),
+            mapper::layer::MAIN_LAYER,
+            "Main was not emptied"
+        );
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("the refusal must not be silent")
+            .to_string();
+        assert!(
+            msg.contains("no rooms at all"),
+            "says Main may not be emptied: {msg:?}"
+        );
+        assert!(
+            m.graph.layers().contains_key(&cellar),
+            "and nothing else changed either"
+        );
     }
 
     /// The destination and the seam share one argument string, so the split must not guess: a
@@ -11269,8 +13958,12 @@ mod tests {
     fn a_layer_name_outranks_a_trailing_direction() {
         let mut m = Mapper::default();
         m.observe(1, "Hall", None);
-        let north = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Dead End North".into());
-        let plain = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Dead End".into());
+        let north = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Dead End North".into());
+        let plain = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Dead End".into());
 
         assert_eq!(
             parse_move_region_arg(&m.graph, "Dead End North"),
@@ -11282,22 +13975,34 @@ mod tests {
             Ok((MoveDest::Layer(plain), Some(Direction::S))),
             "and only when the whole phrase names nothing is the last word a seam"
         );
-        assert_eq!(parse_move_region_arg(&m.graph, "new"), Ok((MoveDest::New, None)));
+        assert_eq!(
+            parse_move_region_arg(&m.graph, "new"),
+            Ok((MoveDest::New, None))
+        );
         assert_eq!(
             parse_move_region_arg(&m.graph, "NEW nw"),
             Ok((MoveDest::New, Some(Direction::NW))),
             "destinations are case-insensitive, and the seam takes the game's own vocabulary"
         );
-        assert_eq!(parse_move_region_arg(&m.graph, "parent"), Ok((MoveDest::Parent, None)));
+        assert_eq!(
+            parse_move_region_arg(&m.graph, "parent"),
+            Ok((MoveDest::Parent, None))
+        );
         // Either half may be left out, so a refusal can suggest a fix for just the ambiguity it
         // is complaining about instead of demanding both at once (SQ-0439).
-        assert_eq!(parse_move_region_arg(&m.graph, ""), Ok((MoveDest::Auto, None)));
+        assert_eq!(
+            parse_move_region_arg(&m.graph, ""),
+            Ok((MoveDest::Auto, None))
+        );
         assert_eq!(
             parse_move_region_arg(&m.graph, "west"),
             Ok((MoveDest::Auto, Some(Direction::W))),
             "a lone direction is a seam, with the destination left to the auto-pick"
         );
-        assert!(parse_move_region_arg(&m.graph, "Attic").is_err(), "an unknown name is refused");
+        assert!(
+            parse_move_region_arg(&m.graph, "Attic").is_err(),
+            "an unknown name is refused"
+        );
         assert!(
             parse_move_region_arg(&m.graph, "Attic east").is_err(),
             "and so is an unknown name with a seam after it — never silently a new layer"
@@ -11320,19 +14025,38 @@ mod tests {
         // Plain peel: one connected region, so it refuses — and now explains itself.
         apply_action(Action::MoveRegion("new".into()), &mut s, &mut m);
         assert_eq!(m.graph.layers().len(), 1, "nothing peeled");
-        let msg = s.notifications.latest_text().expect("a refusal must not be silent").to_string();
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("a refusal must not be silent")
+            .to_string();
         assert!(msg.contains("one connected region"), "says why: {msg:?}");
-        assert!(msg.contains("<direction>"), "and points at the way forward: {msg:?}");
+        assert!(
+            msg.contains("<direction>"),
+            "and points at the way forward: {msg:?}"
+        );
 
         // Naming the seam cuts there — and posts no complaint.
         let before = s.notifications.history().len();
         apply_action(Action::MoveRegion("new east".into()), &mut s, &mut m);
-        assert_eq!(s.notifications.history().len(), before, "no complaint when it works");
+        assert_eq!(
+            s.notifications.history().len(),
+            before,
+            "no complaint when it works"
+        );
         let new = s.viewed_layer.expect("the peeled layer is now in view");
         // #1 is selected, so #1's own side leaves — the same side a bare `move-region` would
         // take (SQ-0364). The far side is what stays.
-        assert_eq!(m.graph.rooms_in_layer(new), vec![1], "the selected room's side leaves");
-        assert_eq!(m.graph.rooms_in_layer(0), vec![2, 3], "the far side stays put");
+        assert_eq!(
+            m.graph.rooms_in_layer(new),
+            vec![1],
+            "the selected room's side leaves"
+        );
+        assert_eq!(
+            m.graph.rooms_in_layer(0),
+            vec![2, 3],
+            "the far side stays put"
+        );
     }
 
     #[test]
@@ -11348,13 +14072,21 @@ mod tests {
         s.select_room(Some(1));
 
         apply_action(Action::MoveRegion("new east".into()), &mut s, &mut m);
-        let msg = s.notifications.latest_text().expect("refusal must speak").to_string();
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("refusal must speak")
+            .to_string();
         assert!(msg.contains("not a boundary"), "{msg:?}");
         assert_eq!(m.graph.layers().len(), 1, "nothing peeled");
 
         // And a direction with no passage at all is a different complaint.
         apply_action(Action::MoveRegion("new west".into()), &mut s, &mut m);
-        let msg = s.notifications.latest_text().expect("refusal must speak").to_string();
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("refusal must speak")
+            .to_string();
         assert!(msg.contains("no W passage"), "{msg:?}");
     }
 
@@ -11385,7 +14117,12 @@ mod tests {
     /// the maze names the way in.
     fn one_way_maze() -> (AppState, Mapper) {
         let mut m = Mapper::default();
-        for (id, n) in [(1, "At West End of Long Hall"), (2, "Maze"), (3, "Maze"), (4, "Maze")] {
+        for (id, n) in [
+            (1, "At West End of Long Hall"),
+            (2, "Maze"),
+            (3, "Maze"),
+            (4, "Maze"),
+        ] {
             m.graph.upsert_room(id, n.into());
         }
         for (a, d, b) in [
@@ -11425,13 +14162,19 @@ mod tests {
         let (mut s, mut m) = advent_maze();
         s.select_room(Some(3));
         apply_action(Action::MoveRegion(String::new()), &mut s, &mut m);
-        let new = s.viewed_layer.expect("the region moved to a layer of its own");
+        let new = s
+            .viewed_layer
+            .expect("the region moved to a layer of its own");
         assert_eq!(
             m.graph.rooms_in_layer(new),
             vec![2, 3, 4],
             "the compass walk stops at the portals, and takes everything inside them"
         );
-        assert_eq!(m.graph.rooms_in_layer(0), vec![1], "the building beyond the portal stays");
+        assert_eq!(
+            m.graph.rooms_in_layer(0),
+            vec![1],
+            "the building beyond the portal stays"
+        );
         assert_eq!(
             s.notifications.latest_text(),
             None,
@@ -11448,11 +14191,24 @@ mod tests {
         s.select_room(Some(2));
         apply_action(Action::MoveRegion(String::new()), &mut s, &mut m);
 
-        let new = s.viewed_layer.expect("the maze moved to a layer of its own");
-        assert_eq!(m.graph.rooms_in_layer(new), vec![2, 3, 4], "the maze leaves, all three rooms");
+        let new = s
+            .viewed_layer
+            .expect("the maze moved to a layer of its own");
+        assert_eq!(
+            m.graph.rooms_in_layer(new),
+            vec![2, 3, 4],
+            "the maze leaves, all three rooms"
+        );
         assert_eq!(m.graph.rooms_in_layer(0), vec![1], "the hall stays put");
-        let msg = s.notifications.latest_text().expect("an auto-picked seam must speak").to_string();
-        assert!(msg.contains("cut the S passage"), "says which passage: {msg:?}");
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("an auto-picked seam must speak")
+            .to_string();
+        assert!(
+            msg.contains("cut the S passage"),
+            "says which passage: {msg:?}"
+        );
         assert!(msg.contains("Long Hall"), "and where it came from: {msg:?}");
     }
 
@@ -11465,10 +14221,20 @@ mod tests {
         s.select_room(Some(2));
         apply_action(Action::MoveRegion("new".into()), &mut s, &mut m);
 
-        assert_eq!(m.graph.layers().len(), 1, "an ambiguous seam moves nothing on its own");
+        assert_eq!(
+            m.graph.layers().len(),
+            1,
+            "an ambiguous seam moves nothing on its own"
+        );
         let p = s.overlays.region_prompt.as_ref().expect("the picker opens");
         assert!(
-            matches!(p.kind, RegionPromptKind::PickSeam { room: 2, dest: MoveDest::New }),
+            matches!(
+                p.kind,
+                RegionPromptKind::PickSeam {
+                    room: 2,
+                    dest: MoveDest::New
+                }
+            ),
             "it asks about the SELECTED room, and carries the destination already named"
         );
         let labels: Vec<&str> = p
@@ -11479,8 +14245,14 @@ mod tests {
                 _ => panic!("a seam pick offers seams"),
             })
             .collect();
-        assert!(labels.iter().any(|l| l.starts_with("e from A")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.starts_with("w from C")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.starts_with("e from A")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("w from C")),
+            "{labels:?}"
+        );
     }
 
     /// Choosing from that picker cuts the passage chosen and nothing else — and because the
@@ -11496,7 +14268,10 @@ mod tests {
         s.overlays.region_prompt.as_mut().unwrap().choice = 1;
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Accept);
 
-        assert!(s.overlays.region_prompt.is_none(), "answering closes the prompt");
+        assert!(
+            s.overlays.region_prompt.is_none(),
+            "answering closes the prompt"
+        );
         let new = s.viewed_layer.expect("the chosen seam cut");
         assert_eq!(
             m.graph.rooms_in_layer(new),
@@ -11516,7 +14291,10 @@ mod tests {
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Dismiss);
         assert!(s.overlays.region_prompt.is_none());
         assert_eq!(m.graph.layers().len(), 1, "nothing moved");
-        assert!(m.graph.seam_decisions().is_empty(), "and nothing was written down");
+        assert!(
+            m.graph.seam_decisions().is_empty(),
+            "and nothing was written down"
+        );
     }
 
     /// The command that refusal suggests must mean what the list said it meant: a direction picks
@@ -11528,8 +14306,16 @@ mod tests {
         s.select_room(Some(2));
         apply_action(Action::MoveRegion("new e".into()), &mut s, &mut m);
         let new = s.viewed_layer.expect("the named seam cut");
-        assert_eq!(m.graph.rooms_in_layer(new), vec![2, 3, 4], "the A→B passage was the seam");
-        assert_eq!(m.graph.rooms_in_layer(0), vec![1], "A is what stayed behind");
+        assert_eq!(
+            m.graph.rooms_in_layer(new),
+            vec![2, 3, 4],
+            "the A→B passage was the seam"
+        );
+        assert_eq!(
+            m.graph.rooms_in_layer(0),
+            vec![1],
+            "A is what stayed behind"
+        );
     }
 
     /// A direction OUT of the room is still nameable, and is the only way to name a one-way exit.
@@ -11540,7 +14326,11 @@ mod tests {
         s.select_room(Some(1)); // A: nothing leads in from the east, but A leads out east
         apply_action(Action::MoveRegion("new e".into()), &mut s, &mut m);
         let new = s.viewed_layer.expect("the outbound seam cut");
-        assert_eq!(m.graph.rooms_in_layer(new), vec![1], "A's own side leaves, as it always has");
+        assert_eq!(
+            m.graph.rooms_in_layer(new),
+            vec![1],
+            "A's own side leaves, as it always has"
+        );
     }
 
     /// THE REAL DEAD END (SQ-0439). A maze can perfectly well have two rooms whose SOUTH exits
@@ -11554,7 +14344,11 @@ mod tests {
         let (mut s, mut m) = advent_maze(); // 2→S→3 and 4→S→3 are both boundaries
         s.select_room(Some(3));
         apply_action(Action::MoveRegion("new south".into()), &mut s, &mut m);
-        assert_eq!(m.graph.layers().len(), 1, "nothing moves until one is chosen");
+        assert_eq!(
+            m.graph.layers().len(),
+            1,
+            "nothing moves until one is chosen"
+        );
         let p = s.overlays.region_prompt.as_ref().expect("the picker opens");
         assert!(matches!(p.kind, RegionPromptKind::PickSeam { room: 3, .. }));
         let labels: Vec<&str> = p
@@ -11566,8 +14360,16 @@ mod tests {
             })
             .collect();
         assert_eq!(labels.len(), 2, "both S passages are offered: {labels:?}");
-        assert!(labels.iter().any(|l| l.starts_with("s from At West End of Long Hall")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.starts_with("s from Maze")), "{labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("s from At West End of Long Hall")),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("s from Maze")),
+            "{labels:?}"
+        );
 
         // And picking one of them actually moves rooms, which is the whole point: this case had
         // no route through the command line at all.
@@ -11584,7 +14386,11 @@ mod tests {
         s.select_room(Some(3)); // every way in has a way round
         apply_action(Action::MoveRegion("new".into()), &mut s, &mut m);
         assert_eq!(m.graph.layers().len(), 1, "nothing moved");
-        let msg = s.notifications.latest_text().expect("refusal must speak").to_string();
+        let msg = s
+            .notifications
+            .latest_text()
+            .expect("refusal must speak")
+            .to_string();
         assert!(msg.contains("one connected region"), "{msg:?}");
     }
 
@@ -11598,7 +14404,9 @@ mod tests {
         s.select_room(Some(2));
         assert_eq!(m.graph.layers().len(), 1, "the premise: only Main exists");
         apply_action(Action::MoveRegion(String::new()), &mut s, &mut m);
-        let new = s.viewed_layer.expect("a layer was minted without being asked for");
+        let new = s
+            .viewed_layer
+            .expect("a layer was minted without being asked for");
         assert_ne!(new, mapper::layer::MAIN_LAYER);
         assert_eq!(m.graph.rooms_in_layer(new), vec![2, 3, 4]);
     }
@@ -11610,11 +14418,16 @@ mod tests {
     fn a_bare_move_asks_once_more_than_one_destination_is_possible() {
         use crate::state::{RegionOption, RegionPromptKind};
         let (mut s, mut m) = one_way_maze();
-        m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
+        m.graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
         s.select_room(Some(2));
         apply_action(Action::MoveRegion(String::new()), &mut s, &mut m);
 
-        assert_eq!(m.graph.layer_of(2), mapper::layer::MAIN_LAYER, "an ambiguous target moves nothing");
+        assert_eq!(
+            m.graph.layer_of(2),
+            mapper::layer::MAIN_LAYER,
+            "an ambiguous target moves nothing"
+        );
         let p = s.overlays.region_prompt.as_ref().expect("the picker opens");
         assert!(matches!(p.kind, RegionPromptKind::PickDest { .. }));
         let labels: Vec<&str> = p
@@ -11625,9 +14438,20 @@ mod tests {
                 _ => panic!("a destination pick offers destinations"),
             })
             .collect();
-        assert!(labels.contains(&"a new layer"), "lists the fresh layer: {labels:?}");
-        assert!(labels.contains(&"Attic"), "and every layer that could take them: {labels:?}");
-        assert_eq!(p.rooms.len(), 3, "and hands over every room that travels: {:?}", p.rooms);
+        assert!(
+            labels.contains(&"a new layer"),
+            "lists the fresh layer: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Attic"),
+            "and every layer that could take them: {labels:?}"
+        );
+        assert_eq!(
+            p.rooms.len(),
+            3,
+            "and hands over every room that travels: {:?}",
+            p.rooms
+        );
     }
 
     /// Choosing from the destination picker completes the move the command started.
@@ -11635,7 +14459,9 @@ mod tests {
     fn choosing_a_destination_completes_the_move() {
         use crate::state::{RegionOption, RegionPromptAct};
         let (mut s, mut m) = one_way_maze();
-        let attic = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
+        let attic = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
         s.select_room(Some(2));
         apply_action(Action::MoveRegion(String::new()), &mut s, &mut m);
         let p = s.overlays.region_prompt.as_mut().unwrap();
@@ -11645,7 +14471,11 @@ mod tests {
             .position(|o| matches!(o, RegionOption::Dest { label, .. } if label == "Attic"))
             .expect("Attic is on offer");
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Accept);
-        assert_eq!(m.graph.rooms_in_layer(attic), vec![2, 3, 4], "the rooms went where they were sent");
+        assert_eq!(
+            m.graph.rooms_in_layer(attic),
+            vec![2, 3, 4],
+            "the rooms went where they were sent"
+        );
     }
 
     /// The two questions stay separate: a seam the player already named resolves the region, and
@@ -11654,15 +14484,27 @@ mod tests {
     fn a_named_seam_survives_into_the_destination_question() {
         use crate::state::RegionPromptKind;
         let (mut s, mut m) = corridor();
-        m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
+        m.graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
         s.select_room(Some(2));
         apply_action(Action::MoveRegion("e".into()), &mut s, &mut m);
-        let p = s.overlays.region_prompt.as_ref().expect("only the destination is still open");
+        let p = s
+            .overlays
+            .region_prompt
+            .as_ref()
+            .expect("only the destination is still open");
         let RegionPromptKind::PickDest { region, cut } = &p.kind else {
             panic!("the seam resolved; only the target did not: {:?}", p.kind)
         };
-        assert_eq!(region.rooms.iter().copied().collect::<Vec<_>>(), vec![2, 3, 4], "the named seam cut");
-        assert_eq!(*cut, None, "and a seam the player named is not reported back at them");
+        assert_eq!(
+            region.rooms.iter().copied().collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "the named seam cut"
+        );
+        assert_eq!(
+            *cut, None,
+            "and a seam the player named is not reported back at them"
+        );
     }
 
     // ── SQ-0439: the map's own suggestion, and the prompt that carries it ────
@@ -11712,7 +14554,13 @@ mod tests {
                 crate::render::region_prompt::draw_region_prompt(state, f.area(), f.buffer_mut());
             })
             .unwrap();
-        terminal.backend().buffer().content().iter().flat_map(|c| c.symbol().chars()).collect()
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .flat_map(|c| c.symbol().chars())
+            .collect()
     }
 
     /// A hall with a maze through its south door — the semantic trigger's shape. Stops one step
@@ -11736,13 +14584,25 @@ mod tests {
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
 
-        let p = s.overlays.region_prompt.as_ref().expect("the map has something to say");
-        let RegionPromptKind::Suggest { trigger, seam, region } = &p.kind else {
+        let p = s
+            .overlays
+            .region_prompt
+            .as_ref()
+            .expect("the map has something to say");
+        let RegionPromptKind::Suggest {
+            trigger,
+            seam,
+            region,
+        } = &p.kind
+        else {
             panic!("a structural suggestion: {:?}", p.kind)
         };
         assert_eq!(*trigger, mapper::suggest::Trigger::Structural);
         assert_eq!(seam.from, 3);
-        assert_eq!(region.rooms.iter().copied().collect::<Vec<_>>(), vec![3, 4, 5, 6]);
+        assert_eq!(
+            region.rooms.iter().copied().collect::<Vec<_>>(),
+            vec![3, 4, 5, 6]
+        );
         assert_eq!(
             p.rooms,
             ["Cellar", "Wine Cellar", "Vault", "Crypt"],
@@ -11750,10 +14610,17 @@ mod tests {
         );
         assert_eq!(
             p.options,
-            vec![RegionOption::Dest { label: "a new layer".into(), target: MoveTarget::New }],
+            vec![RegionOption::Dest {
+                label: "a new layer".into(),
+                target: MoveTarget::New
+            }],
             "with Main un-emptiable, a fresh layer is the only place they can go"
         );
-        assert_eq!(m.graph.layers().len(), 1, "and nothing has moved: it only suggests");
+        assert_eq!(
+            m.graph.layers().len(),
+            1,
+            "and nothing has moved: it only suggests"
+        );
     }
 
     /// SQ-1137: the same crossing, with the map panel hidden. The prompt asks which LAYER a set of
@@ -11796,7 +14663,10 @@ mod tests {
         let mut m = barred_trapdoor();
         offer_layer_suggestion(&mut s, &mut m);
         let screen = drawn(&s);
-        assert!(screen.contains("DOWN"), "the passage is spelled out: {screen:?}");
+        assert!(
+            screen.contains("DOWN"),
+            "the passage is spelled out: {screen:?}"
+        );
         assert!(
             !screen.contains("You came d "),
             "and never as its short tag — that was the report: {screen:?}"
@@ -11813,13 +14683,25 @@ mod tests {
         let mut m = barred_trapdoor();
         offer_layer_suggestion(&mut s, &mut m);
 
-        let p = s.overlays.region_prompt.as_ref().expect("the fourth cellar room speaks");
-        let RegionPromptKind::Suggest { seam, region, trigger } = &p.kind else {
+        let p = s
+            .overlays
+            .region_prompt
+            .as_ref()
+            .expect("the fourth cellar room speaks");
+        let RegionPromptKind::Suggest {
+            seam,
+            region,
+            trigger,
+        } = &p.kind
+        else {
             panic!("a structural suggestion: {:?}", p.kind)
         };
         assert_eq!(*trigger, mapper::suggest::Trigger::Structural);
         assert_eq!(seam.from, 5, "the trapdoor's OUTSIDE end, the Living Room");
-        assert!(!region.rooms.contains(&seam.from), "which does not travel with the region");
+        assert!(
+            !region.rooms.contains(&seam.from),
+            "which does not travel with the region"
+        );
         assert_eq!(p.rooms, ["Cellar", "East of Chasm", "Gallery", "Studio"]);
 
         let screen = drawn(&s);
@@ -11844,18 +14726,28 @@ mod tests {
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
 
-        let p = s.overlays.region_prompt.as_ref().expect("climbing out speaks");
+        let p = s
+            .overlays
+            .region_prompt
+            .as_ref()
+            .expect("climbing out speaks");
         let RegionPromptKind::Suggest { seam, region, .. } = &p.kind else {
             panic!("a structural suggestion: {:?}", p.kind)
         };
-        assert!(region.rooms.contains(&seam.from), "the seam's end is one of the rooms that move");
+        assert!(
+            region.rooms.contains(&seam.from),
+            "the seam's end is one of the rooms that move"
+        );
 
         let screen = drawn(&s);
         assert!(
             screen.contains("You came UP out of Cellar."),
             "the return reading: you have just left the region by that passage: {screen:?}"
         );
-        assert!(!screen.contains("from Cellar"), "not the descent reading: {screen:?}");
+        assert!(
+            !screen.contains("from Cellar"),
+            "not the descent reading: {screen:?}"
+        );
     }
 
     /// Both readings then say the same true thing about the rooms. The line this replaced —
@@ -11896,7 +14788,10 @@ mod tests {
         let screen = drawn(&s);
         assert!(screen.contains("4 rooms:"), "the count: {screen:?}");
         for room in ["Cellar", "East of Chasm", "Gallery", "Studio"] {
-            assert!(screen.contains(&format!("• {room}")), "{room} is bulleted: {screen:?}");
+            assert!(
+                screen.contains(&format!("• {room}")),
+                "{room} is bulleted: {screen:?}"
+            );
         }
     }
 
@@ -11921,9 +14816,14 @@ mod tests {
         );
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Accept);
 
-        let landed = s.viewed_layer.expect("the maze moved to a layer of its own");
+        let landed = s
+            .viewed_layer
+            .expect("the maze moved to a layer of its own");
         assert_eq!(m.graph.rooms_in_layer(landed), vec![2]);
-        assert!(m.graph.layer_is_maze(landed), "accepting a prompt that said 'maze' sets the flag");
+        assert!(
+            m.graph.layer_is_maze(landed),
+            "accepting a prompt that said 'maze' sets the flag"
+        );
     }
 
     /// A STRUCTURAL accept sets nothing. A cellar is not a maze, and the flag freezes a layer's
@@ -11954,8 +14854,14 @@ mod tests {
         offer_layer_suggestion(&mut s, &mut m);
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Defer);
 
-        let seam = SeamKey { from: 3, dir: Direction::Up };
-        assert!(s.overlays.region_prompt.is_none(), "answering closes the prompt");
+        let seam = SeamKey {
+            from: 3,
+            dir: Direction::Up,
+        };
+        assert!(
+            s.overlays.region_prompt.is_none(),
+            "answering closes the prompt"
+        );
         assert_eq!(m.graph.seam_decision(seam), SeamDecision::Deferred);
         assert_eq!(m.graph.layers().len(), 1, "and nothing moved");
 
@@ -11964,7 +14870,10 @@ mod tests {
         m.observe(3, "Cellar", Some(Direction::Down));
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
-        assert!(s.overlays.region_prompt.is_some(), "a deferred seam speaks up on the next crossing");
+        assert!(
+            s.overlays.region_prompt.is_some(),
+            "a deferred seam speaks up on the next crossing"
+        );
     }
 
     /// "Never" silences that passage for good — a prompt that comes back on the next step teaches
@@ -11979,11 +14888,20 @@ mod tests {
         offer_layer_suggestion(&mut s, &mut m);
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::Never);
 
-        assert_eq!(m.graph.seam_decision(SeamKey { from: 3, dir: Direction::Up }), SeamDecision::Ignored);
+        assert_eq!(
+            m.graph.seam_decision(SeamKey {
+                from: 3,
+                dir: Direction::Up
+            }),
+            SeamDecision::Ignored
+        );
         m.observe(3, "Cellar", Some(Direction::Down));
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
-        assert!(s.overlays.region_prompt.is_none(), "and it never asks again");
+        assert!(
+            s.overlays.region_prompt.is_none(),
+            "and it never asks again"
+        );
     }
 
     /// "Never for this story" (SQ-1298) is story-wide, not per-seam: it silences a passage the
@@ -11996,7 +14914,10 @@ mod tests {
         let mut m = manor();
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
-        assert!(s.overlays.region_prompt.is_some(), "the cellar wing asks, same as ever");
+        assert!(
+            s.overlays.region_prompt.is_some(),
+            "the cellar wing asks, same as ever"
+        );
         apply_region_prompt(&mut s, &mut m, RegionPromptAct::NeverForStory);
         assert!(m.graph.suggestions_disabled(), "the story-wide flag is set");
 
@@ -12049,14 +14970,23 @@ mod tests {
         s.overlays.quit_dialog = true;
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
-        assert!(s.overlays.region_prompt.is_none(), "the quit dialog keeps the floor");
-        assert!(m.graph.seam_decisions().is_empty(), "and nothing was decided on the player's behalf");
+        assert!(
+            s.overlays.region_prompt.is_none(),
+            "the quit dialog keeps the floor"
+        );
+        assert!(
+            m.graph.seam_decisions().is_empty(),
+            "and nothing was decided on the player's behalf"
+        );
 
         s.overlays.quit_dialog = false;
         m.observe(3, "Cellar", Some(Direction::Down));
         m.observe(1, "Hall", Some(Direction::Up));
         offer_layer_suggestion(&mut s, &mut m);
-        assert!(s.overlays.region_prompt.is_some(), "so the next crossing still asks");
+        assert!(
+            s.overlays.region_prompt.is_some(),
+            "so the next crossing still asks"
+        );
     }
 
     #[test]
@@ -12066,7 +14996,10 @@ mod tests {
         apply_action(Action::Recenter, &mut s, &mut m);
         let mut want = AppState::default();
         want.recenter_on((7, 7), 80, 24);
-        assert_eq!(s.scroll, want.scroll, "centred on the SELECTED room, not the current one");
+        assert_eq!(
+            s.scroll, want.scroll,
+            "centred on the SELECTED room, not the current one"
+        );
     }
 
     #[test]
@@ -12082,11 +15015,17 @@ mod tests {
 
         let mut want = AppState::default();
         want.recenter_on((7, 7), 140, 48);
-        assert_eq!(s.scroll, want.scroll, "centred against the pane that was actually drawn");
+        assert_eq!(
+            s.scroll, want.scroll,
+            "centred against the pane that was actually drawn"
+        );
 
         let mut guessed = AppState::default();
         guessed.recenter_on((7, 7), 80, 24);
-        assert_ne!(s.scroll, guessed.scroll, "and not against the old 80×24 guess");
+        assert_ne!(
+            s.scroll, guessed.scroll,
+            "and not against the old 80×24 guess"
+        );
     }
 
     #[test]
@@ -12153,7 +15092,9 @@ mod tests {
         m.graph.set_current(1);
         m.graph.upsert_room(2, "Attic".into());
         m.graph.set_pos(2, (5, 5));
-        let l = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
+        let l = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Attic".into());
         m.graph.set_room_layer(2, l);
         (AppState::default(), m)
     }
@@ -12167,7 +15108,10 @@ mod tests {
 
         let mut want = AppState::default();
         want.recenter_on((5, 5), 80, 24);
-        assert_eq!(s.scroll, want.scroll, "centred on the current room, which is on the new layer");
+        assert_eq!(
+            s.scroll, want.scroll,
+            "centred on the current room, which is on the new layer"
+        );
         assert_eq!(s.selected_room, Some(2));
     }
 
@@ -12177,7 +15121,11 @@ mod tests {
         let attic = m.graph.layer_of(2);
         m.graph.set_current(2); // visits the Attic once — recorded as its last-visited room
         m.graph.set_current(1); // then leaves; the player is back on Main
-        assert_eq!(m.graph.last_visited(attic), Some(2), "the visit was recorded");
+        assert_eq!(
+            m.graph.last_visited(attic),
+            Some(2),
+            "the visit was recorded"
+        );
 
         apply_action(Action::SetViewedLayer(attic), &mut s, &mut m);
         let mut want = AppState::default();
@@ -12195,7 +15143,9 @@ mod tests {
         m.graph.upsert_room(1, "Hall".into());
         m.graph.set_pos(1, (0, 0));
         m.graph.set_current(1);
-        let l = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Cellar".into());
+        let l = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Cellar".into());
         // Three rooms whose bounding box centres uniquely on room 3, at (6, 6): the box runs
         // (2,2)-(10,2) x (2,2)-(6,6) → centre (6, 4), and only room 3 sits near it.
         for (id, pos) in [(2u16, (2, 2)), (3, (6, 6)), (4, (10, 2))] {
@@ -12209,9 +15159,13 @@ mod tests {
         apply_action(Action::SetViewedLayer(l), &mut s, &mut m);
         let mut want = AppState::default();
         want.recenter_on((6, 4), 80, 24);
-        assert_eq!(s.scroll, want.scroll, "centred on the layer's own bounding box");
         assert_eq!(
-            s.selected_room, Some(3),
+            s.scroll, want.scroll,
+            "centred on the layer's own bounding box"
+        );
+        assert_eq!(
+            s.selected_room,
+            Some(3),
             "the room nearest the box centre stands in for selection"
         );
     }
@@ -12231,13 +15185,22 @@ mod tests {
         let new_layer = s.viewed_layer.expect("the peel selected the new layer");
         assert_ne!(new_layer, mapper::layer::MAIN_LAYER);
         assert_eq!(m.graph.layer_of(2), new_layer, "room 2 left Main");
-        assert_eq!(m.graph.layer_of(1), mapper::layer::MAIN_LAYER, "room 1 stayed");
         assert_eq!(
-            m.graph.last_visited(mapper::layer::MAIN_LAYER), Some(2),
+            m.graph.layer_of(1),
+            mapper::layer::MAIN_LAYER,
+            "room 1 stayed"
+        );
+        assert_eq!(
+            m.graph.last_visited(mapper::layer::MAIN_LAYER),
+            Some(2),
             "Main's last-visited memory still names room 2 — it is now stale"
         );
 
-        apply_action(Action::SetViewedLayer(mapper::layer::MAIN_LAYER), &mut s, &mut m);
+        apply_action(
+            Action::SetViewedLayer(mapper::layer::MAIN_LAYER),
+            &mut s,
+            &mut m,
+        );
         let mut want = AppState::default();
         want.recenter_on(m.graph.room(1).unwrap().pos.unwrap(), 80, 24);
         assert_eq!(
@@ -12251,8 +15214,11 @@ mod tests {
     fn switching_to_a_matrix_layer_selects_and_scrolls_to_the_target_room() {
         let mut m = Mapper::default();
         m.observe(1, "Hall", None); // Main
-        let maze = m.graph.new_layer(Some(mapper::layer::MAIN_LAYER), "Maze".into());
-        m.graph.set_layer_view(maze, Some(mapper::layer::MapView::Matrix));
+        let maze = m
+            .graph
+            .new_layer(Some(mapper::layer::MAIN_LAYER), "Maze".into());
+        m.graph
+            .set_layer_view(maze, Some(mapper::layer::MapView::Matrix));
         // Ten rooms on the maze layer — more than a small pane can show at once.
         for id in 2..=11u16 {
             m.graph.upsert_room(id.into(), format!("Room {id}"));
@@ -12267,11 +15233,21 @@ mod tests {
         s.map_pane_size.set(Some((80, 10))); // small pane: not all ten rows fit
         apply_action(Action::SetViewedLayer(maze), &mut s, &mut m);
 
-        assert_eq!(s.selected_room, Some(9), "the last-visited room becomes the selected row");
+        assert_eq!(
+            s.selected_room,
+            Some(9),
+            "the last-visited room becomes the selected row"
+        );
         let area = ratatui::layout::Rect::new(0, 0, 80, 10);
         let want_scroll = crate::render::matrix::scroll_to_show(&m.graph, maze, 9, area, 0);
-        assert_eq!(s.matrix_scroll.1, want_scroll, "and the table scrolls to show it");
-        assert_ne!(s.matrix_scroll.1, 0, "room 9 does not fit at the top of a ten-row table in this pane");
+        assert_eq!(
+            s.matrix_scroll.1, want_scroll,
+            "and the table scrolls to show it"
+        );
+        assert_ne!(
+            s.matrix_scroll.1, 0,
+            "room 9 does not fit at the top of a ten-row table in this pane"
+        );
     }
 
     // ── SQ-0354: caret editing on the command line ───────────────────────────
@@ -12289,7 +15265,10 @@ mod tests {
         apply_action(Action::CursorLeft, &mut s, &mut m);
         assert_eq!(s.input.cursor, 3);
         apply_action(Action::InputChar('X'), &mut s, &mut m);
-        assert_eq!(s.input.value, "norXth", "a typed char lands AT the caret, not at the end");
+        assert_eq!(
+            s.input.value, "norXth",
+            "a typed char lands AT the caret, not at the end"
+        );
 
         apply_action(Action::CursorHome, &mut s, &mut m);
         assert_eq!(s.input.cursor, 0);
@@ -12312,7 +15291,10 @@ mod tests {
         }
         apply_action(Action::CursorLeft, &mut s, &mut m); // between b and c
         apply_action(Action::Backspace, &mut s, &mut m);
-        assert_eq!(s.input.value, "ac", "Backspace cuts the char BEFORE the caret");
+        assert_eq!(
+            s.input.value, "ac",
+            "Backspace cuts the char BEFORE the caret"
+        );
         apply_action(Action::DeleteChar, &mut s, &mut m);
         assert_eq!(s.input.value, "a", "Delete cuts the char AT the caret");
     }
@@ -12326,11 +15308,21 @@ mod tests {
         for c in "/toggle-roo".chars() {
             apply_action(Action::InputChar(c), &mut s, &mut m);
         }
-        assert!(!s.suggestions.is_empty(), "a suggestion is showing: {:?}", s.suggestions);
+        assert!(
+            !s.suggestions.is_empty(),
+            "a suggestion is showing: {:?}",
+            s.suggestions
+        );
         let want = format!("/{}", s.suggestions[0]);
         apply_action(Action::CursorRight, &mut s, &mut m);
-        assert_eq!(s.input.value, want, "Right at the end accepted the suggestion");
-        assert!(s.suggestion_active, "and marks it applied, exactly as Tab does");
+        assert_eq!(
+            s.input.value, want,
+            "Right at the end accepted the suggestion"
+        );
+        assert!(
+            s.suggestion_active,
+            "and marks it applied, exactly as Tab does"
+        );
     }
 
     #[test]
@@ -12345,7 +15337,10 @@ mod tests {
         let before = s.input.value.clone();
         apply_action(Action::CursorHome, &mut s, &mut m);
         apply_action(Action::CursorRight, &mut s, &mut m);
-        assert_eq!(s.input.value, before, "mid-line Right leaves the text alone");
+        assert_eq!(
+            s.input.value, before,
+            "mid-line Right leaves the text alone"
+        );
         assert_eq!(s.input.cursor, 1, "it just moves the caret");
     }
 
@@ -12363,16 +15358,35 @@ mod tests {
         for c in "/toggle-roo".chars() {
             apply_action(Action::InputChar(c), &mut s, &mut m);
         }
-        assert!(!s.suggestions.is_empty(), "a suggestion is showing: {:?}", s.suggestions);
+        assert!(
+            !s.suggestions.is_empty(),
+            "a suggestion is showing: {:?}",
+            s.suggestions
+        );
         let want = format!("/{}", s.suggestions[0]);
 
         // A click well clear of the input line — anywhere in the story pane.
-        let click = mouse_event(MouseEventKind::Down(MouseButton::Left), 85, 5, KeyModifiers::NONE);
+        let click = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            85,
+            5,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, click, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::Autocomplete), "a showing completion is accepted, got {:?}", action);
+        assert!(
+            matches!(action, Action::Autocomplete),
+            "a showing completion is accepted, got {:?}",
+            action
+        );
         apply_action(action, &mut s, &mut m);
-        assert_eq!(s.input.value, want, "the click applied the SAME completion Tab would have");
-        assert!(s.suggestion_active, "and marks it applied, exactly as Tab does");
+        assert_eq!(
+            s.input.value, want,
+            "the click applied the SAME completion Tab would have"
+        );
+        assert!(
+            s.suggestion_active,
+            "and marks it applied, exactly as Tab does"
+        );
     }
 
     /// The same click, even when it lands ON the input line (where a click
@@ -12390,13 +15404,22 @@ mod tests {
         }
         // story_rect() is x=80..120, y=0..40 — the origin and click must sit inside it.
         s.input_text_origin.set(Some((85, 5)));
-        assert!(s.input_click_index(87, 5).is_some(), "sanity: this click would otherwise hit the input line");
+        assert!(
+            s.input_click_index(87, 5).is_some(),
+            "sanity: this click would otherwise hit the input line"
+        );
 
-        let click = mouse_event(MouseEventKind::Down(MouseButton::Left), 87, 5, KeyModifiers::NONE);
+        let click = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            87,
+            5,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, click, map_rect(), story_rect(), &[], &None);
         assert!(
             matches!(action, Action::Autocomplete),
-            "a showing completion wins over CursorToClick, got {:?}", action
+            "a showing completion wins over CursorToClick, got {:?}",
+            action
         );
     }
 
@@ -12414,13 +15437,30 @@ mod tests {
         for c in "zzzznosuchword".chars() {
             apply_action(Action::InputChar(c), &mut s, &mut m);
         }
-        assert!(s.suggestions.is_empty(), "sanity: no suggestions for this gibberish: {:?}", s.suggestions);
+        assert!(
+            s.suggestions.is_empty(),
+            "sanity: no suggestions for this gibberish: {:?}",
+            s.suggestions
+        );
 
-        let click = mouse_event(MouseEventKind::Down(MouseButton::Left), 85, 5, KeyModifiers::NONE);
+        let click = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            85,
+            5,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, click, map_rect(), story_rect(), &[], &None);
-        assert!(matches!(action, Action::StartSelection(85, 5)), "no completion showing -> unchanged click behaviour, got {:?}", action);
+        assert!(
+            matches!(action, Action::StartSelection(85, 5)),
+            "no completion showing -> unchanged click behaviour, got {:?}",
+            action
+        );
         apply_action(action, &mut s, &mut m);
-        assert_eq!(s.focus, Focus::Game, "the click still activates the game pane");
+        assert_eq!(
+            s.focus,
+            Focus::Game,
+            "the click still activates the game pane"
+        );
     }
 
     /// Mirrors Tab's own precedence (`key_to_command`'s pager-active early
@@ -12438,11 +15478,17 @@ mod tests {
         assert!(!s.suggestions.is_empty());
         s.pager.active = true;
 
-        let click = mouse_event(MouseEventKind::Down(MouseButton::Left), 85, 5, KeyModifiers::NONE);
+        let click = mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            85,
+            5,
+            KeyModifiers::NONE,
+        );
         let action = mouse_to_action(&s, click, map_rect(), story_rect(), &[], &None);
         assert!(
             !matches!(action, Action::Autocomplete),
-            "the pager owns the click while active, got {:?}", action
+            "the pager owns the click while active, got {:?}",
+            action
         );
     }
 
@@ -12454,13 +15500,28 @@ mod tests {
             apply_action(Action::InputChar(c), &mut s, &mut m);
         }
         // The renderer records where the text landed; without a frame there is nothing to click.
-        assert!(s.input_click_index(10, 5).is_none(), "no origin captured yet -> no mapping");
+        assert!(
+            s.input_click_index(10, 5).is_none(),
+            "no origin captured yet -> no mapping"
+        );
         s.input_text_origin.set(Some((10, 5)));
 
         assert_eq!(s.input_click_index(12, 5), Some(2), "click on the 3rd char");
-        assert_eq!(s.input_click_index(12, 4), None, "a different row is not the input line");
-        assert_eq!(s.input_click_index(9, 5), None, "left of the text is not the input line");
-        assert_eq!(s.input_click_index(99, 5), Some(5), "past the end clamps to the end");
+        assert_eq!(
+            s.input_click_index(12, 4),
+            None,
+            "a different row is not the input line"
+        );
+        assert_eq!(
+            s.input_click_index(9, 5),
+            None,
+            "left of the text is not the input line"
+        );
+        assert_eq!(
+            s.input_click_index(99, 5),
+            Some(5),
+            "past the end clamps to the end"
+        );
 
         apply_action(Action::CursorToClick(12, 5), &mut s, &mut m);
         assert_eq!(s.input.cursor, 2, "the click moved the caret");
@@ -12478,16 +15539,35 @@ mod tests {
         s.input_text_origin.set(Some((10, 5)));
         // Cells: 日 = 10..11, 本 = 12..13, 語 = 14..15, x = 16.
         assert_eq!(s.input_click_index(10, 5), Some(0));
-        assert_eq!(s.input_click_index(11, 5), Some(0), "right cell of 日 still selects 日");
-        assert_eq!(s.input_click_index(12, 5), Some(1), "the 2nd glyph starts two cells in");
+        assert_eq!(
+            s.input_click_index(11, 5),
+            Some(0),
+            "right cell of 日 still selects 日"
+        );
+        assert_eq!(
+            s.input_click_index(12, 5),
+            Some(1),
+            "the 2nd glyph starts two cells in"
+        );
         assert_eq!(s.input_click_index(14, 5), Some(2));
-        assert_eq!(s.input_click_index(16, 5), Some(3), "the ASCII char after three wide ones");
-        assert_eq!(s.input_click_index(17, 5), Some(4), "past the end clamps to the end");
+        assert_eq!(
+            s.input_click_index(16, 5),
+            Some(3),
+            "the ASCII char after three wide ones"
+        );
+        assert_eq!(
+            s.input_click_index(17, 5),
+            Some(4),
+            "past the end clamps to the end"
+        );
 
         apply_action(Action::CursorToClick(12, 5), &mut s, &mut m);
         assert_eq!(s.input.cursor, 1);
         apply_action(Action::InputChar('!'), &mut s, &mut m);
-        assert_eq!(s.input.value, "日!本語x", "the caret landed where it was clicked");
+        assert_eq!(
+            s.input.value, "日!本語x",
+            "the caret landed where it was clicked"
+        );
     }
 
     #[test]
@@ -12505,14 +15585,22 @@ mod tests {
         apply_action(Action::InputChar('X'), &mut s, &mut m);
         assert_eq!(s.input.value, "hXéllo", "insert lands on a char boundary");
         apply_action(Action::DeleteChar, &mut s, &mut m);
-        assert_eq!(s.input.value, "hXllo", "delete cuts a whole char, not a byte");
+        assert_eq!(
+            s.input.value, "hXllo",
+            "delete cuts a whole char, not a byte"
+        );
     }
 
     // ── slash_suggestions tests ───────────────────────────────────────────────
 
     #[test]
     fn slash_suggestions_filter_by_prefix() {
-        let names = vec!["panh".to_string(),"panv".to_string(),"zoom".to_string(),"open-settings".to_string()];
+        let names = vec![
+            "panh".to_string(),
+            "panv".to_string(),
+            "zoom".to_string(),
+            "open-settings".to_string(),
+        ];
         let s = slash_suggestions("pa", &names, 6);
         assert!(s.contains(&"panh".to_string()) && s.contains(&"panv".to_string()));
         assert!(!s.contains(&"zoom".to_string()));
@@ -12526,10 +15614,16 @@ mod tests {
         let names = crate::slash::slash_names();
         let s = slash_suggestions("room", &names, 10);
         for want in ["toggle-room-numbers", "select-room", "rename-room"] {
-            assert!(s.contains(&want.to_string()), "'room' must offer {want}: {s:?}");
+            assert!(
+                s.contains(&want.to_string()),
+                "'room' must offer {want}: {s:?}"
+            );
         }
         // And it must not turn into a free-for-all: a name without the token stays out.
-        assert!(!s.iter().any(|n| !n.contains("room")), "every hit contains the token: {s:?}");
+        assert!(
+            !s.iter().any(|n| !n.contains("room")),
+            "every hit contains the token: {s:?}"
+        );
     }
 
     #[test]
@@ -12553,8 +15647,14 @@ mod tests {
         // Pre-existing contract, kept: a completion identical to the token is noise.
         let names = vec!["map".to_string(), "zoom-map".to_string()];
         let s = slash_suggestions("map", &names, 6);
-        assert!(!s.contains(&"map".to_string()), "exact token is not a suggestion: {s:?}");
-        assert!(s.contains(&"zoom-map".to_string()), "but other substring hits still show: {s:?}");
+        assert!(
+            !s.contains(&"map".to_string()),
+            "exact token is not a suggestion: {s:?}"
+        );
+        assert!(
+            s.contains(&"zoom-map".to_string()),
+            "but other substring hits still show: {s:?}"
+        );
     }
 
     /// Regression: CONFIG_ROW_COUNT must equal CONFIG_ROWS.len() so every config row is
@@ -12608,14 +15708,20 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut s = AppState::default();
         let working = clone_config(&s.config);
-        s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
         s.overlays.dialog_focus = cycle_focus(0, 2, 1); // focus Cancel (index 1)
         let a = config_screen_key_to_action(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             s.overlays.dialog_focus,
         );
-        assert!(matches!(a, Action::ConfigCancel),
-            "Enter with focus=1 (Cancel) should fire ConfigCancel, got {:?}", a);
+        assert!(
+            matches!(a, Action::ConfigCancel),
+            "Enter with focus=1 (Cancel) should fire ConfigCancel, got {:?}",
+            a
+        );
     }
 
     #[test]
@@ -12623,14 +15729,20 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut s = AppState::default();
         let working = clone_config(&s.config);
-        s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
         s.overlays.dialog_focus = 0; // focus Save (default)
         let a = config_screen_key_to_action(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             s.overlays.dialog_focus,
         );
-        assert!(matches!(a, Action::ConfigSave),
-            "Enter with focus=0 (Save) should fire ConfigSave, got {:?}", a);
+        assert!(
+            matches!(a, Action::ConfigSave),
+            "Enter with focus=0 (Save) should fire ConfigSave, got {:?}",
+            a
+        );
     }
 
     #[test]
@@ -12638,15 +15750,21 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut s = AppState::default();
         let working = clone_config(&s.config);
-        s.overlays.config_screen = Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
         // Space must toggle the selected row regardless of focus.
         for focus in [0, 1] {
             let a = config_screen_key_to_action(
                 KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
                 focus,
             );
-            assert!(matches!(a, Action::ConfigToggle),
-                "Space with focus={focus} should fire ConfigToggle, got {:?}", a);
+            assert!(
+                matches!(a, Action::ConfigToggle),
+                "Space with focus={focus} should fire ConfigToggle, got {:?}",
+                a
+            );
         }
     }
 
@@ -12656,7 +15774,10 @@ mod tests {
         // Enter still loads the selected save (existing behavior).
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut s = AppState::default();
-        s.overlays.saves = Some(crate::state::SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(crate::state::SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         s.overlays.dialog_focus = 0;
         // Tab with ring len 1 stays at 0.
         let after_tab = cycle_focus(s.overlays.dialog_focus, 1, 1);
@@ -12666,8 +15787,11 @@ mod tests {
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             s.overlays.dialog_focus,
         );
-        assert!(matches!(a, Action::SavesLoad),
-            "Enter in saves should still fire SavesLoad (not affected by focus), got {:?}", a);
+        assert!(
+            matches!(a, Action::SavesLoad),
+            "Enter in saves should still fire SavesLoad (not affected by focus), got {:?}",
+            a
+        );
     }
 
     #[test]
@@ -12676,7 +15800,10 @@ mod tests {
         s.overlays.dialog_focus = 5; // non-zero
         let mut m = mapper::mapper::Mapper::default();
         apply_action(Action::OpenConfig, &mut s, &mut m);
-        assert_eq!(s.overlays.dialog_focus, 0, "OpenConfig must reset dialog_focus to 0");
+        assert_eq!(
+            s.overlays.dialog_focus, 0,
+            "OpenConfig must reset dialog_focus to 0"
+        );
     }
 
     #[test]
@@ -12685,7 +15812,10 @@ mod tests {
         s.overlays.dialog_focus = 5; // non-zero
         let mut m = mapper::mapper::Mapper::default();
         apply_action(Action::OpenSaves, &mut s, &mut m);
-        assert_eq!(s.overlays.dialog_focus, 0, "OpenSaves must reset dialog_focus to 0");
+        assert_eq!(
+            s.overlays.dialog_focus, 0,
+            "OpenSaves must reset dialog_focus to 0"
+        );
     }
 
     // ── Task 5: read-only / single-button panels ──────────────────────────────
@@ -12736,7 +15866,11 @@ mod tests {
         let mut s = AppState::default();
         open_band(&mut s);
         let a = command_band_intercept(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &s);
-        assert_eq!(a, Some(Action::BandColumnStep(1)), "consumed, and with nothing highlighted it moves the column");
+        assert_eq!(
+            a,
+            Some(Action::BandColumnStep(1)),
+            "consumed, and with nothing highlighted it moves the column"
+        );
     }
 
     // ── SQ-0237: resize-mode key routing ──────────────────────────────────────
@@ -12755,17 +15889,38 @@ mod tests {
 
     #[test]
     fn resize_mode_key_to_action_maps_arrows() {
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Left)), Action::ResizeNav(ResizeNavKind::Left)));
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Right)), Action::ResizeNav(ResizeNavKind::Right)));
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Up)), Action::ResizeNav(ResizeNavKind::Up)));
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Down)), Action::ResizeNav(ResizeNavKind::Down)));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Left)),
+            Action::ResizeNav(ResizeNavKind::Left)
+        ));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Right)),
+            Action::ResizeNav(ResizeNavKind::Right)
+        ));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Up)),
+            Action::ResizeNav(ResizeNavKind::Up)
+        ));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Down)),
+            Action::ResizeNav(ResizeNavKind::Down)
+        ));
     }
 
     #[test]
     fn resize_mode_key_to_action_maps_reset_and_exit() {
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Char('0'))), Action::ResizeReset));
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Esc)), Action::ResizeExit));
-        assert!(matches!(resize_mode_key_to_action(key(KeyCode::Enter)), Action::ResizeExit));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Char('0'))),
+            Action::ResizeReset
+        ));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Esc)),
+            Action::ResizeExit
+        ));
+        assert!(matches!(
+            resize_mode_key_to_action(key(KeyCode::Enter)),
+            Action::ResizeExit
+        ));
     }
 
     #[test]
@@ -12784,9 +15939,15 @@ mod tests {
     fn prefix_key(s: &AppState) -> KeyEvent {
         let p = s.hotkeys.prefix;
         let mut m = KeyModifiers::NONE;
-        if p.ctrl { m |= KeyModifiers::CONTROL; }
-        if p.shift { m |= KeyModifiers::SHIFT; }
-        if p.alt { m |= KeyModifiers::ALT; }
+        if p.ctrl {
+            m |= KeyModifiers::CONTROL;
+        }
+        if p.shift {
+            m |= KeyModifiers::SHIFT;
+        }
+        if p.alt {
+            m |= KeyModifiers::ALT;
+        }
         KeyEvent::new(p.code, m)
     }
 
@@ -12798,18 +15959,24 @@ mod tests {
         open_band(&mut s);
         s.resize_mode = true;
 
-        assert!(matches!(
-            key_to_action(&s, key(KeyCode::Down)),
-            Action::ResizeNav(ResizeNavKind::Down)
-        ), "Down resizes, not BandNav");
-        assert!(matches!(
-            key_to_action(&s, key(KeyCode::Tab)),
-            Action::ResizeNav(ResizeNavKind::NextTarget)
-        ), "Tab cycles resize target, not band focus");
-        assert!(matches!(
-            key_to_action(&s, key(KeyCode::Esc)),
-            Action::ResizeExit
-        ), "Esc exits resize mode (back to the still-open band), not BandEscape");
+        assert!(
+            matches!(
+                key_to_action(&s, key(KeyCode::Down)),
+                Action::ResizeNav(ResizeNavKind::Down)
+            ),
+            "Down resizes, not BandNav"
+        );
+        assert!(
+            matches!(
+                key_to_action(&s, key(KeyCode::Tab)),
+                Action::ResizeNav(ResizeNavKind::NextTarget)
+            ),
+            "Tab cycles resize target, not band focus"
+        );
+        assert!(
+            matches!(key_to_action(&s, key(KeyCode::Esc)), Action::ResizeExit),
+            "Esc exits resize mode (back to the still-open band), not BandEscape"
+        );
     }
 
     #[test]
@@ -12819,25 +15986,38 @@ mod tests {
         let mut s = AppState::default();
         let mut mapper = Mapper::default();
         open_band(&mut s);
-        assert!(command_band_intercept(prefix_key(&s), &s).is_none(), "prefix falls through");
+        assert!(
+            command_band_intercept(prefix_key(&s), &s).is_none(),
+            "prefix falls through"
+        );
         // …armed or not: the prefix is checked before anything else the band
         // might claim (SQ-0238), and every gesture amendment since has kept
         // that ordering.
         apply_action(Action::BandRowNav(1), &mut s, &mut mapper);
-        assert!(command_band_intercept(prefix_key(&s), &s).is_none(), "…even armed");
+        assert!(
+            command_band_intercept(prefix_key(&s), &s).is_none(),
+            "…even armed"
+        );
 
-        assert!(matches!(
-            key_to_command(&s, prefix_key(&s)),
-            KeyResolve::Action(Action::OpenHotkeyDialog)
-        ), "prefix opens the hotkey dialog with the band open");
+        assert!(
+            matches!(
+                key_to_command(&s, prefix_key(&s)),
+                KeyResolve::Action(Action::OpenHotkeyDialog)
+            ),
+            "prefix opens the hotkey dialog with the band open"
+        );
     }
 
     #[test]
     fn the_band_is_a_resize_target_only_while_open() {
         let mut s = AppState::default();
-        assert!(!s.resize_targets_visible().contains(&crate::state::ResizeTarget::CommandBand));
+        assert!(!s
+            .resize_targets_visible()
+            .contains(&crate::state::ResizeTarget::CommandBand));
         open_band(&mut s);
-        assert!(s.resize_targets_visible().contains(&crate::state::ResizeTarget::CommandBand));
+        assert!(s
+            .resize_targets_visible()
+            .contains(&crate::state::ResizeTarget::CommandBand));
     }
 
     #[test]
@@ -12859,8 +16039,10 @@ mod tests {
     /// `config_esc_maps_to_config_cancel`'s setup.
     fn open_config_screen(s: &mut AppState) {
         let working = crate::input::clone_config(&s.config);
-        s.overlays.config_screen =
-            Some(crate::state::ConfigScreenState { working, scroll: Default::default() });
+        s.overlays.config_screen = Some(crate::state::ConfigScreenState {
+            working,
+            scroll: Default::default(),
+        });
     }
 
     #[test]
@@ -12904,8 +16086,14 @@ mod tests {
         let a = key_to_action(&s, key(KeyCode::Esc));
         apply_action(a, &mut s, &mut mapper);
 
-        assert!(s.overlays.config_screen.is_none(), "Esc must close the dialog");
-        assert!(s.overlays.command_band.is_some(), "…and must NOT close the band underneath");
+        assert!(
+            s.overlays.config_screen.is_none(),
+            "Esc must close the dialog"
+        );
+        assert!(
+            s.overlays.command_band.is_some(),
+            "…and must NOT close the band underneath"
+        );
     }
 
     #[test]
@@ -12916,7 +16104,10 @@ mod tests {
         // is true exactly when it must gate the band's mouse routing too.
         let mut s = AppState::default();
         open_band(&mut s);
-        assert!(!s.any_modal_overlay_open(), "band alone is not modal (SQ-0664)");
+        assert!(
+            !s.any_modal_overlay_open(),
+            "band alone is not modal (SQ-0664)"
+        );
         open_config_screen(&mut s);
         assert!(
             s.any_modal_overlay_open(),
@@ -13022,7 +16213,10 @@ mod tests {
 
         apply_action(Action::InventoryClickRow(0), &mut s, &mut mapper);
 
-        assert_eq!(s.input.value, "leaflet", "the partial word is replaced, not appended after");
+        assert_eq!(
+            s.input.value, "leaflet",
+            "the partial word is replaced, not appended after"
+        );
     }
 
     /// A stale/out-of-range index (the click landed after the panel's
@@ -13037,7 +16231,10 @@ mod tests {
 
         apply_action(Action::InventoryClickRow(5), &mut s, &mut mapper);
 
-        assert_eq!(s.input.value, "examine ", "an out-of-range index composes nothing");
+        assert_eq!(
+            s.input.value, "examine ",
+            "an out-of-range index composes nothing"
+        );
     }
 
     /// SQ-1236's rule extended to the inventory dock: a modal dialog stacked
@@ -13050,7 +16247,10 @@ mod tests {
     fn inventory_panel_alone_is_not_modal_but_a_dialog_over_it_is() {
         let mut s = AppState::default();
         open_inventory_panel_for_test(&mut s, &["leaflet"]);
-        assert!(!s.any_modal_overlay_open(), "the inventory panel alone is not modal (SQ-1244)");
+        assert!(
+            !s.any_modal_overlay_open(),
+            "the inventory panel alone is not modal (SQ-1244)"
+        );
         open_config_screen(&mut s);
         assert!(
             s.any_modal_overlay_open(),
@@ -13076,7 +16276,14 @@ mod tests {
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
 
-        let a = mouse_to_action(&state, mouse_left_click(32, 14), map, story, room_rects, &None);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(32, 14),
+            map,
+            story,
+            room_rects,
+            &None,
+        );
         assert!(
             matches!(a, Action::None),
             "a click outside every pane is inert; nothing closes the dock but Esc or its command, got {:?}", a
@@ -13085,49 +16292,62 @@ mod tests {
 
     #[test]
     fn tidy_ok_button_click_exits_anim() {
-        use ratatui::layout::Rect;
         use crate::render::dialog::{ButtonId, DialogRects};
         use crate::state::TidyAnim;
         use crate::state::TidyFrame;
+        use ratatui::layout::Rect;
 
         let rects = DialogRects {
-            area:    Rect::new(0, 0, 40, 15),
+            area: Rect::new(0, 0, 40, 15),
             content: Rect::new(1, 1, 38, 12),
-            close:   Some(Rect::new(38, 0, 1, 1)),
+            close: Some(Rect::new(38, 0, 1, 1)),
             buttons: vec![(ButtonId::Ok, Rect::new(30, 14, 6, 1))],
             field: None,
         };
 
         let mut state = AppState::default();
-        state.tidy_anim = Some(TidyAnim::new(vec![TidyFrame {
-            label: "test".to_string(),
-            graph: mapper::graph::MapGraph::new(),
-            description: String::new(),
-            stats: mapper::layout::TidyStats::default(),
-            stage_start: false,
-            manifest: None,
-        }], mapper::layer::MAIN_LAYER));
+        state.tidy_anim = Some(TidyAnim::new(
+            vec![TidyFrame {
+                label: "test".to_string(),
+                graph: mapper::graph::MapGraph::new(),
+                description: String::new(),
+                stats: mapper::layout::TidyStats::default(),
+                stage_start: false,
+                manifest: None,
+            }],
+            mapper::layer::MAIN_LAYER,
+        ));
 
-        let map   = Rect::default();
+        let map = Rect::default();
         let story = Rect::default();
         let room_rects: &[(mapper::graph::RoomId, Rect)] = &[];
         let dialog = Some(rects);
 
         // OK button click → AnimExit
-        let a = mouse_to_action(&state, mouse_left_click(32, 14), map, story, room_rects, &dialog);
+        let a = mouse_to_action(
+            &state,
+            mouse_left_click(32, 14),
+            map,
+            story,
+            room_rects,
+            &dialog,
+        );
         assert!(
             matches!(a, Action::AnimExit),
-            "tidy [OK] click should produce AnimExit, got {:?}", a
+            "tidy [OK] click should produce AnimExit, got {:?}",
+            a
         );
     }
-
 
     // ── SQ-0653: bracketed paste lands as literal text in the focused field ────
 
     #[test]
     fn sanitize_pasted_text_flattens_line_breaks_and_drops_controls() {
         // CRLF counts once; bare \n and \r and tabs each become one space.
-        assert_eq!(super::sanitize_pasted_text("go north\r\nget lamp"), "go north get lamp");
+        assert_eq!(
+            super::sanitize_pasted_text("go north\r\nget lamp"),
+            "go north get lamp"
+        );
         assert_eq!(super::sanitize_pasted_text("a\nb\rc\td"), "a b c d");
         // Other control characters (here: ESC and BEL) are dropped outright — a
         // paste must never smuggle an escape sequence into a field.
@@ -13144,7 +16364,10 @@ mod tests {
         let turns_before = s.turns;
 
         assert!(apply_paste(&mut s, "north"));
-        assert_eq!(s.input.value, "go north", "pasted text is inserted literally");
+        assert_eq!(
+            s.input.value, "go north",
+            "pasted text is inserted literally"
+        );
         assert_eq!(s.input.cursor, 8, "the caret follows the pasted text");
         assert_eq!(s.turns, turns_before, "a paste must NOT submit a turn");
 
@@ -13173,13 +16396,22 @@ mod tests {
             "Cave",
         ));
         assert!(apply_paste(&mut s, " of Wonders"));
-        assert_eq!(s.overlays.text_entry.as_ref().unwrap().field.value, "Cave of Wonders");
-        assert!(s.input.value.is_empty(), "the game line must not see the paste");
+        assert_eq!(
+            s.overlays.text_entry.as_ref().unwrap().field.value,
+            "Cave of Wonders"
+        );
+        assert!(
+            s.input.value.is_empty(),
+            "the game line must not see the paste"
+        );
 
         // Save-name dialog: pasting onto the greyed placeholder replaces it and
         // activates the field, exactly as typing a character does.
         let mut s = AppState::default();
-        s.overlays.save_name_dialog = Some(crate::state::SaveNameDialog::new("2026-01-01".into(), false));
+        s.overlays.save_name_dialog = Some(crate::state::SaveNameDialog::new(
+            "2026-01-01".into(),
+            false,
+        ));
         assert!(apply_paste(&mut s, "before the troll"));
         let d = s.overlays.save_name_dialog.as_ref().unwrap();
         assert_eq!(d.field.value, "before the troll");
@@ -13198,7 +16430,10 @@ mod tests {
         // The saves manager owns the keyboard but has nothing to type into;
         // the paste must not leak onto the game line hidden behind it.
         let mut s = AppState::default();
-        s.overlays.saves = Some(crate::state::SavesState { entries: Vec::new(), scroll: Default::default() });
+        s.overlays.saves = Some(crate::state::SavesState {
+            entries: Vec::new(),
+            scroll: Default::default(),
+        });
         assert!(!apply_paste(&mut s, "north"));
         assert!(s.input.value.is_empty());
 
@@ -13215,13 +16450,21 @@ mod tests {
     struct Offline;
 
     impl crate::ifdb_search::SearchSource for Offline {
-        fn search(&self, _q: &str) -> Result<Vec<crate::ifdb_search::SearchHit>, crate::ifdb_search::SearchError> {
+        fn search(
+            &self,
+            _q: &str,
+        ) -> Result<Vec<crate::ifdb_search::SearchHit>, crate::ifdb_search::SearchError> {
             Err(crate::ifdb_search::SearchError::Transport("offline".into()))
         }
-        fn hot(&self) -> Result<Vec<crate::ifdb_search::SearchHit>, crate::ifdb_search::SearchError> {
+        fn hot(
+            &self,
+        ) -> Result<Vec<crate::ifdb_search::SearchHit>, crate::ifdb_search::SearchError> {
             Err(crate::ifdb_search::SearchError::Transport("offline".into()))
         }
-        fn download_options(&self, _t: &str) -> Result<crate::ifdb_search::ResolvedGame, crate::ifdb_search::SearchError> {
+        fn download_options(
+            &self,
+            _t: &str,
+        ) -> Result<crate::ifdb_search::ResolvedGame, crate::ifdb_search::SearchError> {
             Err(crate::ifdb_search::SearchError::Transport("offline".into()))
         }
         fn download(
@@ -13237,8 +16480,13 @@ mod tests {
         let home = crate::scratch_dir(tag);
         let roots = crate::data_roots::DataRoots::resolve(&home, None, None, &Default::default());
         let mut s = AppState::default();
-        s.overlays.documents =
-            Some(crate::documents_chooser::DocumentsSession::open(crate::ifdb_search::IfdbGate::default(), Box::new(Offline), roots, "abc123", "Zork I"));
+        s.overlays.documents = Some(crate::documents_chooser::DocumentsSession::open(
+            crate::ifdb_search::IfdbGate::default(),
+            Box::new(Offline),
+            roots,
+            "abc123",
+            "Zork I",
+        ));
         (s, home)
     }
 
@@ -13248,7 +16496,10 @@ mod tests {
         assert!(s.any_modal_overlay_open(), "it is a modal");
         // A letter that would otherwise type into the story prompt goes to the chooser.
         let a = key_to_action(&s, key(KeyCode::Char('x')));
-        assert!(matches!(a, Action::DocumentsKey(KeyCode::Char('x'))), "{a:?}");
+        assert!(
+            matches!(a, Action::DocumentsKey(KeyCode::Char('x'))),
+            "{a:?}"
+        );
         apply_action(a, &mut s, &mut Mapper::default());
         assert!(s.input.value.is_empty(), "nothing leaked into the prompt");
         // Tab is the chooser's focus key, not the prompt's autocomplete / the pane toggle.
@@ -13265,14 +16516,26 @@ mod tests {
     fn the_documents_chooser_owns_the_mouse_while_open() {
         use crossterm::event::{MouseEvent, MouseEventKind};
         let (s, home) = state_with_documents("docs-modal-mouse");
-        let ev = |kind| MouseEvent { kind, column: 5, row: 6, modifiers: KeyModifiers::NONE };
+        let ev = |kind| MouseEvent {
+            kind,
+            column: 5,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        };
         let none = None;
         let r = ratatui::layout::Rect::default();
         let act = |kind| mouse_to_action(&s, ev(kind), r, r, &[], &none);
-        assert_eq!(act(MouseEventKind::Down(crossterm::event::MouseButton::Left)), Action::DocumentsClick(5, 6));
+        assert_eq!(
+            act(MouseEventKind::Down(crossterm::event::MouseButton::Left)),
+            Action::DocumentsClick(5, 6)
+        );
         assert_eq!(act(MouseEventKind::ScrollDown), Action::DocumentsWheel(1));
         assert_eq!(act(MouseEventKind::ScrollUp), Action::DocumentsWheel(-1));
-        assert_eq!(act(MouseEventKind::Moved), Action::None, "motion is swallowed, not routed to the map");
+        assert_eq!(
+            act(MouseEventKind::Moved),
+            Action::None,
+            "motion is swallowed, not routed to the map"
+        );
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -13283,34 +16546,69 @@ mod tests {
     fn download_documents_is_one_registry_command_in_the_game_and_the_browser() {
         use crate::keymap::Context;
         use crate::slash::{in_both_worlds, parse_in_context, SlashOutcome, COMMANDS};
-        assert!(matches!(parse_in_context("download-documents", '/', Context::Global), SlashOutcome::DownloadDocuments));
-        assert!(matches!(parse_in_context("download-documents", '/', Context::Browser), SlashOutcome::DownloadDocuments));
+        assert!(matches!(
+            parse_in_context("download-documents", '/', Context::Global),
+            SlashOutcome::DownloadDocuments
+        ));
+        assert!(matches!(
+            parse_in_context("download-documents", '/', Context::Browser),
+            SlashOutcome::DownloadDocuments
+        ));
         assert_eq!(
             crate::browser::action_for_command("download-documents"),
             Some(crate::browser::BrowserAction::DownloadDocuments)
         );
         // Only these cross: every other game command is still refused in the browser.
-        let both: Vec<&str> = COMMANDS.iter().filter(|c| in_both_worlds(c)).map(|c| c.name).collect();
-        assert_eq!(both, ["download-documents", "create-documents-folder", "download-hints"]);
-        assert!(matches!(parse_in_context("quit", '/', Context::Browser), SlashOutcome::Error(_)));
+        let both: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|c| in_both_worlds(c))
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(
+            both,
+            [
+                "download-documents",
+                "create-documents-folder",
+                "download-hints"
+            ]
+        );
+        assert!(matches!(
+            parse_in_context("quit", '/', Context::Browser),
+            SlashOutcome::Error(_)
+        ));
         // The in-game palette and Tab completion offer it; /help lists it.
-        assert!(crate::slash::slash_names().iter().any(|n| n == "download-documents"));
-        assert!(crate::slash::help_text('/').iter().any(|l| l.contains("download-documents")));
+        assert!(crate::slash::slash_names()
+            .iter()
+            .any(|n| n == "download-documents"));
+        assert!(crate::slash::help_text('/')
+            .iter()
+            .any(|l| l.contains("download-documents")));
         // Shift-D in the browser; plain d is still reverse-sort.
         let km = crate::keymap::KeyMap::default();
         let shift_d = crossterm::event::KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT);
-        assert_eq!(crate::browser::action_for_key(&km, shift_d), Some(crate::browser::BrowserAction::DownloadDocuments));
+        assert_eq!(
+            crate::browser::action_for_key(&km, shift_d),
+            Some(crate::browser::BrowserAction::DownloadDocuments)
+        );
         assert_eq!(
             crate::browser::action_for_key(&km, key(KeyCode::Char('d'))),
             Some(crate::browser::BrowserAction::ReverseSort)
         );
         // It may be bound in either keymap — it is at home in both worlds.
         let mut cfg = crate::config::KeymapConfig::default();
-        cfg.browser.insert("ctrl+w".into(), "download-documents".into());
-        cfg.global.insert("ctrl+e".into(), "download-documents".into());
+        cfg.browser
+            .insert("ctrl+w".into(), "download-documents".into());
+        cfg.global
+            .insert("ctrl+e".into(), "download-documents".into());
         let (km2, warnings) = crate::keymap::KeyMap::resolve(&cfg);
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(km2.lookup(&"ctrl+w".parse().unwrap(), Context::Browser), Some("download-documents"));
-        assert_eq!(km2.lookup(&"ctrl+e".parse().unwrap(), Context::Global), Some("download-documents"));
+        assert_eq!(
+            km2.lookup(&"ctrl+w".parse().unwrap(), Context::Browser),
+            Some("download-documents")
+        );
+        assert_eq!(
+            km2.lookup(&"ctrl+e".parse().unwrap(), Context::Global),
+            Some("download-documents")
+        );
     }
 }

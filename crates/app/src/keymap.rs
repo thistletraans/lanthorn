@@ -87,7 +87,12 @@ impl KeySpec {
     /// Ctrl and Alt are untouched: they never change the character a terminal
     /// reports.
     pub fn canonical(self) -> KeySpec {
-        let KeySpec { code, ctrl, shift, alt } = self;
+        let KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt,
+        } = self;
         let (code, shift) = match code {
             KeyCode::Char(c) if c.is_alphabetic() => {
                 if shift || c.is_uppercase() {
@@ -101,7 +106,12 @@ impl KeySpec {
             KeyCode::Tab if shift => (KeyCode::BackTab, false),
             other => (other, shift),
         };
-        KeySpec { code, ctrl, shift, alt }
+        KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt,
+        }
     }
 
     /// Human-readable label for the hint bar / help screen.
@@ -110,15 +120,25 @@ impl KeySpec {
         // BackTab is always "Shift+Tab" regardless of modifier flags.
         if self.code == KeyCode::BackTab {
             let mut s = String::new();
-            if self.ctrl { s.push_str("Ctrl+"); }
-            if self.alt { s.push_str("Alt+"); }
+            if self.ctrl {
+                s.push_str("Ctrl+");
+            }
+            if self.alt {
+                s.push_str("Alt+");
+            }
             s.push_str("Shift+Tab");
             return s;
         }
         let mut s = String::new();
-        if self.ctrl { s.push_str("Ctrl+"); }
-        if self.alt { s.push_str("Alt+"); }
-        if self.shift { s.push_str("Shift+"); }
+        if self.ctrl {
+            s.push_str("Ctrl+");
+        }
+        if self.alt {
+            s.push_str("Alt+");
+        }
+        if self.shift {
+            s.push_str("Shift+");
+        }
         let key_str = match self.code {
             KeyCode::Left => "←".to_string(),
             KeyCode::Right => "→".to_string(),
@@ -175,7 +195,12 @@ impl std::str::FromStr for KeySpec {
 
         // Special case: a lone "+" (would otherwise produce empty tokens when split).
         if lower == "+" {
-            return Ok(KeySpec { code: KeyCode::Char('+'), ctrl: false, shift: false, alt: false });
+            return Ok(KeySpec {
+                code: KeyCode::Char('+'),
+                ctrl: false,
+                shift: false,
+                alt: false,
+            });
         }
 
         let mut ctrl = false;
@@ -193,9 +218,18 @@ impl std::str::FromStr for KeySpec {
         while i < n {
             let p = parts[i].trim();
             match p {
-                "ctrl" | "control" => { ctrl = true; i += 1; }
-                "shift" => { shift = true; i += 1; }
-                "alt" => { alt = true; i += 1; }
+                "ctrl" | "control" => {
+                    ctrl = true;
+                    i += 1;
+                }
+                "shift" => {
+                    shift = true;
+                    i += 1;
+                }
+                "alt" => {
+                    alt = true;
+                    i += 1;
+                }
                 "" => {
                     // An empty segment from split means a literal '+' was there.
                     // E.g. "shift++" splits as ["shift", "", ""] — the key is '+'.
@@ -255,7 +289,13 @@ impl std::str::FromStr for KeySpec {
         // wholesale above, so "shift+s" would otherwise store Char('s') and never
         // match the Char('S') + SHIFT the terminal delivers. Storing the canonical
         // form also keeps `label()` honest ("Shift+S", not "Shift+s").
-        Ok(KeySpec { code, ctrl, shift, alt }.canonical())
+        Ok(KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt,
+        }
+        .canonical())
     }
 }
 
@@ -277,7 +317,12 @@ impl Default for KeyMap {
         use KeyCode::*;
 
         // Shorthand constructors.
-        let g = |code, ctrl, shift| KeySpec { code, ctrl, shift, alt: false };
+        let g = |code, ctrl, shift| KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt: false,
+        };
         let plain = |code| g(code, false, false);
         let ctrl = |code| g(code, true, false);
 
@@ -322,18 +367,25 @@ impl Default for KeyMap {
         bind!(ctrl(Char('s')), "save-state", Context::Global);
         bind!(ctrl(Char('r')), "restore-state", Context::Global);
 
-        // The Journal's tabs (SQ-1684): Alt+1/2/3, in tab-bar order. Alt+digit is
-        // free everywhere else in the keymap, and — unlike plain Tab, which the
-        // input line's autocomplete owns — is never typed text. (A terminal that
-        // turns Option into a composing key, macOS's default, delivers `¡™£`
+        // The Journal's tabs (SQ-1684): Alt+1/2/3 select Map, Room and Inventory.
+        // Alt+digit is free elsewhere in the keymap and — unlike plain Tab, which
+        // the input line's autocomplete owns — is never typed text. (A terminal
+        // that turns Option into a composing key, macOS's default, delivers `¡™£`
         // rather than Alt+digit; the leader panel's j/k/i reach the same tabs.)
-        let alt = |c| KeySpec { code: Char(c), ctrl: false, shift: false, alt: true };
+        let alt = |c| KeySpec {
+            code: Char(c),
+            ctrl: false,
+            shift: false,
+            alt: true,
+        };
         bind!(alt('1'), "journal-tab map", Context::Global);
         bind!(alt('2'), "journal-tab room", Context::Global);
         bind!(alt('3'), "journal-tab inventory", Context::Global);
-        // Alt+4 is the Hints tab (SQ-1685), between Inventory and Documents (Alt+5).
-        // Like the tab click and `/open-hints`, it SHOWS the tab and leaves the
-        // keyboard where it was; only a click inside the hint window takes it.
+        // Alt+4/5 select the Hints and Documents subtabs inside Files. Ctrl+Left/
+        // Right traverse Journal tabs; Ctrl+Shift+Left/Right switch Room views or
+        // Files subtabs.
+        // Selecting Hints leaves keyboard focus where it was; only a click inside
+        // the hint window takes it.
         bind!(alt('4'), "journal-tab hints", Context::Global);
         bind!(alt('5'), "journal-tab documents", Context::Global);
 
@@ -412,7 +464,11 @@ impl Default for KeyMap {
         // that names the plain letter.
         bind!(plain(Enter), "play-story", Context::Browser);
         bind!(plain(Char('o')), "open-launch-options", Context::Browser);
-        bind!(g(Enter, false, true), "open-launch-options", Context::Browser);
+        bind!(
+            g(Enter, false, true),
+            "open-launch-options",
+            Context::Browser
+        );
         // Space opens the per-story menu — everything that acts on ONE story,
         // in one place, instead of five separate footer hints (SQ-1227).
         bind!(plain(Char(' ')), "open-story-menu", Context::Browser);
@@ -429,10 +485,22 @@ impl Default for KeyMap {
         bind!(plain(Char('r')), "refresh-library", Context::Browser);
         bind!(plain(Char('u')), "set-ifdb-url", Context::Browser);
         bind!(plain(Char('/')), "search-ifdb", Context::Browser);
-        bind!(plain(Char('m')), "create-documents-folder", Context::Browser);
+        bind!(
+            plain(Char('m')),
+            "create-documents-folder",
+            Context::Browser
+        );
         bind!(g(Char('U'), false, true), "open-url", Context::Browser);
-        bind!(g(Char('H'), false, true), "download-hints", Context::Browser);
-        bind!(g(Char('D'), false, true), "download-documents", Context::Browser);
+        bind!(
+            g(Char('H'), false, true),
+            "download-hints",
+            Context::Browser
+        );
+        bind!(
+            g(Char('D'), false, true),
+            "download-documents",
+            Context::Browser
+        );
         bind!(plain(Char('s')), "sort-library", Context::Browser);
         bind!(plain(Char('d')), "reverse-sort", Context::Browser);
         // Ctrl+F filters the library's in-memory index; Backspace climbs out of
@@ -476,7 +544,8 @@ impl KeyMap {
 
     /// Return the first (primary) `KeySpec` whose command string starts with `command_name`.
     pub fn primary_key(&self, command_name: &str) -> Option<KeySpec> {
-        self.bindings.iter()
+        self.bindings
+            .iter()
             .find(|(_, s, _)| s.split_whitespace().next() == Some(command_name))
             .map(|(spec, _, _)| *spec)
     }
@@ -489,13 +558,17 @@ impl KeyMap {
     /// `zoom-map in` and comes first, so the name-matching lookup answers `+` for
     /// both directions. A border control that supplies an argument asks this one.
     pub fn primary_key_exact(&self, entry: &str) -> Option<KeySpec> {
-        self.bindings.iter().find(|(_, s, _)| s == entry).map(|(spec, _, _)| *spec)
+        self.bindings
+            .iter()
+            .find(|(_, s, _)| s == entry)
+            .map(|(spec, _, _)| *spec)
     }
 
     /// Iterate all `(KeySpec, &str)` pairs that belong to `ctx`
     /// (for the help screen's per-context listing).
     pub fn for_context(&self, ctx: Context) -> impl Iterator<Item = (&KeySpec, &str)> {
-        self.bindings.iter()
+        self.bindings
+            .iter()
             .filter(move |(_, _, c)| *c == ctx)
             .map(|(s, cmd, _)| (s, cmd.as_str()))
     }
@@ -510,7 +583,9 @@ impl KeyMap {
     /// (`crate::menu`) takes `ctx` so its second caller (`room_menu`, reading
     /// `Context::Map`) shares the lookup rather than re-deriving it.
     pub fn first_key(&self, ctx: Context, command: &str) -> Option<KeySpec> {
-        self.for_context(ctx).find(|(_, cmd)| *cmd == command).map(|(s, _)| *s)
+        self.for_context(ctx)
+            .find(|(_, cmd)| *cmd == command)
+            .map(|(s, _)| *s)
     }
 
     /// The registry command `token` names, if it names one (SQ-0759).
@@ -529,7 +604,13 @@ impl KeyMap {
     /// Returns the resolved `KeyMap` and a list of warning strings for
     /// overrides that were rejected (unknown name, parse error, conflict).
     pub fn resolve(cfg: &crate::config::KeymapConfig) -> (KeyMap, Vec<String>) {
-        let mut km = if cfg.use_defaults { KeyMap::default() } else { KeyMap { bindings: Vec::new() } };
+        let mut km = if cfg.use_defaults {
+            KeyMap::default()
+        } else {
+            KeyMap {
+                bindings: Vec::new(),
+            }
+        };
         let mut warnings = Vec::new();
         for (ctx, section) in [
             (Context::Global, &cfg.global),
@@ -563,7 +644,9 @@ impl KeyMap {
                 // nothing. Say so here instead.
                 if let Some(spec) = crate::slash::find_command(cmd_name) {
                     let in_browser = ctx == Context::Browser;
-                    if (spec.context == Context::Browser) != in_browser && !crate::slash::in_both_worlds(spec) {
+                    if (spec.context == Context::Browser) != in_browser
+                        && !crate::slash::in_both_worlds(spec)
+                    {
                         warnings.push(if in_browser {
                             format!("keymap: '{command}' is a game command and cannot be bound in [keymap.browser]; skipped")
                         } else {
@@ -679,15 +762,54 @@ type DefaultGroup = (&'static str, &'static [DefaultEntry]);
 // A menu entry that cannot work should not be offered. `/open-history` still
 // opens it for anyone who has the setting on.
 const DEFAULT_GROUPS: &[DefaultGroup] = &[
-    ("Session", &[('s', "open-settings", "global settings"), ('g', "reset-game", "restart game")]),
+    (
+        "Session",
+        &[
+            ('s', "open-settings", "global settings"),
+            ('g', "reset-game", "restart game"),
+        ],
+    ),
     // SQ-0599: zoom and centring used to be plain +/- and c while the map held
     // the keyboard. With that focus mode gone they would otherwise be
     // mouse-only, so they live here — on the keys they always used, which keeps
     // the muscle memory intact now that a leader press precedes them.
-    ("Map", &[('+', "zoom-map in", "zoom in"), ('-', "zoom-map out", "zoom out"), ('0', "center-map", "centre on selection")]),
-    ("Map · Layers", &[('p', "move-region new", "region into a new layer"), ('m', "move-region parent", "region into the parent layer"), ('c', "cycle-layer next", "next map layer"), ('z', "mark-maze-layer", "flag layer as a maze")]),
-    ("Map · Edit", &[('r', "rename-room", "rename room"), ('n', "edit-notes", "edit room notes"), ('d', "delete-connection", "delete connection"), ('e', "relabel-edge", "relabel edge")]),
-    ("Map · View", &[('j', "journal-tab map", "map tab"), ('k', "journal-tab room", "room tab"), ('i', "journal-tab inventory", "inventory tab"), ('l', "toggle-portal-labels", "portal labels"), ('v', "toggle-command-panel", "command panel"), ('u', "view-map", "drawn / matrix view")]),
+    (
+        "Map",
+        &[
+            ('+', "zoom-map in", "zoom in"),
+            ('-', "zoom-map out", "zoom out"),
+            ('0', "center-map", "centre on selection"),
+        ],
+    ),
+    (
+        "Map · Layers",
+        &[
+            ('p', "move-region new", "region into a new layer"),
+            ('m', "move-region parent", "region into the parent layer"),
+            ('c', "cycle-layer next", "next map layer"),
+            ('z', "mark-maze-layer", "flag layer as a maze"),
+        ],
+    ),
+    (
+        "Map · Edit",
+        &[
+            ('r', "rename-room", "rename room"),
+            ('n', "edit-notes", "edit room notes"),
+            ('d', "delete-connection", "delete connection"),
+            ('e', "relabel-edge", "relabel edge"),
+        ],
+    ),
+    (
+        "Map · View",
+        &[
+            ('j', "journal-tab map", "map tab"),
+            ('k', "journal-tab room", "room tab"),
+            ('i', "journal-tab inventory", "inventory tab"),
+            ('l', "toggle-portal-labels", "portal labels"),
+            ('v', "toggle-command-panel", "command panel"),
+            ('u', "view-map", "drawn / matrix view"),
+        ],
+    ),
 ];
 
 /// One leader-panel entry: `(leader letter, command-string, optional label)`.
@@ -721,7 +843,10 @@ impl Default for HotkeyLayout {
     fn default() -> Self {
         let prefix: KeySpec = "ctrl+p".parse().expect("ctrl+p must parse");
 
-        let direct = DEFAULT_DIRECT_COMMANDS.iter().map(|s| s.to_string()).collect();
+        let direct = DEFAULT_DIRECT_COMMANDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let groups = DEFAULT_GROUPS
             .iter()
@@ -737,7 +862,11 @@ impl Default for HotkeyLayout {
             })
             .collect();
 
-        HotkeyLayout { prefix, direct, groups }
+        HotkeyLayout {
+            prefix,
+            direct,
+            groups,
+        }
     }
 }
 
@@ -753,7 +882,10 @@ impl HotkeyLayout {
         if let Some(prefix_str) = &cfg.prefix {
             match prefix_str.parse::<KeySpec>() {
                 Ok(spec) => layout.prefix = spec,
-                Err(e) => warnings.push(format!("hotkeys: prefix '{}': {e}; using default", prefix_str)),
+                Err(e) => warnings.push(format!(
+                    "hotkeys: prefix '{}': {e}; using default",
+                    prefix_str
+                )),
             }
         }
 
@@ -775,7 +907,8 @@ impl HotkeyLayout {
         // Override groups if any are specified.
         if !cfg.group.is_empty() {
             let mut groups: Vec<HotkeyGroup> = Vec::new();
-            let mut used_letters: std::collections::HashSet<char> = std::collections::HashSet::new();
+            let mut used_letters: std::collections::HashSet<char> =
+                std::collections::HashSet::new();
 
             for g in &cfg.group {
                 // User-authored entries carry no label — the panel falls back
@@ -801,20 +934,29 @@ impl HotkeyLayout {
                     } else {
                         // Whole entry is the command-string; auto-assign a free letter.
                         if crate::slash::find_command(tokens[0]).is_none() {
-                            warnings.push(format!("hotkeys: group '{}': unknown command '{entry}'; dropped", g.title));
+                            warnings.push(format!(
+                                "hotkeys: group '{}': unknown command '{entry}'; dropped",
+                                g.title
+                            ));
                             continue;
                         }
                         match ('a'..='z').find(|c| !used_letters.contains(c)) {
                             Some(letter) => (letter, entry.clone()),
                             None => {
-                                warnings.push(format!("hotkeys: group '{}': no free letter for '{entry}'; dropped", g.title));
+                                warnings.push(format!(
+                                    "hotkeys: group '{}': no free letter for '{entry}'; dropped",
+                                    g.title
+                                ));
                                 continue;
                             }
                         }
                     };
 
                     if used_letters.contains(&letter) {
-                        warnings.push(format!("hotkeys: group '{}': letter '{}' already used; dropped '{}'", g.title, letter, cmd));
+                        warnings.push(format!(
+                            "hotkeys: group '{}': letter '{}' already used; dropped '{}'",
+                            g.title, letter, cmd
+                        ));
                         continue;
                     }
                     used_letters.insert(letter);
@@ -830,7 +972,8 @@ impl HotkeyLayout {
 
     /// Return the command-string bound to leader letter `key`, if any.
     pub fn leader_command(&self, key: char) -> Option<&str> {
-        self.groups.iter()
+        self.groups
+            .iter()
             .flat_map(|(_, cmds)| cmds.iter())
             .find(|(letter, _, _)| *letter == key)
             .map(|(_, cmd, _)| cmd.as_str())
@@ -878,7 +1021,8 @@ mod tests {
         let event = KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
         assert_eq!(spec, event, "'shift+d' must match Char('D') + SHIFT");
         // Some terminals (and Caps Lock) send the capital with no SHIFT flag.
-        let bare_capital = KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+        let bare_capital =
+            KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
         assert_eq!(spec, bare_capital, "'shift+d' must match a bare Char('D')");
         // …and a plain lowercase 'd' is still a DIFFERENT key.
         let plain = KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
@@ -895,14 +1039,20 @@ mod tests {
     /// terminal also sets SHIFT (most do; the spec forms never did).
     #[test]
     fn shift_tab_and_backtab_specs_match_backtab_with_or_without_shift() {
-        let with_shift = KeySpec::from_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let with_shift =
+            KeySpec::from_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         let without = KeySpec::from_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         for text in ["shift+tab", "backtab"] {
             let spec: KeySpec = text.parse().unwrap();
             assert_eq!(spec, with_shift, "'{text}' must match BackTab + SHIFT");
             assert_eq!(spec, without, "'{text}' must match a bare BackTab");
-            let km = KeyMap { bindings: vec![(spec, "toggle-focus".to_string(), Context::Global)] };
-            assert_eq!(km.lookup(&with_shift, Context::Global), Some("toggle-focus"));
+            let km = KeyMap {
+                bindings: vec![(spec, "toggle-focus".to_string(), Context::Global)],
+            };
+            assert_eq!(
+                km.lookup(&with_shift, Context::Global),
+                Some("toggle-focus")
+            );
             assert_eq!(spec.label(), "Shift+Tab");
         }
         // A terminal that reports Tab + SHIFT instead of BackTab lands there too.
@@ -918,7 +1068,8 @@ mod tests {
     #[test]
     fn punctuation_specs_ignore_the_shift_flag_the_terminal_adds() {
         let spec: KeySpec = "+".parse().unwrap();
-        let plus_shifted = KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT));
+        let plus_shifted =
+            KeySpec::from_key_event(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT));
         assert_eq!(spec, plus_shifted, "Shift+= delivers Char('+') + SHIFT");
         let km = KeyMap::default();
         assert_eq!(km.lookup(&plus_shifted, Context::Anim), Some("zoom-map in"));
@@ -928,11 +1079,22 @@ mod tests {
     #[test]
     fn default_keymap_matches_todays_bindings() {
         let km = KeyMap::default();
-        let g = |code, ctrl, shift| KeySpec { code, ctrl, shift, alt: false };
+        let g = |code, ctrl, shift| KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt: false,
+        };
         use KeyCode::*;
-        assert_eq!(km.lookup(&g(Char('s'), true, false), Context::Global), Some("save-state"));
+        assert_eq!(
+            km.lookup(&g(Char('s'), true, false), Context::Global),
+            Some("save-state")
+        );
         // Map falls through to Global:
-        assert_eq!(km.lookup(&g(Char('s'), true, false), Context::Map), Some("save-state"));
+        assert_eq!(
+            km.lookup(&g(Char('s'), true, false), Context::Map),
+            Some("save-state")
+        );
     }
 
     /// SQ-0599: the map pane no longer takes the keyboard, so the key set that
@@ -941,7 +1103,12 @@ mod tests {
     #[test]
     fn the_map_context_ships_no_default_bindings() {
         let km = KeyMap::default();
-        let g = |code, ctrl, shift| KeySpec { code, ctrl, shift, alt: false };
+        let g = |code, ctrl, shift| KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt: false,
+        };
         use KeyCode::*;
         for spec in [
             g(Char('h'), false, false),
@@ -962,8 +1129,14 @@ mod tests {
             );
         }
         // Global bindings still reach through the map context's fallthrough.
-        assert_eq!(km.lookup(&g(Char('s'), true, false), Context::Map), Some("save-state"));
-        assert_eq!(km.lookup(&g(Char('r'), true, false), Context::Map), Some("restore-state"));
+        assert_eq!(
+            km.lookup(&g(Char('s'), true, false), Context::Map),
+            Some("save-state")
+        );
+        assert_eq!(
+            km.lookup(&g(Char('r'), true, false), Context::Map),
+            Some("restore-state")
+        );
     }
 
     /// SQ-0796: the browser is its own context and does NOT fall through to
@@ -973,17 +1146,31 @@ mod tests {
     #[test]
     fn the_browser_context_stands_alone() {
         let km = KeyMap::default();
-        let g = |code, ctrl, shift| KeySpec { code, ctrl, shift, alt: false };
+        let g = |code, ctrl, shift| KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt: false,
+        };
         use KeyCode::*;
-        assert_eq!(km.lookup(&g(Enter, false, false), Context::Browser), Some("play-story"));
+        assert_eq!(
+            km.lookup(&g(Enter, false, false), Context::Browser),
+            Some("play-story")
+        );
         assert_eq!(
             km.lookup(&g(Enter, false, true), Context::Browser),
             Some("open-launch-options")
         );
         // Ctrl+S saves in the game; in the browser there is nothing to save.
-        assert_eq!(km.lookup(&g(Char('s'), true, false), Context::Browser), None);
+        assert_eq!(
+            km.lookup(&g(Char('s'), true, false), Context::Browser),
+            None
+        );
         // …and `g` opens the cover gallery only there.
-        assert_eq!(km.lookup(&g(Char('g'), false, false), Context::Global), None);
+        assert_eq!(
+            km.lookup(&g(Char('g'), false, false), Context::Global),
+            None
+        );
         assert_eq!(km.lookup(&g(Char('g'), false, false), Context::Map), None);
     }
 
@@ -994,7 +1181,12 @@ mod tests {
     #[test]
     fn ctrl_u_and_ctrl_d_half_page_the_browser_list() {
         let km = KeyMap::default();
-        let g = |code, ctrl, shift| KeySpec { code, ctrl, shift, alt: false };
+        let g = |code, ctrl, shift| KeySpec {
+            code,
+            ctrl,
+            shift,
+            alt: false,
+        };
         use KeyCode::*;
         assert_eq!(
             km.lookup(&g(Char('u'), true, false), Context::Browser),
@@ -1020,11 +1212,25 @@ mod tests {
         cfg.global.insert("ctrl+w".into(), "sort-library".into());
         let (km, warnings) = KeyMap::resolve(&cfg);
         assert_eq!(warnings.len(), 2, "both directions warn: {warnings:?}");
-        assert!(warnings.iter().any(|w| w.contains("game command")), "{warnings:?}");
-        assert!(warnings.iter().any(|w| w.contains("[keymap.browser]")), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("game command")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("[keymap.browser]")),
+            "{warnings:?}"
+        );
         let spec: KeySpec = "ctrl+w".parse().unwrap();
-        assert_eq!(km.lookup(&spec, Context::Browser), None, "the binding was skipped");
-        assert_eq!(km.lookup(&spec, Context::Global), None, "and so was the other one");
+        assert_eq!(
+            km.lookup(&spec, Context::Browser),
+            None,
+            "the binding was skipped"
+        );
+        assert_eq!(
+            km.lookup(&spec, Context::Global),
+            None,
+            "and so was the other one"
+        );
     }
 
     /// SQ-0796: a browser binding from config layers onto the defaults exactly as
@@ -1038,7 +1244,12 @@ mod tests {
         let f5: KeySpec = "f5".parse().unwrap();
         assert_eq!(km.lookup(&f5, Context::Browser), Some("refresh-library"));
         // The shipped `r` survives — an override adds, it does not replace.
-        let r = KeySpec { code: KeyCode::Char('r'), ctrl: false, shift: false, alt: false };
+        let r = KeySpec {
+            code: KeyCode::Char('r'),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_eq!(km.lookup(&r, Context::Browser), Some("refresh-library"));
     }
 
@@ -1048,39 +1259,77 @@ mod tests {
     fn hotkey_layout_default_direct_and_indirect() {
         let layout = HotkeyLayout::default();
         // Direct commands
-        assert!(layout.is_direct_name("center-map"), "center-map should be direct");
+        assert!(
+            layout.is_direct_name("center-map"),
+            "center-map should be direct"
+        );
         assert!(layout.is_direct_name("quit"), "quit should be direct");
-        assert!(layout.is_direct_name("toggle-focus"), "toggle-focus should be direct");
+        assert!(
+            layout.is_direct_name("toggle-focus"),
+            "toggle-focus should be direct"
+        );
         // Non-direct (dialog-only) commands
-        assert!(!layout.is_direct_name("tidy-map"), "tidy-map should NOT be direct");
-        assert!(!layout.is_direct_name("open-settings"), "open-settings should NOT be direct");
+        assert!(
+            !layout.is_direct_name("tidy-map"),
+            "tidy-map should NOT be direct"
+        );
+        assert!(
+            !layout.is_direct_name("open-settings"),
+            "open-settings should NOT be direct"
+        );
         // Groups
-        assert_eq!(layout.groups.len(), 5, "Layout was removed; Session + Map + its three sub-groups remain");
-        assert_eq!(layout.groups[0].0, "Session", "Session leads the panel — it is the group that is not about the map");
+        assert_eq!(
+            layout.groups.len(),
+            5,
+            "Layout was removed; Session + Map + its three sub-groups remain"
+        );
+        assert_eq!(
+            layout.groups[0].0, "Session",
+            "Session leads the panel — it is the group that is not about the map"
+        );
     }
 
     #[test]
     fn hotkey_layout_resolve_custom_direct_and_unknown_name() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
-            direct: Some(vec!["save-state".into(), "quit".into(), "not-a-command".into()]),
-            group: vec![HotkeyGroupConfig { title: "T".into(), commands: vec!["tidy-map".into()] }],
+            direct: Some(vec![
+                "save-state".into(),
+                "quit".into(),
+                "not-a-command".into(),
+            ]),
+            group: vec![HotkeyGroupConfig {
+                title: "T".into(),
+                commands: vec!["tidy-map".into()],
+            }],
         };
         let (layout, warnings) = HotkeyLayout::resolve(&cfg);
         // Specified direct commands are direct
-        assert!(layout.is_direct_name("save-state"), "save-state should be direct");
+        assert!(
+            layout.is_direct_name("save-state"),
+            "save-state should be direct"
+        );
         assert!(layout.is_direct_name("quit"), "quit should be direct");
         // center-map is NOT in custom direct list
-        assert!(!layout.is_direct_name("center-map"), "center-map should NOT be direct with custom list");
+        assert!(
+            !layout.is_direct_name("center-map"),
+            "center-map should NOT be direct with custom list"
+        );
         // Unknown command produces a warning
-        assert!(!warnings.is_empty(), "unknown command in direct should produce warning");
-        assert!(warnings.iter().any(|w| w.contains("not-a-command")), "warning should mention not-a-command");
+        assert!(
+            !warnings.is_empty(),
+            "unknown command in direct should produce warning"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("not-a-command")),
+            "warning should mention not-a-command"
+        );
     }
 
     #[test]
     fn hotkey_layout_resolve_unknown_group_command_dropped() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
             direct: None,
@@ -1091,17 +1340,24 @@ mod tests {
         };
         let (layout, warnings) = HotkeyLayout::resolve(&cfg);
         assert_eq!(layout.groups.len(), 1);
-        assert_eq!(layout.groups[0].1.len(), 1, "unknown command should be dropped from group");
+        assert_eq!(
+            layout.groups[0].1.len(),
+            1,
+            "unknown command should be dropped from group"
+        );
         assert_eq!(layout.groups[0].1[0].1, "tidy-map");
-        assert!(!warnings.is_empty(), "unknown group command should produce warning");
+        assert!(
+            !warnings.is_empty(),
+            "unknown group command should produce warning"
+        );
         assert!(warnings.iter().any(|w| w.contains("totally-fake-cmd")));
     }
 
     #[test]
     fn backtab_cycles_focus_back_by_default() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
         use crate::input::{key_to_action, Action};
         use crate::state::AppState;
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut state = AppState::default();
         // BackTab is typically delivered with no modifiers.
@@ -1133,7 +1389,12 @@ mod tests {
 
     #[test]
     fn backtab_keyspec_label_is_shift_tab() {
-        let spec = KeySpec { code: KeyCode::BackTab, ctrl: false, shift: false, alt: false };
+        let spec = KeySpec {
+            code: KeyCode::BackTab,
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_eq!(spec.label(), "Shift+Tab");
     }
 
@@ -1155,7 +1416,12 @@ mod tests {
     fn reset_game_key_f5_unbound_by_default() {
         // reset-game is leader-only now (SQ-0202); F5 has no default binding.
         let km = KeyMap::default();
-        let f5 = KeySpec { code: KeyCode::F(5), ctrl: false, shift: false, alt: false };
+        let f5 = KeySpec {
+            code: KeyCode::F(5),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_eq!(km.lookup(&f5, Context::Global), None);
     }
 
@@ -1173,7 +1439,12 @@ mod tests {
         // `open-history` did not live, and SQ-1107 put the word reveal there.
         // What matters is that no default binding reaches `open-history` at all.
         let km = KeyMap::default();
-        let f4 = KeySpec { code: KeyCode::F(4), ctrl: false, shift: false, alt: false };
+        let f4 = KeySpec {
+            code: KeyCode::F(4),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_ne!(km.lookup(&f4, Context::Global), Some("open-history"));
         assert_eq!(
             km.primary_key("open-history"),
@@ -1182,12 +1453,17 @@ mod tests {
         );
         let layout = HotkeyLayout::default();
         assert!(
-            !layout.groups.iter().any(|(_, cmds)| cmds.iter().any(|c| c.1 == "open-history")),
+            !layout
+                .groups
+                .iter()
+                .any(|(_, cmds)| cmds.iter().any(|c| c.1 == "open-history")),
             "open-history must not be offered in the leader panel: it is a no-op unless \
              record_turn_history is on, and the panel gives no way to say so"
         );
         assert!(
-            crate::slash::COMMANDS.iter().any(|c| c.name == "open-history"),
+            crate::slash::COMMANDS
+                .iter()
+                .any(|c| c.name == "open-history"),
             "the command itself must remain — this removed a panel row, not a feature"
         );
     }
@@ -1199,22 +1475,36 @@ mod tests {
         let session_group = layout.groups.iter().find(|(title, _)| title == "Session");
         assert!(session_group.is_some(), "Session group should exist");
         let (_, cmds) = session_group.unwrap();
-        assert!(cmds.iter().any(|c| c.1 == "reset-game"), "reset-game should be in Session group");
+        assert!(
+            cmds.iter().any(|c| c.1 == "reset-game"),
+            "reset-game should be in Session group"
+        );
     }
 
     #[test]
     fn toggle_inventory_key_v_unbound_by_default() {
         // toggle-inventory is leader-only now (SQ-0202); v has no default binding.
         let km = KeyMap::default();
-        let spec = KeySpec { code: KeyCode::Char('v'), ctrl: false, shift: false, alt: false };
+        let spec = KeySpec {
+            code: KeyCode::Char('v'),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         let cmd = km.lookup(&spec, Context::Global);
-        assert_eq!(cmd, None, "v should not be bound to toggle-inventory by default");
+        assert_eq!(
+            cmd, None,
+            "v should not be bound to toggle-inventory by default"
+        );
     }
 
     #[test]
     fn toggle_inventory_in_view_group() {
         let layout = HotkeyLayout::default();
-        let view_group = layout.groups.iter().find(|(title, _)| title == "Map \u{b7} View");
+        let view_group = layout
+            .groups
+            .iter()
+            .find(|(title, _)| title == "Map \u{b7} View");
         assert!(view_group.is_some(), "View group should exist");
         let (_, cmds) = view_group.unwrap();
         // SQ-1684: the inventory and room panels are Journal tabs now; each has its
@@ -1222,27 +1512,42 @@ mod tests {
         // popups were mouse-only — which is why nobody found the diagnostics view).
         for tab in ["map", "room", "inventory"] {
             let cmd = format!("journal-tab {tab}");
-            assert!(cmds.iter().any(|c| c.1 == cmd), "{cmd} should be in View group");
+            assert!(
+                cmds.iter().any(|c| c.1 == cmd),
+                "{cmd} should be in View group"
+            );
         }
     }
 
     #[test]
     fn apply_action_set_journal_tab_switches_and_reveals_the_journal() {
-        use mapper::mapper::Mapper;
         use crate::input::apply_action;
         use crate::journal::JournalTab;
         use crate::state::{AppState, Layout};
+        use mapper::mapper::Mapper;
         let mut state = AppState::default();
         let mut mapper = Mapper::default();
         assert_eq!(state.journal_tab, JournalTab::Map);
-        apply_action(Action::SetJournalTab(JournalTab::Inventory), &mut state, &mut mapper);
+        apply_action(
+            Action::SetJournalTab(JournalTab::Inventory),
+            &mut state,
+            &mut mapper,
+        );
         assert_eq!(state.journal_tab, JournalTab::Inventory);
         // Idempotent: the key says "show this tab", not "toggle it".
-        apply_action(Action::SetJournalTab(JournalTab::Inventory), &mut state, &mut mapper);
+        apply_action(
+            Action::SetJournalTab(JournalTab::Inventory),
+            &mut state,
+            &mut mapper,
+        );
         assert_eq!(state.journal_tab, JournalTab::Inventory);
         // A hidden Journal comes back for the tab.
         state.layout = Layout::TranscriptFull;
-        apply_action(Action::SetJournalTab(JournalTab::Room), &mut state, &mut mapper);
+        apply_action(
+            Action::SetJournalTab(JournalTab::Room),
+            &mut state,
+            &mut mapper,
+        );
         assert_eq!(state.layout, Layout::Split);
         assert_eq!(state.journal_tab, JournalTab::Room);
     }
@@ -1252,8 +1557,19 @@ mod tests {
     #[test]
     fn alt_digits_select_journal_tabs_by_default() {
         let km = KeyMap::default();
-        for (digit, cmd) in [('1', "journal-tab map"), ('2', "journal-tab room"), ('3', "journal-tab inventory"), ('4', "journal-tab hints"), ('5', "journal-tab documents")] {
-            let spec = KeySpec { code: KeyCode::Char(digit), ctrl: false, shift: false, alt: true };
+        for (digit, cmd) in [
+            ('1', "journal-tab map"),
+            ('2', "journal-tab room"),
+            ('3', "journal-tab inventory"),
+            ('4', "journal-tab hints"),
+            ('5', "journal-tab documents"),
+        ] {
+            let spec = KeySpec {
+                code: KeyCode::Char(digit),
+                ctrl: false,
+                shift: false,
+                alt: true,
+            };
             assert_eq!(km.lookup(&spec, Context::Global), Some(cmd), "Alt+{digit}");
         }
     }
@@ -1272,7 +1588,12 @@ mod tests {
         assert_eq!(layout.leader_command('f'), None, "centring moved onto '0'");
 
         let km = KeyMap::default();
-        let zero = KeySpec { code: KeyCode::Char('0'), ctrl: false, shift: false, alt: false };
+        let zero = KeySpec {
+            code: KeyCode::Char('0'),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
         assert_eq!(
             km.lookup(&zero, Context::Map),
             None,
@@ -1291,9 +1612,9 @@ mod tests {
 
     #[test]
     fn zoom_reset_action_resets_level() {
-        use mapper::mapper::Mapper;
         use crate::input::apply_action;
         use crate::state::{AppState, Zoom};
+        use mapper::mapper::Mapper;
         let mut state = AppState::default();
         let mut mapper = Mapper::default();
         // Zoom all the way out first.
@@ -1303,8 +1624,14 @@ mod tests {
         assert!(matches!(state.zoom, Zoom::Overview));
         // Reset
         apply_action(Action::ZoomReset, &mut state, &mut mapper);
-        assert_eq!(state.zoom_level, 7, "ZoomReset must restore zoom_level to 7");
-        assert!(matches!(state.zoom, Zoom::Boxes), "ZoomReset must restore Zoom::Boxes");
+        assert_eq!(
+            state.zoom_level, 7,
+            "ZoomReset must restore zoom_level to 7"
+        );
+        assert!(
+            matches!(state.zoom, Zoom::Boxes),
+            "ZoomReset must restore Zoom::Boxes"
+        );
     }
 
     /// Every default binding for a DIRECT command must have ctrl=false and
@@ -1324,7 +1651,12 @@ mod tests {
         let excluded = ["save-state", "restore-state"];
 
         // Arrow key codes — used to allow the additive Shift+Arrow pan aliases.
-        let is_arrow = |c| matches!(c, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down);
+        let is_arrow = |c| {
+            matches!(
+                c,
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+            )
+        };
 
         let mut violations: Vec<String> = Vec::new();
         for (spec, cmd_str, _ctx) in &km.bindings {
@@ -1362,13 +1694,19 @@ mod tests {
         // DEFAULT_DIRECT_COMMANDS are full command-strings; validate the first token.
         for cmd in DEFAULT_DIRECT_COMMANDS {
             let name = cmd.split_whitespace().next().unwrap_or("");
-            assert!(crate::slash::find_command(name).is_some(), "direct command not in registry: {cmd}");
+            assert!(
+                crate::slash::find_command(name).is_some(),
+                "direct command not in registry: {cmd}"
+            );
         }
         // DEFAULT_GROUPS hold (letter, full command-string) pairs; validate the first token.
         for (_title, entries) in DEFAULT_GROUPS {
             for (_letter, cmd, _label) in *entries {
                 let name = cmd.split_whitespace().next().unwrap_or("");
-                assert!(crate::slash::find_command(name).is_some(), "group command not in registry: {cmd}");
+                assert!(
+                    crate::slash::find_command(name).is_some(),
+                    "group command not in registry: {cmd}"
+                );
             }
         }
     }
@@ -1392,12 +1730,19 @@ mod tests {
         assert!(warns0.is_empty());
 
         // use_defaults=false → empty base; only the user binding exists.
-        let mut cfg = KeymapConfig { use_defaults: false, ..Default::default() };
+        let mut cfg = KeymapConfig {
+            use_defaults: false,
+            ..Default::default()
+        };
         cfg.global.insert("ctrl+s".into(), "save-state".into());
         let (km2, warns) = KeyMap::resolve(&cfg);
         let cs: KeySpec = "ctrl+s".parse().unwrap();
         assert_eq!(km2.lookup(&cs, Context::Global), Some("save-state"));
-        assert!(km2.lookup(&"f6".parse().unwrap(), Context::Global).is_none(), "no defaults loaded");
+        assert!(
+            km2.lookup(&"f6".parse().unwrap(), Context::Global)
+                .is_none(),
+            "no defaults loaded"
+        );
         assert!(warns.is_empty());
 
         // Unknown command name → skip + warn.
@@ -1412,7 +1757,9 @@ mod tests {
     #[test]
     fn default_leader_letters_are_unique() {
         let layout = HotkeyLayout::default();
-        let letters: Vec<char> = layout.groups.iter()
+        let letters: Vec<char> = layout
+            .groups
+            .iter()
             .flat_map(|(_, cmds)| cmds.iter().map(|(letter, _, _)| *letter))
             .collect();
         let unique: std::collections::HashSet<char> = letters.iter().copied().collect();
@@ -1431,7 +1778,11 @@ mod tests {
     #[test]
     fn leader_command_resolves_authored_letter() {
         let layout = HotkeyLayout::default();
-        assert_eq!(layout.leader_command('t'), None, "`t` was tidy-map; the Layout group is gone");
+        assert_eq!(
+            layout.leader_command('t'),
+            None,
+            "`t` was tidy-map; the Layout group is gone"
+        );
         assert_eq!(layout.leader_command('r'), Some("rename-room"));
         assert_eq!(layout.leader_command('c'), Some("cycle-layer next"));
         // SQ-0446 Proposal B mnemonics:
@@ -1467,8 +1818,18 @@ mod tests {
     fn no_function_key_carries_a_default_binding() {
         let km = KeyMap::default();
         for n in 1..=12u8 {
-            let spec = KeySpec { code: KeyCode::F(n), ctrl: false, shift: false, alt: false };
-            for ctx in [Context::Global, Context::Map, Context::Anim, Context::Browser] {
+            let spec = KeySpec {
+                code: KeyCode::F(n),
+                ctrl: false,
+                shift: false,
+                alt: false,
+            };
+            for ctx in [
+                Context::Global,
+                Context::Map,
+                Context::Anim,
+                Context::Browser,
+            ] {
                 assert_eq!(
                     km.lookup(&spec, ctx),
                     None,
@@ -1482,7 +1843,10 @@ mod tests {
         for n in [2u8, 3, 4] {
             let ev = crossterm::event::KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE);
             assert!(
-                matches!(crate::input::key_to_command(&s, ev), crate::input::KeyResolve::None),
+                matches!(
+                    crate::input::key_to_command(&s, ev),
+                    crate::input::KeyResolve::None
+                ),
                 "F{n} still resolves to a command",
             );
         }
@@ -1494,14 +1858,16 @@ mod tests {
     #[test]
     fn f_key_specs_still_parse_so_a_player_can_bind_one_by_hand() {
         for n in 1..=12u8 {
-            let spec: KeySpec = format!("f{n}").parse().unwrap_or_else(|e| panic!("f{n}: {e}"));
+            let spec: KeySpec = format!("f{n}")
+                .parse()
+                .unwrap_or_else(|e| panic!("f{n}: {e}"));
             assert_eq!(spec.code, KeyCode::F(n));
         }
     }
 
     #[test]
     fn resolve_parses_letter_prefixed_config_entry() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
             direct: None,
@@ -1512,12 +1878,15 @@ mod tests {
         };
         let (layout, _warnings) = HotkeyLayout::resolve(&cfg);
         assert_eq!(layout.groups.len(), 1);
-        assert!(layout.groups[0].1.iter().any(|(letter, cmd, _)| *letter == 't' && cmd == "tidy-map"));
+        assert!(layout.groups[0]
+            .1
+            .iter()
+            .any(|(letter, cmd, _)| *letter == 't' && cmd == "tidy-map"));
     }
 
     #[test]
     fn resolve_autoassigns_when_letter_omitted() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
             direct: None,
@@ -1527,7 +1896,10 @@ mod tests {
             }],
         };
         let (layout, warnings) = HotkeyLayout::resolve(&cfg);
-        assert!(warnings.is_empty(), "auto-assigning a free letter should not warn: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "auto-assigning a free letter should not warn: {warnings:?}"
+        );
         assert_eq!(layout.groups.len(), 1);
         assert_eq!(layout.groups[0].1.len(), 1);
         assert_eq!(layout.groups[0].1[0].1, "tidy-map");
@@ -1535,7 +1907,7 @@ mod tests {
 
     #[test]
     fn resolve_warns_on_duplicate_letter() {
-        use crate::config::{HotkeysConfig, HotkeyGroupConfig};
+        use crate::config::{HotkeyGroupConfig, HotkeysConfig};
         let cfg = HotkeysConfig {
             prefix: None,
             direct: None,
@@ -1545,8 +1917,15 @@ mod tests {
             }],
         };
         let (layout, warnings) = HotkeyLayout::resolve(&cfg);
-        assert!(!warnings.is_empty(), "duplicate letter should produce a warning");
-        assert_eq!(layout.leader_command('t'), Some("tidy-map"), "first occurrence wins");
+        assert!(
+            !warnings.is_empty(),
+            "duplicate letter should produce a warning"
+        );
+        assert_eq!(
+            layout.leader_command('t'),
+            Some("tidy-map"),
+            "first occurrence wins"
+        );
     }
 
     #[test]
@@ -1559,7 +1938,13 @@ mod tests {
     fn leader_commands_unbound_in_defaults() {
         // Commands trimmed out of the always-active default keymap (SQ-0202) have
         // no default binding at all; they're reachable only through the leader panel.
-        assert_eq!(KeyMap::default().lookup(&"ctrl+e".parse().unwrap(), Context::Global), None);
-        assert_eq!(KeyMap::default().lookup(&"r".parse().unwrap(), Context::Map), None);
+        assert_eq!(
+            KeyMap::default().lookup(&"ctrl+e".parse().unwrap(), Context::Global),
+            None
+        );
+        assert_eq!(
+            KeyMap::default().lookup(&"r".parse().unwrap(), Context::Map),
+            None
+        );
     }
 }

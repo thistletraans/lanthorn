@@ -57,7 +57,10 @@ pub enum SlashOutcome {
     Load(Option<String>),
     /// Reset the app; `map: true` also clears the automapper state; `data: true`
     /// also deletes the game's auto persistent data (VFS cache + aux + auto save).
-    Reset { map: bool, data: bool },
+    Reset {
+        map: bool,
+        data: bool,
+    },
     /// Quit the application.
     Quit,
     /// Exit the current story and return to the story picker (only meaningful
@@ -77,7 +80,9 @@ pub enum SlashOutcome {
     HelpCommand(String),
     /// Print the resolved color scheme to the transcript. `actual` = render each
     /// selector line in its own style instead of the plain meta color.
-    PrintColors { actual: bool },
+    PrintColors {
+        actual: bool,
+    },
     /// Diagnostic: dump the live Glk window layout (sizes, borders, per-window
     /// colours) to the transcript as Meta lines. Handled in `slash_dispatch`.
     DumpWindows,
@@ -322,7 +327,9 @@ pub struct CommandSpec {
     pub dispatch: fn(&[&str]) -> SlashOutcome,
 }
 
-fn err(s: impl Into<String>) -> SlashOutcome { SlashOutcome::Error(s.into()) }
+fn err(s: impl Into<String>) -> SlashOutcome {
+    SlashOutcome::Error(s.into())
+}
 
 /// The command registry — the single source of truth for every command.
 /// Add a new command by adding one entry here (see the module docs); nothing
@@ -331,71 +338,152 @@ fn err(s: impl Into<String>) -> SlashOutcome { SlashOutcome::Error(s.into()) }
 /// `Category::ORDER`.
 pub static COMMANDS: &[CommandSpec] = &[
     // ── Game ──────────────────────────────────────────────────────────────
-    CommandSpec { name: "save-state", category: Category::Game, context: Context::Global,
-        usage: "save-state [name]", description: "save an emulator Save State, optionally to a named slot",
-        dispatch: |a| SlashOutcome::Save(a.first().map(|s| s.to_string())) },
-    CommandSpec { name: "restore-state", category: Category::Game, context: Context::Global,
-        usage: "restore-state [name]", description: "restore an emulator Save State — bare opens the saves dialog to pick one; a name restores that slot directly",
+    CommandSpec {
+        name: "save-state",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "save-state [name]",
+        description: "save an emulator Save State, optionally to a named slot",
+        dispatch: |a| SlashOutcome::Save(a.first().map(|s| s.to_string())),
+    },
+    CommandSpec {
+        name: "restore-state",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "restore-state [name]",
+        description: "restore an emulator Save State — bare opens the saves dialog to pick one; a name restores that slot directly",
         dispatch: |a| match a.first() {
             Some(name) => SlashOutcome::Load(Some(name.to_string())),
             None => SlashOutcome::Action(crate::input::Action::OpenSaves),
-        } },
-    CommandSpec { name: "reset-game", category: Category::Game, context: Context::Global,
-        usage: "reset-game [map] [data]", description: "restart the game — bare opens the options dialog; 'map' also clears the map, 'data' deletes the game's saved progress/cache so it starts fresh",
-        dispatch: |a| SlashOutcome::Reset { map: a.contains(&"map"), data: a.contains(&"data") } },
-    CommandSpec { name: "set-transcript", category: Category::Game, context: Context::Global,
-        usage: "set-transcript on|off", description: "start or stop the story's own transcript, written to script.txt in the game's folder — the same switch a game's SCRIPT command throws, for the many that have none (launch with --transcript-file for a live, engine-neutral stream instead)",
+        },
+    },
+    CommandSpec {
+        name: "reset-game",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "reset-game [map] [data]",
+        description: "restart the game — bare opens the options dialog; 'map' also clears the map, 'data' deletes the game's saved progress/cache so it starts fresh",
+        dispatch: |a| SlashOutcome::Reset {
+            map: a.contains(&"map"),
+            data: a.contains(&"data"),
+        },
+    },
+    CommandSpec {
+        name: "set-transcript",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "set-transcript on|off",
+        description: "start or stop the story's own transcript, written to script.txt in the game's folder — the same switch a game's SCRIPT command throws, for the many that have none (launch with --transcript-file for a live, engine-neutral stream instead)",
         dispatch: |a| match a.first().copied() {
-            Some("on")  => SlashOutcome::SetTranscript(true),
+            Some("on") => SlashOutcome::SetTranscript(true),
             Some("off") => SlashOutcome::SetTranscript(false),
             _ => err("set-transcript requires an argument: on | off"),
-        } },
-    CommandSpec { name: "quit", category: Category::Game, context: Context::Global,
-        usage: "quit", description: "exit lanthorn",
-        dispatch: |_| SlashOutcome::Quit },
-    CommandSpec { name: "quit-to-library", category: Category::Game, context: Context::Global,
-        usage: "quit-to-library", description: "exit the current story and return to the story library",
-        dispatch: |_| SlashOutcome::QuitToLibrary },
-    CommandSpec { name: "download-documents", category: Category::Game, context: Context::Global,
-        usage: "download-documents", description: "choose manuals, feelies and maps listed on IFDB for this game and save them to its documents folder",
-        dispatch: |_| SlashOutcome::DownloadDocuments },
-    CommandSpec { name: "open-hints", category: Category::Game, context: Context::Global,
-        usage: "open-hints", description: "show the Journal's Hints tab, starting the hint session if needed (the keyboard stays in the story)",
-        dispatch: |_| SlashOutcome::OpenHints },
-    CommandSpec { name: "open-history", category: Category::Game, context: Context::Global,
-        usage: "open-history", description: "open the rewind/replay history",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenHistory) },
-    CommandSpec { name: "toggle-command-panel", category: Category::Game, context: Context::Global,
-        usage: "toggle-command-panel", description: "open or close the command panel; remembered per story",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenCommandBand) },
-    CommandSpec { name: "cycle-panel", category: Category::Game, context: Context::Global,
-        usage: "cycle-panel", description: "cycle command panel → none; persisted per-game",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::CyclePanel) },
-    CommandSpec { name: "toggle-timed-input", category: Category::Game, context: Context::Global,
-        usage: "toggle-timed-input", description: "toggle honoring the game's timed-input timers",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleTimedInput) },
-    CommandSpec { name: "toggle-sound", category: Category::Game, context: Context::Global,
-        usage: "toggle-sound", description: "toggle audio playback (bleeps + sampled sounds)",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleSound) },
-    CommandSpec { name: "volume", category: Category::Game, context: Context::Global,
-        usage: "volume <0-100>", description: "set the master audio volume (0-100)",
+        },
+    },
+    CommandSpec {
+        name: "quit",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "quit",
+        description: "exit lanthorn",
+        dispatch: |_| SlashOutcome::Quit,
+    },
+    CommandSpec {
+        name: "quit-to-library",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "quit-to-library",
+        description: "exit the current story and return to the story library",
+        dispatch: |_| SlashOutcome::QuitToLibrary,
+    },
+    CommandSpec {
+        name: "download-documents",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "download-documents",
+        description: "choose manuals, feelies and maps listed on IFDB for this game and save them to its documents folder",
+        dispatch: |_| SlashOutcome::DownloadDocuments,
+    },
+    CommandSpec {
+        name: "open-hints",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "open-hints",
+        description: "show the Journal's Hints tab, starting the hint session if needed (the keyboard stays in the story)",
+        dispatch: |_| SlashOutcome::OpenHints,
+    },
+    CommandSpec {
+        name: "open-history",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "open-history",
+        description: "open the rewind/replay history",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenHistory),
+    },
+    CommandSpec {
+        name: "toggle-command-panel",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "toggle-command-panel",
+        description: "open or close the command panel; remembered per story",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenCommandBand),
+    },
+    CommandSpec {
+        name: "cycle-panel",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "cycle-panel",
+        description: "cycle command panel → none; persisted per-game",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::CyclePanel),
+    },
+    CommandSpec {
+        name: "toggle-timed-input",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "toggle-timed-input",
+        description: "toggle honoring the game's timed-input timers",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleTimedInput),
+    },
+    CommandSpec {
+        name: "toggle-sound",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "toggle-sound",
+        description: "toggle audio playback (bleeps + sampled sounds)",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleSound),
+    },
+    CommandSpec {
+        name: "volume",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "volume <0-100>",
+        description: "set the master audio volume (0-100)",
         dispatch: |a| match a.first().and_then(|s| s.parse::<u8>().ok()) {
             Some(v) if v <= 100 => SlashOutcome::Action(crate::input::Action::SetVolume(v)),
             _ => err("volume requires an integer 0-100 (e.g. volume 60)"),
-        } },
-    CommandSpec { name: "play-sound", category: Category::Game, context: Context::Global,
-        usage: "play-sound [n]", description: "diagnostic: list Snd resources, or play resource n",
+        },
+    },
+    CommandSpec {
+        name: "play-sound",
+        category: Category::Game,
+        context: Context::Global,
+        usage: "play-sound [n]",
+        description: "diagnostic: list Snd resources, or play resource n",
         dispatch: |a| match a.first() {
             None => SlashOutcome::PlaySound(None),
             Some(s) => match s.parse::<u32>() {
                 Ok(n) => SlashOutcome::PlaySound(Some(n)),
                 Err(_) => err(format!("play-sound: expected a resource number, got '{s}'")),
             },
-        } },
-
+        },
+    },
     // ── Map ───────────────────────────────────────────────────────────────
-    CommandSpec { name: "pan-map", category: Category::Map, context: Context::Map,
-        usage: "pan-map <dx> <dy>", description: "pan the map by dx columns and dy rows",
+    CommandSpec {
+        name: "pan-map",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "pan-map <dx> <dy>",
+        description: "pan the map by dx columns and dy rows",
         dispatch: |a| {
             let dx = a.first().and_then(|s| s.parse::<i32>().ok());
             let dy = a.get(1).and_then(|s| s.parse::<i32>().ok());
@@ -403,9 +491,14 @@ pub static COMMANDS: &[CommandSpec] = &[
                 (Some(x), Some(y)) => SlashOutcome::Action(crate::input::Action::Pan(x, y)),
                 _ => err("pan-map requires two integers (e.g. pan-map -3 0)"),
             }
-        } },
-    CommandSpec { name: "zoom-map", category: Category::Map, context: Context::Map,
-        usage: "zoom-map in|out|reset|<n>", description: "zoom the map in/out, reset, or step by signed n",
+        },
+    },
+    CommandSpec {
+        name: "zoom-map",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "zoom-map in|out|reset|<n>",
+        description: "zoom the map in/out, reset, or step by signed n",
         dispatch: |a| {
             use crate::input::Action;
             match a.first().copied() {
@@ -418,19 +511,36 @@ pub static COMMANDS: &[CommandSpec] = &[
                     // usage's "step by signed n" a lie — `zoom-map 5` moved exactly as far as
                     // `zoom-map in`.
                     Ok(n) => SlashOutcome::Action(Action::ZoomBy(n)),
-                    Err(_) => err(format!("zoom-map: expected in|out|reset|<integer>, got '{s}'")),
+                    Err(_) => err(format!(
+                        "zoom-map: expected in|out|reset|<integer>, got '{s}'"
+                    )),
                 },
                 None => err("zoom-map requires an argument: in|out|reset|<n>"),
             }
-        } },
-    CommandSpec { name: "center-map", category: Category::Map, context: Context::Map,
-        usage: "center-map", description: "re-center the map on the selected room, or the current one",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::Recenter) },
-    CommandSpec { name: "tidy-map", category: Category::Map, context: Context::Map,
-        usage: "tidy-map", description: "re-run the layout tidy",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::Retidy) },
-    CommandSpec { name: "cycle-layer", category: Category::Map, context: Context::Map,
-        usage: "cycle-layer next|prev|<n>", description: "switch map layer; n is a signed delta",
+        },
+    },
+    CommandSpec {
+        name: "center-map",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "center-map",
+        description: "re-center the map on the selected room, or the current one",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::Recenter),
+    },
+    CommandSpec {
+        name: "tidy-map",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "tidy-map",
+        description: "re-run the layout tidy",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::Retidy),
+    },
+    CommandSpec {
+        name: "cycle-layer",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "cycle-layer next|prev|<n>",
+        description: "switch map layer; n is a signed delta",
         dispatch: |a| {
             use crate::input::Action;
             match a.first().copied() {
@@ -438,13 +548,20 @@ pub static COMMANDS: &[CommandSpec] = &[
                 Some("prev") => SlashOutcome::Action(Action::CycleLayer(-1)),
                 Some(s) => match s.parse::<i32>() {
                     Ok(n) => SlashOutcome::Action(Action::CycleLayer(n)),
-                    Err(_) => err(format!("cycle-layer: expected next|prev|<integer delta>, got '{s}'")),
+                    Err(_) => err(format!(
+                        "cycle-layer: expected next|prev|<integer delta>, got '{s}'"
+                    )),
                 },
                 None => err("cycle-layer requires an argument: next|prev|<n>"),
             }
-        } },
-    CommandSpec { name: "select-room", category: Category::Map, context: Context::Map,
-        usage: "select-room next|prev", description: "move the room selection",
+        },
+    },
+    CommandSpec {
+        name: "select-room",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "select-room next|prev",
+        description: "move the room selection",
         dispatch: |a| {
             use crate::input::Action;
             match a.first().copied() {
@@ -452,26 +569,55 @@ pub static COMMANDS: &[CommandSpec] = &[
                 Some("prev") => SlashOutcome::Action(Action::SelectPrev),
                 _ => err("select-room requires an argument: next|prev"),
             }
-        } },
-    CommandSpec { name: "rename-room", category: Category::Map, context: Context::Map,
-        usage: "rename-room", description: "rename the selected room",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::RenameRoom) },
-    CommandSpec { name: "rename-layer", category: Category::Map, context: Context::Map,
-        usage: "rename-layer", description: "rename the current layer",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::RenameLayer) },
-    CommandSpec { name: "edit-notes", category: Category::Map, context: Context::Map,
-        usage: "edit-notes", description: "edit the selected room's notes",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::EditNotes) },
-    CommandSpec { name: "delete-connection", category: Category::Map, context: Context::Map,
-        usage: "delete-connection", description: "delete the selected connection",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::DeleteSelectedConnection) },
-    CommandSpec { name: "relabel-edge", category: Category::Map, context: Context::Map,
-        usage: "relabel-edge", description: "relabel the selected edge",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::RelabelSelectedEdge) },
+        },
+    },
+    CommandSpec {
+        name: "rename-room",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "rename-room",
+        description: "rename the selected room",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::RenameRoom),
+    },
+    CommandSpec {
+        name: "rename-layer",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "rename-layer",
+        description: "rename the current layer",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::RenameLayer),
+    },
+    CommandSpec {
+        name: "edit-notes",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "edit-notes",
+        description: "edit the selected room's notes",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::EditNotes),
+    },
+    CommandSpec {
+        name: "delete-connection",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "delete-connection",
+        description: "delete the selected connection",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::DeleteSelectedConnection),
+    },
+    CommandSpec {
+        name: "relabel-edge",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "relabel-edge",
+        description: "relabel the selected edge",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::RelabelSelectedEdge),
+    },
     // SQ-0439: peel and merge were always the same operation — re-home a set of rooms onto a
     // layer — differing only in whether the destination is minted or named. `peel-layer` and
     // `merge-layer` are retired in favour of the one verb that says so.
-    CommandSpec { name: "move-region", category: Category::Map, context: Context::Map,
+    CommandSpec {
+        name: "move-region",
+        category: Category::Map,
+        context: Context::Map,
         usage: "move-region [new|parent|layer] [direction]",
         description: "re-home the selected room's region onto a fresh layer, its parent, or any named layer; bare picks both when only one choice is possible",
         // The destination may be a layer NAME with spaces in it ("Dead End"), and the seam is an
@@ -479,236 +625,499 @@ pub static COMMANDS: &[CommandSpec] = &[
         // to `apply_action`, which has the live layer list to resolve it against. That includes
         // the EMPTY remainder — bare `move-region` auto-picks the seam and the destination when
         // each has only one possibility, which only the graph can answer (SQ-0439).
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::MoveRegion(a.join(" "))) },
-    CommandSpec { name: "toggle-inspector", category: Category::Map, context: Context::Map,
-        usage: "toggle-inspector", description: "show the Journal's Room tab on its diagnostics view (flips back to info when already there)",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleRoomDiagnostics) },
-    CommandSpec { name: "load-map", category: Category::Map, context: Context::Global,
-        usage: "load-map <path>", description: "load a standalone map file into the current session",
+        dispatch: |a| SlashOutcome::Action(crate::input::Action::MoveRegion(a.join(" "))),
+    },
+    CommandSpec {
+        name: "toggle-inspector",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "toggle-inspector",
+        description: "show the Journal's Room tab on its diagnostics view (flips back to info when already there)",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleRoomDiagnostics),
+    },
+    CommandSpec {
+        name: "load-map",
+        category: Category::Map,
+        context: Context::Global,
+        usage: "load-map <path>",
+        description: "load a standalone map file into the current session",
         dispatch: |a| match a.first() {
             Some(p) => SlashOutcome::LoadMap(p.to_string()),
             None => SlashOutcome::Error("load-map: a file path is required".into()),
-        } },
-    CommandSpec { name: "toggle-room-numbers", category: Category::Map, context: Context::Global,
-        usage: "toggle-room-numbers", description: "toggle room-number labels",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleRoomNumbers) },
-    CommandSpec { name: "view-map", category: Category::Map, context: Context::Global,
-        usage: "view-map [drawn|matrix]", description: "how the active layer draws: bare cycles, a name sets it",
+        },
+    },
+    CommandSpec {
+        name: "toggle-room-numbers",
+        category: Category::Map,
+        context: Context::Global,
+        usage: "toggle-room-numbers",
+        description: "toggle room-number labels",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleRoomNumbers),
+    },
+    CommandSpec {
+        name: "view-map",
+        category: Category::Map,
+        context: Context::Global,
+        usage: "view-map [drawn|matrix]",
+        description: "how the active layer draws: bare cycles, a name sets it",
         dispatch: |a| {
             use crate::input::Action;
             use mapper::layer::MapView;
             match a.first().copied() {
                 None => SlashOutcome::Action(Action::ViewMap(None)),
-                Some(s) if s.eq_ignore_ascii_case("drawn") => SlashOutcome::Action(Action::ViewMap(Some(MapView::Drawn))),
-                Some(s) if s.eq_ignore_ascii_case("matrix") => SlashOutcome::Action(Action::ViewMap(Some(MapView::Matrix))),
+                Some(s) if s.eq_ignore_ascii_case("drawn") => {
+                    SlashOutcome::Action(Action::ViewMap(Some(MapView::Drawn)))
+                }
+                Some(s) if s.eq_ignore_ascii_case("matrix") => {
+                    SlashOutcome::Action(Action::ViewMap(Some(MapView::Matrix)))
+                }
                 Some(s) => err(format!("view-map: '{s}' is not a view (drawn | matrix)")),
             }
-        } },
-    CommandSpec { name: "mark-maze-layer", category: Category::Map, context: Context::Map,
-        usage: "mark-maze-layer", description: "flag the active layer as a maze (defaults it to the matrix view)",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::MarkMazeLayer) },
-        CommandSpec { name: "toggle-alignment", category: Category::Map, context: Context::Global,
-        usage: "toggle-alignment", description: "toggle alignment guides",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleAlignment) },
-    CommandSpec { name: "toggle-portal-labels", category: Category::Map, context: Context::Global,
-        usage: "toggle-portal-labels", description: "toggle portal labels",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::TogglePortalLabels) },
+        },
+    },
+    CommandSpec {
+        name: "mark-maze-layer",
+        category: Category::Map,
+        context: Context::Map,
+        usage: "mark-maze-layer",
+        description: "flag the active layer as a maze (defaults it to the matrix view)",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::MarkMazeLayer),
+    },
+    CommandSpec {
+        name: "toggle-alignment",
+        category: Category::Map,
+        context: Context::Global,
+        usage: "toggle-alignment",
+        description: "toggle alignment guides",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleAlignment),
+    },
+    CommandSpec {
+        name: "toggle-portal-labels",
+        category: Category::Map,
+        context: Context::Global,
+        usage: "toggle-portal-labels",
+        description: "toggle portal labels",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::TogglePortalLabels),
+    },
     // ── View ──────────────────────────────────────────────────────────────
-    CommandSpec { name: "toggle-map", category: Category::View, context: Context::Global,
-        usage: "toggle-map", description: "show or hide the Journal (the map's panel); persisted per-game",
-        dispatch: |_a| SlashOutcome::Action(crate::input::Action::ToggleMap) },
-    CommandSpec { name: "toggle-focus", category: Category::View, context: Context::Global,
-        usage: "toggle-focus", description: "switch focus between panes",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleFocus) },
-    CommandSpec { name: "journal-tab", category: Category::View, context: Context::Global,
-        usage: "journal-tab <map|room|inventory|hints|documents|notes>", description: "show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story",
-        dispatch: |a| match a.first().copied() {
-            None => err("journal-tab: a tab name is required (map | room | inventory | hints | documents | notes)".to_string()),
+    CommandSpec {
+        name: "toggle-map",
+        category: Category::View,
+        context: Context::Global,
+        usage: "toggle-map",
+        description: "show or hide the Journal (the map's panel); persisted per-game",
+        dispatch: |_a| SlashOutcome::Action(crate::input::Action::ToggleMap),
+    },
+    CommandSpec {
+        name: "toggle-focus",
+        category: Category::View,
+        context: Context::Global,
+        usage: "toggle-focus",
+        description: "switch focus between panes",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleFocus),
+    },
+    CommandSpec {
+        name: "journal-tab",
+        category: Category::View,
+        context: Context::Global,
+        usage: "journal-tab <map|room|inventory|files|hints|documents|notes>",
+        description: "show a Journal tab or Files subtab, revealing it if hidden; remembered per story",
+        dispatch: |a| {
+            match a.first().copied() {
+            None => err("journal-tab: a tab name is required (map | room | inventory | files | hints | documents | notes)".to_string()),
             Some(name) => match crate::journal::JournalTab::from_name(name) {
                 Some(tab) => SlashOutcome::Action(crate::input::Action::SetJournalTab(tab)),
-                None => err(format!("journal-tab: '{name}' is not a tab (map | room | inventory | hints | documents | notes)")),
+                None => err(format!("journal-tab: '{name}' is not a tab or Files subtab (map | room | inventory | files | hints | documents | notes)")),
             },
-        } },
-    CommandSpec { name: "journal-next-tab", category: Category::View, context: Context::Global,
-        usage: "journal-next-tab", description: "show the Journal's next tab, wrapping",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::JournalStepTab(true)) },
-    CommandSpec { name: "journal-prev-tab", category: Category::View, context: Context::Global,
-        usage: "journal-prev-tab", description: "show the Journal's previous tab, wrapping",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::JournalStepTab(false)) },
-    CommandSpec { name: "filter-items", category: Category::View, context: Context::Global,
-        usage: "filter-items [query]", description: "filter the Journal's Inventory tab (both Carrying and Elsewhere) to items matching query; no query clears the filter",
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::SetInventoryFilter(
-            if a.is_empty() { None } else { Some(a.join(" ")) }
-        )) },
-    CommandSpec { name: "open-document", category: Category::View, context: Context::Global,
-        usage: "open-document", description: "open the selected document in the Journal's Documents tab: text in a pager, images in place, PDFs in the system viewer",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::DocTabOpen(None)) },
-    CommandSpec { name: "close-document", category: Category::View, context: Context::Global,
-        usage: "close-document", description: "close the open document and return to the Documents tab's list",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::DocTabClose) },
-    CommandSpec { name: "select-document", category: Category::View, context: Context::Global,
-        usage: "select-document <n>", description: "move the Documents tab's selection by signed n rows",
+        }
+        },
+    },
+    CommandSpec {
+        name: "journal-next-tab",
+        category: Category::View,
+        context: Context::Global,
+        usage: "journal-next-tab",
+        description: "show the Journal's next tab, wrapping",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::JournalStepTab(true)),
+    },
+    CommandSpec {
+        name: "journal-prev-tab",
+        category: Category::View,
+        context: Context::Global,
+        usage: "journal-prev-tab",
+        description: "show the Journal's previous tab, wrapping",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::JournalStepTab(false)),
+    },
+    CommandSpec {
+        name: "filter-items",
+        category: Category::View,
+        context: Context::Global,
+        usage: "filter-items [query]",
+        description: "filter the Journal's Inventory tab (both Carrying and Elsewhere) to items matching query; no query clears the filter",
+        dispatch: |a| {
+            SlashOutcome::Action(crate::input::Action::SetInventoryFilter(if a.is_empty() {
+                None
+            } else {
+                Some(a.join(" "))
+            }))
+        },
+    },
+    CommandSpec {
+        name: "open-document",
+        category: Category::View,
+        context: Context::Global,
+        usage: "open-document",
+        description: "open the selected document in the Journal's Documents tab: text in a pager, images in place, PDFs in the system viewer",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::DocTabOpen(None)),
+    },
+    CommandSpec {
+        name: "close-document",
+        category: Category::View,
+        context: Context::Global,
+        usage: "close-document",
+        description: "close the open document and return to the Documents tab's list",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::DocTabClose),
+    },
+    CommandSpec {
+        name: "select-document",
+        category: Category::View,
+        context: Context::Global,
+        usage: "select-document <n>",
+        description: "move the Documents tab's selection by signed n rows",
         dispatch: |a| match a.first().and_then(|s| s.parse::<i32>().ok()) {
             Some(n) => SlashOutcome::Action(crate::input::Action::DocTabSelect(n)),
             None => err("select-document requires a signed integer (e.g. select-document 1)"),
-        } },
-    CommandSpec { name: "scroll-document", category: Category::View, context: Context::Global,
-        usage: "scroll-document <n>|page-up|page-down", description: "scroll the open document (or the Documents list) by signed n lines or a page",
+        },
+    },
+    CommandSpec {
+        name: "scroll-document",
+        category: Category::View,
+        context: Context::Global,
+        usage: "scroll-document <n>|page-up|page-down",
+        description: "scroll the open document (or the Documents list) by signed n lines or a page",
         dispatch: |a| match a.first().copied() {
             Some("page-up") => SlashOutcome::Action(crate::input::Action::DocTabPage(-1)),
             Some("page-down") => SlashOutcome::Action(crate::input::Action::DocTabPage(1)),
             Some(s) => match s.parse::<i32>() {
                 Ok(n) => SlashOutcome::Action(crate::input::Action::DocTabScroll(n)),
-                Err(_) => err(format!("scroll-document: expected a signed integer, page-up or page-down, got '{s}'")),
+                Err(_) => err(format!(
+                    "scroll-document: expected a signed integer, page-up or page-down, got '{s}'"
+                )),
             },
             None => err("scroll-document requires a number of lines, page-up or page-down"),
-        } },
-    CommandSpec { name: "toggle-status-bar", category: Category::View, context: Context::Global,
-        usage: "toggle-status-bar", description: "toggle the status/score bar",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleStatusBar) },
-    CommandSpec { name: "resize-panes", category: Category::View, context: Context::Global,
-        usage: "resize-panes", description: "enter interactive pane-resize mode",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ResizePanes) },
-    CommandSpec { name: "reset-pane-size", category: Category::View, context: Context::Global,
-        usage: "reset-pane-size", description: "reset all pane sizes to their defaults",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ResizeReset) },
-
+        },
+    },
+    CommandSpec {
+        name: "toggle-status-bar",
+        category: Category::View,
+        context: Context::Global,
+        usage: "toggle-status-bar",
+        description: "toggle the status/score bar",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleStatusBar),
+    },
+    CommandSpec {
+        name: "resize-panes",
+        category: Category::View,
+        context: Context::Global,
+        usage: "resize-panes",
+        description: "enter interactive pane-resize mode",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ResizePanes),
+    },
+    CommandSpec {
+        name: "reset-pane-size",
+        category: Category::View,
+        context: Context::Global,
+        usage: "reset-pane-size",
+        description: "reset all pane sizes to their defaults",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ResizeReset),
+    },
     // ── Transcript ────────────────────────────────────────────────────────
-    CommandSpec { name: "search-transcript", category: Category::Transcript, context: Context::Global,
-        usage: "search-transcript [query]", description: "search the transcript; no query repeats the last search",
-        dispatch: |a| if a.is_empty() { SlashOutcome::Search(None) } else { SlashOutcome::Search(Some(a.join(" "))) } },
-    CommandSpec { name: "filter-transcript", category: Category::Transcript, context: Context::Global,
-        usage: "filter-transcript story|meta|both", description: "filter the transcript by category",
+    CommandSpec {
+        name: "search-transcript",
+        category: Category::Transcript,
+        context: Context::Global,
+        usage: "search-transcript [query]",
+        description: "search the transcript; no query repeats the last search",
+        dispatch: |a| {
+            if a.is_empty() {
+                SlashOutcome::Search(None)
+            } else {
+                SlashOutcome::Search(Some(a.join(" ")))
+            }
+        },
+    },
+    CommandSpec {
+        name: "filter-transcript",
+        category: Category::Transcript,
+        context: Context::Global,
+        usage: "filter-transcript story|meta|both",
+        description: "filter the transcript by category",
         dispatch: |a| match a.first().copied() {
             Some("story") => SlashOutcome::Filter(TranscriptFilterArg::Story),
-            Some("meta")  => SlashOutcome::Filter(TranscriptFilterArg::Meta),
-            Some("both")  => SlashOutcome::Filter(TranscriptFilterArg::Both),
+            Some("meta") => SlashOutcome::Filter(TranscriptFilterArg::Meta),
+            Some("both") => SlashOutcome::Filter(TranscriptFilterArg::Both),
             _ => err("filter-transcript: use story | meta | both"),
-        } },
-    CommandSpec { name: "export-transcript", category: Category::Transcript, context: Context::Global,
-        usage: "export-transcript [file]", description: "export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead)",
-        dispatch: |a| SlashOutcome::Export(a.first().map(|s| s.to_string())) },
-    CommandSpec { name: "toggle-zen-mode", category: Category::Transcript, context: Context::Global,
-        usage: "toggle-zen-mode", description: "at the live bottom, dim earlier transcript lines and mark your latest command; scrollback is unchanged (persisted)",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleZenMode) },
-
+        },
+    },
+    CommandSpec {
+        name: "export-transcript",
+        category: Category::Transcript,
+        context: Context::Global,
+        usage: "export-transcript [file]",
+        description: "export the visible transcript once; default path when omitted (launch with --transcript-file for a live, appending stream instead)",
+        dispatch: |a| SlashOutcome::Export(a.first().map(|s| s.to_string())),
+    },
+    CommandSpec {
+        name: "toggle-zen-mode",
+        category: Category::Transcript,
+        context: Context::Global,
+        usage: "toggle-zen-mode",
+        description: "at the live bottom, dim earlier transcript lines and mark your latest command; scrollback is unchanged (persisted)",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleZenMode),
+    },
     // ── Style ─────────────────────────────────────────────────────────────
-    CommandSpec { name: "open-settings", category: Category::Style, context: Context::Global,
-        usage: "open-settings", description: "open the global settings screen",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenConfig) },
-    CommandSpec { name: "reload-style", category: Category::Style, context: Context::Global,
-        usage: "reload-style", description: "reload style.toml from disk",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ReloadStyle) },
-    CommandSpec { name: "toggle-watch", category: Category::Style, context: Context::Global,
-        usage: "toggle-watch", description: "toggle live style-file watching",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleWatch) },
-    CommandSpec { name: "print-colors", category: Category::Style, context: Context::Global,
-        usage: "print-colors [color]", description: "print the current color scheme (color = actual colors)",
-        dispatch: |a| SlashOutcome::PrintColors { actual: a.first() == Some(&"color") } },
-    CommandSpec { name: "set-game-colours", category: Category::Style, context: Context::Global,
-        usage: "set-game-colours on|off|auto", description: "force this game's own colours on/off (auto follows garglk.ini/global); persisted per-game",
+    CommandSpec {
+        name: "open-settings",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "open-settings",
+        description: "open the global settings screen",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::OpenConfig),
+    },
+    CommandSpec {
+        name: "reload-style",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "reload-style",
+        description: "reload style.toml from disk",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ReloadStyle),
+    },
+    CommandSpec {
+        name: "toggle-watch",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "toggle-watch",
+        description: "toggle live style-file watching",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::ToggleWatch),
+    },
+    CommandSpec {
+        name: "print-colors",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "print-colors [color]",
+        description: "print the current color scheme (color = actual colors)",
+        dispatch: |a| SlashOutcome::PrintColors {
+            actual: a.first() == Some(&"color"),
+        },
+    },
+    CommandSpec {
+        name: "set-game-colours",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-game-colours on|off|auto",
+        description: "force this game's own colours on/off (auto follows garglk.ini/global); persisted per-game",
         dispatch: |a| match a.first().copied() {
-            Some("on")   => SlashOutcome::SetGameColours(Some(true)),
-            Some("off")  => SlashOutcome::SetGameColours(Some(false)),
+            Some("on") => SlashOutcome::SetGameColours(Some(true)),
+            Some("off") => SlashOutcome::SetGameColours(Some(false)),
             Some("auto") => SlashOutcome::SetGameColours(None),
             _ => err("set-game-colours requires an argument: on | off | auto"),
-        } },
-    CommandSpec { name: "set-v6-render", category: Category::Style, context: Context::Global,
-        usage: "set-v6-render [hybrid|raster|extended|auto]", description: "switch this game's v6 render mode — bare cycles hybrid → raster → extended, auto inherits the global setting; persisted per-game",
+        },
+    },
+    CommandSpec {
+        name: "set-v6-render",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-v6-render [hybrid|raster|extended|auto]",
+        description: "switch this game's v6 render mode — bare cycles hybrid → raster → extended, auto inherits the global setting; persisted per-game",
         dispatch: |a| {
             use crate::config::V6RenderMode;
             match a.first().copied() {
                 None => SlashOutcome::SetV6Render(V6RenderArg::Cycle),
-                Some("hybrid")    => SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Hybrid)),
-                Some("raster")    => SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Raster)),
-                Some("extended")  => SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Extended)),
-                Some("auto")      => SlashOutcome::SetV6Render(V6RenderArg::Auto),
-                Some(s) => err(format!("set-v6-render: unknown mode '{s}' (hybrid | raster | extended | auto, or bare to cycle)")),
+                Some("hybrid") => {
+                    SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Hybrid))
+                }
+                Some("raster") => {
+                    SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Raster))
+                }
+                Some("extended") => {
+                    SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Extended))
+                }
+                Some("auto") => SlashOutcome::SetV6Render(V6RenderArg::Auto),
+                Some(s) => err(format!(
+                    "set-v6-render: unknown mode '{s}' (hybrid | raster | extended | auto, or bare to cycle)"
+                )),
             }
-        } },
-    CommandSpec { name: "set-glk-fit", category: Category::Style, context: Context::Global,
-        usage: "set-glk-fit [stretch|aspect|auto]", description: "how a design-size Glulx game fills the pane — stretch fills it, aspect keeps the art's proportions with a letterbox; bare toggles, auto inherits the global setting; persisted per-game",
+        },
+    },
+    CommandSpec {
+        name: "set-glk-fit",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-glk-fit [stretch|aspect|auto]",
+        description: "how a design-size Glulx game fills the pane — stretch fills it, aspect keeps the art's proportions with a letterbox; bare toggles, auto inherits the global setting; persisted per-game",
         dispatch: |a| {
             use crate::glk_cfg::GlkFitMode;
             match a.first().copied() {
                 None => SlashOutcome::SetGlkFit(GlkFitArg::Toggle),
                 Some("stretch") => SlashOutcome::SetGlkFit(GlkFitArg::Mode(GlkFitMode::Stretch)),
-                Some("aspect")  => SlashOutcome::SetGlkFit(GlkFitArg::Mode(GlkFitMode::Aspect)),
-                Some("auto")    => SlashOutcome::SetGlkFit(GlkFitArg::Auto),
-                Some(s) => err(format!("set-glk-fit: unknown mode '{s}' (stretch | aspect | auto, or bare to toggle)")),
+                Some("aspect") => SlashOutcome::SetGlkFit(GlkFitArg::Mode(GlkFitMode::Aspect)),
+                Some("auto") => SlashOutcome::SetGlkFit(GlkFitArg::Auto),
+                Some(s) => err(format!(
+                    "set-glk-fit: unknown mode '{s}' (stretch | aspect | auto, or bare to toggle)"
+                )),
             }
-        } },
-    CommandSpec { name: "set-v6-pixel-lock", category: Category::Style, context: Context::Global,
-        usage: "set-v6-pixel-lock [on|off|auto]", description: "lock v6 art to a whole number of device pixels per art pixel — bare toggles, auto inherits the global setting; persisted per-game",
+        },
+    },
+    CommandSpec {
+        name: "set-v6-pixel-lock",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-v6-pixel-lock [on|off|auto]",
+        description: "lock v6 art to a whole number of device pixels per art pixel — bare toggles, auto inherits the global setting; persisted per-game",
         dispatch: |a| match a.first().copied() {
-            None         => SlashOutcome::SetV6PixelLock(V6PixelLockArg::Toggle),
-            Some("on")   => SlashOutcome::SetV6PixelLock(V6PixelLockArg::On),
-            Some("off")  => SlashOutcome::SetV6PixelLock(V6PixelLockArg::Off),
+            None => SlashOutcome::SetV6PixelLock(V6PixelLockArg::Toggle),
+            Some("on") => SlashOutcome::SetV6PixelLock(V6PixelLockArg::On),
+            Some("off") => SlashOutcome::SetV6PixelLock(V6PixelLockArg::Off),
             Some("auto") => SlashOutcome::SetV6PixelLock(V6PixelLockArg::Auto),
-            Some(s) => err(format!("set-v6-pixel-lock: unknown argument '{s}' (on | off | auto, or bare to toggle)")),
-        } },
-    CommandSpec { name: "set-guidance", category: Category::Style, context: Context::Global,
-        usage: "set-guidance [on|off|auto]", description: "Lanthorn's Guiding Light: help while you play, marked in the margin — bare toggles, auto inherits the global setting; persisted per-game",
+            Some(s) => err(format!(
+                "set-v6-pixel-lock: unknown argument '{s}' (on | off | auto, or bare to toggle)"
+            )),
+        },
+    },
+    CommandSpec {
+        name: "set-guidance",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-guidance [on|off|auto]",
+        description: "Lanthorn's Guiding Light: help while you play, marked in the margin — bare toggles, auto inherits the global setting; persisted per-game",
         dispatch: |a| match a.first().copied() {
-            None         => SlashOutcome::SetGuidance(GuidanceArg::Toggle),
-            Some("on")   => SlashOutcome::SetGuidance(GuidanceArg::On),
-            Some("off")  => SlashOutcome::SetGuidance(GuidanceArg::Off),
+            None => SlashOutcome::SetGuidance(GuidanceArg::Toggle),
+            Some("on") => SlashOutcome::SetGuidance(GuidanceArg::On),
+            Some("off") => SlashOutcome::SetGuidance(GuidanceArg::Off),
             Some("auto") => SlashOutcome::SetGuidance(GuidanceArg::Auto),
-            Some(s) => err(format!("set-guidance: unknown argument '{s}' (on | off | auto, or bare to toggle)")),
-        } },
-    CommandSpec { name: "set-return-probe", category: Category::Style, context: Context::Global,
-        usage: "set-return-probe [on|off|auto]", description: "after a move, look for the way back in a silent copy of the game and put it on the map — bare toggles, auto inherits the global setting; persisted per-game",
+            Some(s) => err(format!(
+                "set-guidance: unknown argument '{s}' (on | off | auto, or bare to toggle)"
+            )),
+        },
+    },
+    CommandSpec {
+        name: "set-return-probe",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-return-probe [on|off|auto]",
+        description: "after a move, look for the way back in a silent copy of the game and put it on the map — bare toggles, auto inherits the global setting; persisted per-game",
         dispatch: |a| match a.first().copied() {
-            None         => SlashOutcome::SetReturnProbe(ReturnProbeArg::Toggle),
-            Some("on")   => SlashOutcome::SetReturnProbe(ReturnProbeArg::On),
-            Some("off")  => SlashOutcome::SetReturnProbe(ReturnProbeArg::Off),
+            None => SlashOutcome::SetReturnProbe(ReturnProbeArg::Toggle),
+            Some("on") => SlashOutcome::SetReturnProbe(ReturnProbeArg::On),
+            Some("off") => SlashOutcome::SetReturnProbe(ReturnProbeArg::Off),
             Some("auto") => SlashOutcome::SetReturnProbe(ReturnProbeArg::Auto),
-            Some(s) => err(format!("set-return-probe: unknown argument '{s}' (on | off | auto, or bare to toggle)")),
-        } },
+            Some(s) => err(format!(
+                "set-return-probe: unknown argument '{s}' (on | off | auto, or bare to toggle)"
+            )),
+        },
+    },
     // A TRIGGER, not a setting — hence `reveal-`, not `set-`, and no argument to
     // take. It is the first of its kind among the border controls; see
     // `SlashOutcome::RevealWords` and `crate::reveal`.
-    CommandSpec { name: "reveal-words", category: Category::Style, context: Context::Global,
-        usage: "reveal-words", description: "light the nouns and named things on screen this story knows, for a few seconds — under the Guiding Light's switch",
-        dispatch: |_| SlashOutcome::RevealWords },
-    CommandSpec { name: "run-font-check", category: Category::Style, context: Context::Global,
-        usage: "run-font-check", description: "ask which of two glyph rows your terminal's font draws properly, and set the map's arrow, portal and Guiding Light icons from the answer (writes style.toml)",
+    CommandSpec {
+        name: "reveal-words",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "reveal-words",
+        description: "light the nouns and named things on screen this story knows, for a few seconds — under the Guiding Light's switch",
+        dispatch: |_| SlashOutcome::RevealWords,
+    },
+    CommandSpec {
+        name: "run-font-check",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "run-font-check",
+        description: "ask which of two glyph rows your terminal's font draws properly, and set the map's arrow, portal and Guiding Light icons from the answer (writes style.toml)",
         // A verb-noun name, per the registry convention — and `run-`, not `set-`,
         // because the command does not set anything: it asks, and the ANSWER
         // sets. The same question `--font-check on` asks at launch, put where
         // someone who has just changed terminal fonts can reach it.
-        dispatch: |_| SlashOutcome::RunFontCheck },
-    CommandSpec { name: "set-game-borders", category: Category::Style, context: Context::Global,
-        usage: "set-game-borders on|off|auto", description: "show this game's Glk window borders (on), or render borderless/abutting (off); auto = default (on); persisted per-game",
+        dispatch: |_| SlashOutcome::RunFontCheck,
+    },
+    CommandSpec {
+        name: "set-game-borders",
+        category: Category::Style,
+        context: Context::Global,
+        usage: "set-game-borders on|off|auto",
+        description: "show this game's Glk window borders (on), or render borderless/abutting (off); auto = default (on); persisted per-game",
         // on = borders shown (default) → borderless=false; off = borderless/abut
         // → borderless=true; auto = clear the override.
         dispatch: |a| match a.first().copied() {
-            Some("on")   => SlashOutcome::SetGameBorderless(Some(false)),
-            Some("off")  => SlashOutcome::SetGameBorderless(Some(true)),
+            Some("on") => SlashOutcome::SetGameBorderless(Some(false)),
+            Some("off") => SlashOutcome::SetGameBorderless(Some(true)),
             Some("auto") => SlashOutcome::SetGameBorderless(None),
             _ => err("set-game-borders requires an argument: on | off | auto"),
-        } },
-
+        },
+    },
     // ── Export ────────────────────────────────────────────────────────────
-    CommandSpec { name: "export-svg", category: Category::Export, context: Context::Global,
-        usage: "export-svg [file]", description: "export the map as SVG; default path when omitted",
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::ExportSvg(a.first().map(|s| s.to_string()))) },
-    CommandSpec { name: "export-dot", category: Category::Export, context: Context::Global,
-        usage: "export-dot [file]", description: "export the map as Graphviz DOT; default path when omitted",
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::ExportDot(a.first().map(|s| s.to_string()))) },
-    CommandSpec { name: "export-map", category: Category::Export, context: Context::Global,
-        usage: "export-map [file]", description: "dump the map structure; default path when omitted",
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::ExportMap(a.first().map(|s| s.to_string()))) },
-    CommandSpec { name: "export-json", category: Category::Export, context: Context::Global,
-        usage: "export-json [file]", description: "export the map as versioned lanthorn-map JSON, the same schema lanthorn-mapgen writes; default path when omitted",
-        dispatch: |a| SlashOutcome::Action(crate::input::Action::ExportJson(a.first().map(|s| s.to_string()))) },
-
+    CommandSpec {
+        name: "export-svg",
+        category: Category::Export,
+        context: Context::Global,
+        usage: "export-svg [file]",
+        description: "export the map as SVG; default path when omitted",
+        dispatch: |a| {
+            SlashOutcome::Action(crate::input::Action::ExportSvg(
+                a.first().map(|s| s.to_string()),
+            ))
+        },
+    },
+    CommandSpec {
+        name: "export-dot",
+        category: Category::Export,
+        context: Context::Global,
+        usage: "export-dot [file]",
+        description: "export the map as Graphviz DOT; default path when omitted",
+        dispatch: |a| {
+            SlashOutcome::Action(crate::input::Action::ExportDot(
+                a.first().map(|s| s.to_string()),
+            ))
+        },
+    },
+    CommandSpec {
+        name: "export-map",
+        category: Category::Export,
+        context: Context::Global,
+        usage: "export-map [file]",
+        description: "dump the map structure; default path when omitted",
+        dispatch: |a| {
+            SlashOutcome::Action(crate::input::Action::ExportMap(
+                a.first().map(|s| s.to_string()),
+            ))
+        },
+    },
+    CommandSpec {
+        name: "export-json",
+        category: Category::Export,
+        context: Context::Global,
+        usage: "export-json [file]",
+        description: "export the map as versioned lanthorn-map JSON, the same schema lanthorn-mapgen writes; default path when omitted",
+        dispatch: |a| {
+            SlashOutcome::Action(crate::input::Action::ExportJson(
+                a.first().map(|s| s.to_string()),
+            ))
+        },
+    },
     // ── Animation ─────────────────────────────────────────────────────────
-    CommandSpec { name: "animate-tidy", category: Category::Animation, context: Context::Global,
-        usage: "animate-tidy", description: "animate a tidy pass",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimateTidy) },
-    CommandSpec { name: "anim-step", category: Category::Animation, context: Context::Anim,
-        usage: "anim-step forward|back", description: "step the animation one frame",
+    CommandSpec {
+        name: "animate-tidy",
+        category: Category::Animation,
+        context: Context::Global,
+        usage: "animate-tidy",
+        description: "animate a tidy pass",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimateTidy),
+    },
+    CommandSpec {
+        name: "anim-step",
+        category: Category::Animation,
+        context: Context::Anim,
+        usage: "anim-step forward|back",
+        description: "step the animation one frame",
         dispatch: |a| {
             use crate::input::Action;
             match a.first().copied() {
@@ -716,69 +1125,131 @@ pub static COMMANDS: &[CommandSpec] = &[
                 Some("back") => SlashOutcome::Action(Action::AnimStep(-1)),
                 _ => err("anim-step requires an argument: forward|back"),
             }
-        } },
-    CommandSpec { name: "anim-play", category: Category::Animation, context: Context::Anim,
-        usage: "anim-play", description: "toggle animation play/pause",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimTogglePlay) },
-    CommandSpec { name: "anim-exit", category: Category::Animation, context: Context::Anim,
-        usage: "anim-exit", description: "exit the animation view",
-        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimExit) },
-
-    // ── Help ──────────────────────────────────────────────────────────────
-    CommandSpec { name: "dump-windows", category: Category::Help, context: Context::Global,
-        usage: "dump-windows", description: "dump the last game frame's window layout, here and to dump-windows.log in your logs folder",
-        dispatch: |_| SlashOutcome::DumpWindows },
-    CommandSpec { name: "dump-cells", category: Category::Help, context: Context::Global,
-        usage: "dump-cells", description: "write the last frame's cells — glyphs, colours and attributes — to dump-cells.log in your logs folder",
-        dispatch: |_| SlashOutcome::DumpCells },
-    CommandSpec { name: "dump-terminal", category: Category::Help, context: Context::Global,
-        usage: "dump-terminal", description: "dump this terminal's detected protocol, cell size, capabilities and traffic — here and to dump-terminal.log in your logs folder",
-        dispatch: |_| SlashOutcome::DumpTerminal },
-    CommandSpec { name: "debug", category: Category::Help, context: Context::Global,
-        usage: "debug", description: "toggle the Z-machine debug inspector pane",
-        dispatch: |_| SlashOutcome::ToggleDebug },
+        },
+    },
     CommandSpec {
-        name: "trace", category: Category::Help, context: Context::Global,
+        name: "anim-play",
+        category: Category::Animation,
+        context: Context::Anim,
+        usage: "anim-play",
+        description: "toggle animation play/pause",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimTogglePlay),
+    },
+    CommandSpec {
+        name: "anim-exit",
+        category: Category::Animation,
+        context: Context::Anim,
+        usage: "anim-exit",
+        description: "exit the animation view",
+        dispatch: |_| SlashOutcome::Action(crate::input::Action::AnimExit),
+    },
+    // ── Help ──────────────────────────────────────────────────────────────
+    CommandSpec {
+        name: "dump-windows",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "dump-windows",
+        description: "dump the last game frame's window layout, here and to dump-windows.log in your logs folder",
+        dispatch: |_| SlashOutcome::DumpWindows,
+    },
+    CommandSpec {
+        name: "dump-cells",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "dump-cells",
+        description: "write the last frame's cells — glyphs, colours and attributes — to dump-cells.log in your logs folder",
+        dispatch: |_| SlashOutcome::DumpCells,
+    },
+    CommandSpec {
+        name: "dump-terminal",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "dump-terminal",
+        description: "dump this terminal's detected protocol, cell size, capabilities and traffic — here and to dump-terminal.log in your logs folder",
+        dispatch: |_| SlashOutcome::DumpTerminal,
+    },
+    CommandSpec {
+        name: "debug",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "debug",
+        description: "toggle the Z-machine debug inspector pane",
+        dispatch: |_| SlashOutcome::ToggleDebug,
+    },
+    CommandSpec {
+        name: "trace",
+        category: Category::Help,
+        context: Context::Global,
         usage: "trace [sections|all|none]",
         description: "toggle debug-trace sections (screen, map, hostio, v6) written to trace.log; no arg shows current state",
         dispatch: |a| SlashOutcome::Trace(a.first().map(|s| s.to_string())),
     },
-    CommandSpec { name: "dump-notifications", category: Category::Help, context: Context::Global,
-        usage: "dump-notifications", description: "print the notification history to the transcript, in case a toast was missed",
-        dispatch: |_| SlashOutcome::DumpNotifications },
-    CommandSpec { name: "help", category: Category::Help, context: Context::Global,
-        usage: "help [command]", description: "list all commands by category; with a name, show one command's detail",
-        dispatch: |_| SlashOutcome::Help },
-
+    CommandSpec {
+        name: "dump-notifications",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "dump-notifications",
+        description: "print the notification history to the transcript, in case a toast was missed",
+        dispatch: |_| SlashOutcome::DumpNotifications,
+    },
+    CommandSpec {
+        name: "help",
+        category: Category::Help,
+        context: Context::Global,
+        usage: "help [command]",
+        description: "list all commands by category; with a name, show one command's detail",
+        dispatch: |_| SlashOutcome::Help,
+    },
     // ── Library (the pre-game story browser) ──────────────────────────────
     // SQ-0796. These run before there is an `AppState`, so they dispatch to a
     // `BrowserAction` rather than an `Action`, and `Context::Browser` keeps the
     // two sets from crossing. Bind them under `[keymap.browser]`.
-    CommandSpec { name: "move-selection", category: Category::Library, context: Context::Browser,
-        usage: "move-selection <dx> <dy>", description: "move the browser's selection by dx columns and dy rows (columns exist only in the cover gallery)",
+    CommandSpec {
+        name: "move-selection",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "move-selection <dx> <dy>",
+        description: "move the browser's selection by dx columns and dy rows (columns exist only in the cover gallery)",
         dispatch: |a| {
             use crate::browser::BrowserAction;
             let dx = a.first().and_then(|s| s.parse::<isize>().ok());
             let dy = a.get(1).and_then(|s| s.parse::<isize>().ok());
             match (dx, dy) {
-                (Some(dx), Some(dy)) => SlashOutcome::Browser(BrowserAction::MoveSelection { dx, dy }),
+                (Some(dx), Some(dy)) => {
+                    SlashOutcome::Browser(BrowserAction::MoveSelection { dx, dy })
+                }
                 _ => err("move-selection requires two integers (e.g. move-selection 0 -1)"),
             }
-        } },
-    CommandSpec { name: "page-selection", category: Category::Library, context: Context::Browser,
-        usage: "page-selection <n>", description: "move the browser's selection by n pages",
+        },
+    },
+    CommandSpec {
+        name: "page-selection",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "page-selection <n>",
+        description: "move the browser's selection by n pages",
         dispatch: |a| match a.first().and_then(|s| s.parse::<isize>().ok()) {
             Some(n) => SlashOutcome::Browser(crate::browser::BrowserAction::PageSelection(n)),
             None => err("page-selection requires an integer (e.g. page-selection -1)"),
-        } },
-    CommandSpec { name: "half-page-selection", category: Category::Library, context: Context::Browser,
-        usage: "half-page-selection <n>", description: "move the browser's selection by half a page (vim Ctrl-U/Ctrl-D)",
+        },
+    },
+    CommandSpec {
+        name: "half-page-selection",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "half-page-selection <n>",
+        description: "move the browser's selection by half a page (vim Ctrl-U/Ctrl-D)",
         dispatch: |a| match a.first().and_then(|s| s.parse::<isize>().ok()) {
             Some(n) => SlashOutcome::Browser(crate::browser::BrowserAction::HalfPageSelection(n)),
             None => err("half-page-selection requires an integer (e.g. half-page-selection -1)"),
-        } },
-    CommandSpec { name: "select-edge", category: Category::Library, context: Context::Browser,
-        usage: "select-edge first|last", description: "jump the browser's selection to the first or last story",
+        },
+    },
+    CommandSpec {
+        name: "select-edge",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "select-edge first|last",
+        description: "jump the browser's selection to the first or last story",
         dispatch: |a| {
             use crate::browser::{BrowserAction, Edge};
             match a.first().copied() {
@@ -786,64 +1257,160 @@ pub static COMMANDS: &[CommandSpec] = &[
                 Some("last") => SlashOutcome::Browser(BrowserAction::SelectEdge(Edge::Last)),
                 _ => err("select-edge requires an argument: first | last"),
             }
-        } },
-    CommandSpec { name: "play-story", category: Category::Library, context: Context::Browser,
-        usage: "play-story", description: "launch the selected story",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::PlayStory) },
-    CommandSpec { name: "open-launch-options", category: Category::Library, context: Context::Browser,
-        usage: "open-launch-options", description: "open the launch-options dialog for the selected story",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenLaunchOptions) },
-    CommandSpec { name: "open-story-menu", category: Category::Library, context: Context::Browser,
-        usage: "open-story-menu", description: "open the per-story menu beside the selected story",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenStoryMenu) },
-    CommandSpec { name: "show-browser-keys", category: Category::Library, context: Context::Browser,
-        usage: "show-browser-keys", description: "show the story browser's key reference",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ShowBrowserKeys) },
-    CommandSpec { name: "toggle-info-panel", category: Category::Library, context: Context::Browser,
-        usage: "toggle-info-panel", description: "open or close the browser's story info panel",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ToggleInfoPanel) },
-    CommandSpec { name: "toggle-gallery", category: Category::Library, context: Context::Browser,
-        usage: "toggle-gallery", description: "switch the browser between the story list and the cover gallery",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ToggleGallery) },
-    CommandSpec { name: "fetch-story", category: Category::Library, context: Context::Browser,
-        usage: "fetch-story", description: "re-fetch the selected story's IFDB metadata, ignoring the cache",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::FetchStory) },
-    CommandSpec { name: "refresh-library", category: Category::Library, context: Context::Browser,
-        usage: "refresh-library", description: "fetch IFDB metadata for every story that is missing or stale",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::RefreshLibrary) },
-    CommandSpec { name: "set-ifdb-url", category: Category::Library, context: Context::Browser,
-        usage: "set-ifdb-url", description: "point the selected story at an IFDB page by hand",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SetIfdbUrl) },
-    CommandSpec { name: "create-documents-folder", category: Category::Library, context: Context::Global,
-        usage: "create-documents-folder", description: "create this story's documents folder (manuals, maps) beside its IFDB id",
-        dispatch: |_| SlashOutcome::CreateDocumentsFolder },
-    CommandSpec { name: "open-url", category: Category::Library, context: Context::Browser,
-        usage: "open-url", description: "download a story from a URL into this library and open it",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenUrl) },
-    CommandSpec { name: "search-ifdb", category: Category::Library, context: Context::Browser,
-        usage: "search-ifdb", description: "search IFDB by title or author and download a story into this directory",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SearchIfdb) },
-    CommandSpec { name: "download-hints", category: Category::Library, context: Context::Global,
-        usage: "download-hints", description: "download a matching InvisiClues hint file for this story (the selected one in the browser)",
-        dispatch: |_| SlashOutcome::DownloadHints },
-    CommandSpec { name: "sort-library", category: Category::Library, context: Context::Browser,
-        usage: "sort-library", description: "cycle the browser's sort column, keeping the direction",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SortLibrary) },
-    CommandSpec { name: "reverse-sort", category: Category::Library, context: Context::Browser,
-        usage: "reverse-sort", description: "reverse the browser's sort direction, keeping the column",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ReverseSort) },
-    CommandSpec { name: "find-story", category: Category::Library, context: Context::Browser,
-        usage: "find-story", description: "type to filter the whole library by title, author, filename or folder",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::FindStory) },
-    CommandSpec { name: "parent-folder", category: Category::Library, context: Context::Browser,
-        usage: "parent-folder", description: "leave the current library folder for the one above it",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ParentFolder) },
-    CommandSpec { name: "quit-browser", category: Category::Library, context: Context::Browser,
-        usage: "quit-browser", description: "leave the story browser",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::QuitBrowser) },
-    CommandSpec { name: "cancel-browser", category: Category::Library, context: Context::Browser,
-        usage: "cancel-browser", description: "cancel a running fetch, or leave the browser when nothing is in flight",
-        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::CancelBrowser) },
+        },
+    },
+    CommandSpec {
+        name: "play-story",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "play-story",
+        description: "launch the selected story",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::PlayStory),
+    },
+    CommandSpec {
+        name: "open-launch-options",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "open-launch-options",
+        description: "open the launch-options dialog for the selected story",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenLaunchOptions),
+    },
+    CommandSpec {
+        name: "open-story-menu",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "open-story-menu",
+        description: "open the per-story menu beside the selected story",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenStoryMenu),
+    },
+    CommandSpec {
+        name: "show-browser-keys",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "show-browser-keys",
+        description: "show the story browser's key reference",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ShowBrowserKeys),
+    },
+    CommandSpec {
+        name: "toggle-info-panel",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "toggle-info-panel",
+        description: "open or close the browser's story info panel",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ToggleInfoPanel),
+    },
+    CommandSpec {
+        name: "toggle-gallery",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "toggle-gallery",
+        description: "switch the browser between the story list and the cover gallery",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ToggleGallery),
+    },
+    CommandSpec {
+        name: "fetch-story",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "fetch-story",
+        description: "re-fetch the selected story's IFDB metadata, ignoring the cache",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::FetchStory),
+    },
+    CommandSpec {
+        name: "refresh-library",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "refresh-library",
+        description: "fetch IFDB metadata for every story that is missing or stale",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::RefreshLibrary),
+    },
+    CommandSpec {
+        name: "set-ifdb-url",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "set-ifdb-url",
+        description: "point the selected story at an IFDB page by hand",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SetIfdbUrl),
+    },
+    CommandSpec {
+        name: "create-documents-folder",
+        category: Category::Library,
+        context: Context::Global,
+        usage: "create-documents-folder",
+        description: "create this story's documents folder (manuals, maps) beside its IFDB id",
+        dispatch: |_| SlashOutcome::CreateDocumentsFolder,
+    },
+    CommandSpec {
+        name: "open-url",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "open-url",
+        description: "download a story from a URL into this library and open it",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::OpenUrl),
+    },
+    CommandSpec {
+        name: "search-ifdb",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "search-ifdb",
+        description: "search IFDB by title or author and download a story into this directory",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SearchIfdb),
+    },
+    CommandSpec {
+        name: "download-hints",
+        category: Category::Library,
+        context: Context::Global,
+        usage: "download-hints",
+        description: "download a matching InvisiClues hint file for this story (the selected one in the browser)",
+        dispatch: |_| SlashOutcome::DownloadHints,
+    },
+    CommandSpec {
+        name: "sort-library",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "sort-library",
+        description: "cycle the browser's sort column, keeping the direction",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::SortLibrary),
+    },
+    CommandSpec {
+        name: "reverse-sort",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "reverse-sort",
+        description: "reverse the browser's sort direction, keeping the column",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ReverseSort),
+    },
+    CommandSpec {
+        name: "find-story",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "find-story",
+        description: "type to filter the whole library by title, author, filename or folder",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::FindStory),
+    },
+    CommandSpec {
+        name: "parent-folder",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "parent-folder",
+        description: "leave the current library folder for the one above it",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::ParentFolder),
+    },
+    CommandSpec {
+        name: "quit-browser",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "quit-browser",
+        description: "leave the story browser",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::QuitBrowser),
+    },
+    CommandSpec {
+        name: "cancel-browser",
+        category: Category::Library,
+        context: Context::Browser,
+        usage: "cancel-browser",
+        description: "cancel a running fetch, or leave the browser when nothing is in flight",
+        dispatch: |_| SlashOutcome::Browser(crate::browser::BrowserAction::CancelBrowser),
+    },
 ];
 
 pub fn find_command(name: &str) -> Option<&'static CommandSpec> {
@@ -854,7 +1421,11 @@ pub fn find_command(name: &str) -> Option<&'static CommandSpec> {
 /// (SQ-1680). Everything else is one or the other (SQ-0796), and the gates below
 /// keep it so; these have a counterpart on each side because the thing they act
 /// on — "this game's IFDB record" — exists on each.
-const BOTH_WORLDS: &[&str] = &["download-documents", "create-documents-folder", "download-hints"];
+const BOTH_WORLDS: &[&str] = &[
+    "download-documents",
+    "create-documents-folder",
+    "download-hints",
+];
 
 /// Is `spec` available in the story browser and in the game alike?
 pub fn in_both_worlds(spec: &CommandSpec) -> bool {
@@ -898,8 +1469,11 @@ pub fn parse_in_context(body: &str, prefix: char, ctx: Context) -> SlashOutcome 
         // the middle of a char and panicked. (SQ-0654)
         let t0_at = body.len() - body.trim_start().len(); // the first token starts after the leading whitespace
         let remainder = body[t0_at + t0.len()..].trim_start().trim_end();
-        return if remainder.is_empty() { SlashOutcome::Search(None) }
-               else { SlashOutcome::Search(Some(remainder.to_string())) };
+        return if remainder.is_empty() {
+            SlashOutcome::Search(None)
+        } else {
+            SlashOutcome::Search(Some(remainder.to_string()))
+        };
     }
 
     let Some(spec) = find_command(t0) else {
@@ -907,7 +1481,10 @@ pub fn parse_in_context(body: &str, prefix: char, ctx: Context) -> SlashOutcome 
     };
 
     if spec.context == Context::Anim && ctx != Context::Anim {
-        return SlashOutcome::Error(format!("{} is only available during animation playback", spec.name));
+        return SlashOutcome::Error(format!(
+            "{} is only available during animation playback",
+            spec.name
+        ));
     }
 
     // The browser's commands and the game's are disjoint worlds, so the gate runs
@@ -915,10 +1492,16 @@ pub fn parse_in_context(body: &str, prefix: char, ctx: Context) -> SlashOutcome 
     // a game command in the browser has no `AppState` to act on, and would
     // otherwise hand the picker an outcome it cannot apply.
     if spec.context == Context::Browser && ctx != Context::Browser {
-        return SlashOutcome::Error(format!("{} is only available in the story browser", spec.name));
+        return SlashOutcome::Error(format!(
+            "{} is only available in the story browser",
+            spec.name
+        ));
     }
     if ctx == Context::Browser && spec.context != Context::Browser && !in_both_worlds(spec) {
-        return SlashOutcome::Error(format!("{} is not available in the story browser", spec.name));
+        return SlashOutcome::Error(format!(
+            "{} is not available in the story browser",
+            spec.name
+        ));
     }
 
     let tokens: Vec<&str> = body.split_whitespace().collect();
@@ -938,7 +1521,10 @@ pub fn parse_in_context(body: &str, prefix: char, ctx: Context) -> SlashOutcome 
 /// build on this rather than filtering `COMMANDS` themselves, so the two
 /// surfaces cannot drift apart on which commands they exclude.
 pub fn non_browser_commands() -> impl Iterator<Item = (usize, &'static CommandSpec)> {
-    COMMANDS.iter().enumerate().filter(|(_, c)| c.context != Context::Browser)
+    COMMANDS
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.context != Context::Browser)
 }
 
 /// All known slash-command names (for Tab autocomplete).
@@ -947,7 +1533,9 @@ pub fn non_browser_commands() -> impl Iterator<Item = (usize, &'static CommandSp
 /// has no command line, so completing a name there is impossible and offering it
 /// here would complete a command the game then refuses (SQ-0796).
 pub fn slash_names() -> Vec<String> {
-    non_browser_commands().map(|(_, c)| c.name.to_string()).collect()
+    non_browser_commands()
+        .map(|(_, c)| c.name.to_string())
+        .collect()
 }
 
 // ── help_text / help_for_command ──────────────────────────────────────────────
@@ -967,10 +1555,13 @@ pub fn help_text(prefix: char) -> Vec<String> {
         String::new(),
     ];
     for cat in Category::ORDER {
-        let mut group: Vec<&CommandSpec> = COMMANDS.iter()
+        let mut group: Vec<&CommandSpec> = COMMANDS
+            .iter()
             .filter(|c| c.category == cat && c.context != Context::Browser)
             .collect();
-        if group.is_empty() { continue; }
+        if group.is_empty() {
+            continue;
+        }
         group.sort_by_key(|c| c.name);
         lines.push(format!("{}:", cat.title()));
         for c in group {
@@ -987,7 +1578,9 @@ pub fn help_text(prefix: char) -> Vec<String> {
 pub fn help_for_command(prefix: char, name: &str) -> Vec<String> {
     match find_command(name) {
         Some(c) => vec![format!("  {prefix}{}  — {}", c.usage, c.description)],
-        None => vec![format!("unknown command: {prefix}{name} — try {prefix}help")],
+        None => vec![format!(
+            "unknown command: {prefix}{name} — try {prefix}help"
+        )],
     }
 }
 
@@ -1039,38 +1632,104 @@ mod tests {
     #[test]
     fn parse_registry_and_errors() {
         use crate::input::Action;
-        assert!(matches!(parse("pan-map -1 0", '/'), SlashOutcome::Action(Action::Pan(-1, 0))));
-        assert!(matches!(parse("pan-map 0 2", '/'), SlashOutcome::Action(Action::Pan(0, 2))));
-        assert!(matches!(parse("zoom-map reset", '/'), SlashOutcome::Action(Action::ZoomReset)));
+        assert!(matches!(
+            parse("pan-map -1 0", '/'),
+            SlashOutcome::Action(Action::Pan(-1, 0))
+        ));
+        assert!(matches!(
+            parse("pan-map 0 2", '/'),
+            SlashOutcome::Action(Action::Pan(0, 2))
+        ));
+        assert!(matches!(
+            parse("zoom-map reset", '/'),
+            SlashOutcome::Action(Action::ZoomReset)
+        ));
         // SQ-0355: the usage promises "step by signed n", so the magnitude must survive parsing.
         // It used to collapse to a single ZoomIn/ZoomOut, making `zoom-map 5` a synonym for
         // `zoom-map in`.
-        assert!(matches!(parse("zoom-map 2", '/'), SlashOutcome::Action(Action::ZoomBy(2))));
-        assert!(matches!(parse("zoom-map -3", '/'), SlashOutcome::Action(Action::ZoomBy(-3))));
-        assert!(matches!(parse("zoom-map 1", '/'), SlashOutcome::Action(Action::ZoomBy(1))));
+        assert!(matches!(
+            parse("zoom-map 2", '/'),
+            SlashOutcome::Action(Action::ZoomBy(2))
+        ));
+        assert!(matches!(
+            parse("zoom-map -3", '/'),
+            SlashOutcome::Action(Action::ZoomBy(-3))
+        ));
+        assert!(matches!(
+            parse("zoom-map 1", '/'),
+            SlashOutcome::Action(Action::ZoomBy(1))
+        ));
         // 0 still means "reset", and a non-integer is still an error.
-        assert!(matches!(parse("zoom-map 0", '/'), SlashOutcome::Action(Action::ZoomReset)));
+        assert!(matches!(
+            parse("zoom-map 0", '/'),
+            SlashOutcome::Action(Action::ZoomReset)
+        ));
         assert!(matches!(parse("zoom-map wat", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("cycle-layer next", '/'), SlashOutcome::Action(Action::CycleLayer(1))));
-        assert!(matches!(parse("save-state foo", '/'), SlashOutcome::Save(Some(_))));
+        assert!(matches!(
+            parse("cycle-layer next", '/'),
+            SlashOutcome::Action(Action::CycleLayer(1))
+        ));
+        assert!(matches!(
+            parse("save-state foo", '/'),
+            SlashOutcome::Save(Some(_))
+        ));
         assert!(matches!(parse("save-state", '/'), SlashOutcome::Save(None)));
         // restore-state: a name restores that slot directly; bare opens the saves dialog.
-        assert!(matches!(parse("restore-state foo", '/'), SlashOutcome::Load(Some(_))));
-        assert!(matches!(parse("restore-state", '/'), SlashOutcome::Action(Action::OpenSaves)));
-        assert!(matches!(parse("reset-game map", '/'), SlashOutcome::Reset { map: true, data: false }));
-        assert!(matches!(parse("reset-game", '/'), SlashOutcome::Reset { map: false, data: false }));
-        assert!(matches!(parse("reset-game data", '/'), SlashOutcome::Reset { map: false, data: true }));
-        assert!(matches!(parse("reset-game map data", '/'), SlashOutcome::Reset { map: true, data: true }));
-        assert!(matches!(parse("reset-game data map", '/'), SlashOutcome::Reset { map: true, data: true }));
+        assert!(matches!(
+            parse("restore-state foo", '/'),
+            SlashOutcome::Load(Some(_))
+        ));
+        assert!(matches!(
+            parse("restore-state", '/'),
+            SlashOutcome::Action(Action::OpenSaves)
+        ));
+        assert!(matches!(
+            parse("reset-game map", '/'),
+            SlashOutcome::Reset {
+                map: true,
+                data: false
+            }
+        ));
+        assert!(matches!(
+            parse("reset-game", '/'),
+            SlashOutcome::Reset {
+                map: false,
+                data: false
+            }
+        ));
+        assert!(matches!(
+            parse("reset-game data", '/'),
+            SlashOutcome::Reset {
+                map: false,
+                data: true
+            }
+        ));
+        assert!(matches!(
+            parse("reset-game map data", '/'),
+            SlashOutcome::Reset {
+                map: true,
+                data: true
+            }
+        ));
+        assert!(matches!(
+            parse("reset-game data map", '/'),
+            SlashOutcome::Reset {
+                map: true,
+                data: true
+            }
+        ));
         assert!(matches!(parse("quit", '/'), SlashOutcome::Quit));
         assert!(matches!(parse("help", '/'), SlashOutcome::Help));
         // in registry:
-        assert!(matches!(parse("open-settings", '/'), SlashOutcome::Action(_)));
+        assert!(matches!(
+            parse("open-settings", '/'),
+            SlashOutcome::Action(_)
+        ));
         // errors:
-        assert!(matches!(parse("panh", '/'), SlashOutcome::Error(_)));   // no longer in registry
-        assert!(matches!(parse("nope", '/'), SlashOutcome::Error(_)));   // unknown
-        assert!(matches!(parse("", '/'), SlashOutcome::Error(_)));       // bare prefix
-        // old short names now error (clean break):
+        assert!(matches!(parse("panh", '/'), SlashOutcome::Error(_))); // no longer in registry
+        assert!(matches!(parse("nope", '/'), SlashOutcome::Error(_))); // unknown
+        assert!(matches!(parse("", '/'), SlashOutcome::Error(_))); // bare prefix
+                                                                   // old short names now error (clean break):
         assert!(matches!(parse("save", '/'), SlashOutcome::Error(_)));
         assert!(matches!(parse("pan", '/'), SlashOutcome::Error(_)));
         assert!(matches!(parse("zoom", '/'), SlashOutcome::Error(_)));
@@ -1113,16 +1772,33 @@ mod tests {
 
     #[test]
     fn quit_to_library_parses_to_quit_to_library() {
-        assert!(matches!(parse("quit-to-library", '/'), SlashOutcome::QuitToLibrary));
-        assert_eq!(find_command("quit-to-library").expect("quit-to-library").category, Category::Game);
+        assert!(matches!(
+            parse("quit-to-library", '/'),
+            SlashOutcome::QuitToLibrary
+        ));
+        assert_eq!(
+            find_command("quit-to-library")
+                .expect("quit-to-library")
+                .category,
+            Category::Game
+        );
     }
 
     #[test]
     fn slash_hint_parses_to_open_hints() {
-        assert!(matches!(crate::slash::parse("open-hints", '/'), crate::slash::SlashOutcome::OpenHints));
+        assert!(matches!(
+            crate::slash::parse("open-hints", '/'),
+            crate::slash::SlashOutcome::OpenHints
+        ));
         // old short names no longer resolve (clean break):
-        assert!(matches!(crate::slash::parse("hint", '/'), crate::slash::SlashOutcome::Error(_)));
-        assert!(matches!(crate::slash::parse("hints", '/'), crate::slash::SlashOutcome::Error(_)));
+        assert!(matches!(
+            crate::slash::parse("hint", '/'),
+            crate::slash::SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            crate::slash::parse("hints", '/'),
+            crate::slash::SlashOutcome::Error(_)
+        ));
     }
 
     #[test]
@@ -1138,14 +1814,35 @@ mod tests {
 
     #[test]
     fn parse_search_filter_export() {
-        assert!(matches!(parse("search-transcript twisty maze", '/'), SlashOutcome::Search(Some(q)) if q == "twisty maze"));
-        assert!(matches!(parse("search-transcript a  b", '/'), SlashOutcome::Search(Some(q)) if q == "a  b"));
-        assert!(matches!(parse("search-transcript", '/'), SlashOutcome::Search(None)));
-        assert!(matches!(parse("filter-transcript meta", '/'), SlashOutcome::Filter(TranscriptFilterArg::Meta)));
-        assert!(matches!(parse("filter-transcript both", '/'), SlashOutcome::Filter(TranscriptFilterArg::Both)));
-        assert!(matches!(parse("filter-transcript nope", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("export-transcript", '/'), SlashOutcome::Export(None)));
-        assert!(matches!(parse("export-transcript out.txt", '/'), SlashOutcome::Export(Some(f)) if f == "out.txt"));
+        assert!(
+            matches!(parse("search-transcript twisty maze", '/'), SlashOutcome::Search(Some(q)) if q == "twisty maze")
+        );
+        assert!(
+            matches!(parse("search-transcript a  b", '/'), SlashOutcome::Search(Some(q)) if q == "a  b")
+        );
+        assert!(matches!(
+            parse("search-transcript", '/'),
+            SlashOutcome::Search(None)
+        ));
+        assert!(matches!(
+            parse("filter-transcript meta", '/'),
+            SlashOutcome::Filter(TranscriptFilterArg::Meta)
+        ));
+        assert!(matches!(
+            parse("filter-transcript both", '/'),
+            SlashOutcome::Filter(TranscriptFilterArg::Both)
+        ));
+        assert!(matches!(
+            parse("filter-transcript nope", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse("export-transcript", '/'),
+            SlashOutcome::Export(None)
+        ));
+        assert!(
+            matches!(parse("export-transcript out.txt", '/'), SlashOutcome::Export(Some(f)) if f == "out.txt")
+        );
         // old short names now error (clean break):
         assert!(matches!(parse("search", '/'), SlashOutcome::Error(_)));
         assert!(matches!(parse("filter", '/'), SlashOutcome::Error(_)));
@@ -1157,31 +1854,63 @@ mod tests {
         // SQ-0654: a body with LEADING whitespace (a prefix typed with a space after
         // it, or a key bound to " search-transcript twisty") must still yield the
         // query itself — not the tail of the command name shifted by the leading run.
-        assert!(matches!(parse(" search-transcript twisty", '/'),
-            SlashOutcome::Search(Some(q)) if q == "twisty"), "leading space must not shift the slice");
+        assert!(
+            matches!(parse(" search-transcript twisty", '/'),
+            SlashOutcome::Search(Some(q)) if q == "twisty"),
+            "leading space must not shift the slice"
+        );
         assert!(matches!(parse("   search-transcript twisty maze", '/'),
             SlashOutcome::Search(Some(q)) if q == "twisty maze"));
-        assert!(matches!(parse("\tsearch-transcript a  b", '/'),
-            SlashOutcome::Search(Some(q)) if q == "a  b"), "internal whitespace still preserved");
-        assert!(matches!(parse("  search-transcript  ", '/'), SlashOutcome::Search(None)));
+        assert!(
+            matches!(parse("\tsearch-transcript a  b", '/'),
+            SlashOutcome::Search(Some(q)) if q == "a  b"),
+            "internal whitespace still preserved"
+        );
+        assert!(matches!(
+            parse("  search-transcript  ", '/'),
+            SlashOutcome::Search(None)
+        ));
         // Multi-byte leading whitespace: six U+3000 ideographic spaces are 18 bytes,
         // so slicing from byte 0 by the token's LENGTH landed mid-char and panicked.
-        assert!(matches!(parse("\u{3000}\u{3000}\u{3000}\u{3000}\u{3000}\u{3000}search-transcript twisty", '/'),
-            SlashOutcome::Search(Some(q)) if q == "twisty"), "ideographic leading space must not panic or mangle");
+        assert!(
+            matches!(parse("\u{3000}\u{3000}\u{3000}\u{3000}\u{3000}\u{3000}search-transcript twisty", '/'),
+            SlashOutcome::Search(Some(q)) if q == "twisty"),
+            "ideographic leading space must not panic or mangle"
+        );
         // And with the query itself starting past a multi-byte separator.
-        assert!(matches!(parse("\u{3000}search-transcript\u{3000}twisty", '/'),
-            SlashOutcome::Search(Some(q)) if q == "twisty"));
+        assert!(
+            matches!(parse("\u{3000}search-transcript\u{3000}twisty", '/'),
+            SlashOutcome::Search(Some(q)) if q == "twisty")
+        );
     }
 
     #[test]
     fn parse_routes_registry_and_gates_anim() {
         use crate::input::Action;
         use crate::keymap::Context;
-        assert!(matches!(parse("pan-map -1 0", '/'), SlashOutcome::Action(Action::Pan(-1, 0))));
-        assert!(matches!(parse("zoom-map in", '/'), SlashOutcome::Action(Action::ZoomIn)));
-        assert!(matches!(parse("select-room next", '/'), SlashOutcome::Action(Action::SelectNext)));
-        assert!(matches!(parse("save-state foo", '/'), SlashOutcome::Save(Some(_))));
-        assert!(matches!(parse("reset-game map", '/'), SlashOutcome::Reset { map: true, data: false }));
+        assert!(matches!(
+            parse("pan-map -1 0", '/'),
+            SlashOutcome::Action(Action::Pan(-1, 0))
+        ));
+        assert!(matches!(
+            parse("zoom-map in", '/'),
+            SlashOutcome::Action(Action::ZoomIn)
+        ));
+        assert!(matches!(
+            parse("select-room next", '/'),
+            SlashOutcome::Action(Action::SelectNext)
+        ));
+        assert!(matches!(
+            parse("save-state foo", '/'),
+            SlashOutcome::Save(Some(_))
+        ));
+        assert!(matches!(
+            parse("reset-game map", '/'),
+            SlashOutcome::Reset {
+                map: true,
+                data: false
+            }
+        ));
         assert!(matches!(parse("quit", '/'), SlashOutcome::Quit));
         // Old short names no longer resolve (clean break).
         assert!(matches!(parse("center", '/'), SlashOutcome::Error(_)));
@@ -1189,10 +1918,18 @@ mod tests {
         assert!(matches!(parse("nope", '/'), SlashOutcome::Error(_)));
         assert!(matches!(parse("", '/'), SlashOutcome::Error(_)));
         // Context gating: anim-step outside Anim errors; inside Anim it fires.
-        assert!(matches!(parse_in_context("anim-step forward", '/', Context::Global), SlashOutcome::Error(_)));
-        assert!(matches!(parse_in_context("anim-step forward", '/', Context::Anim), SlashOutcome::Action(Action::AnimStep(1))));
+        assert!(matches!(
+            parse_in_context("anim-step forward", '/', Context::Global),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse_in_context("anim-step forward", '/', Context::Anim),
+            SlashOutcome::Action(Action::AnimStep(1))
+        ));
         // search-transcript preserves internal whitespace.
-        assert!(matches!(parse("search-transcript a  b", '/'), SlashOutcome::Search(Some(q)) if q == "a  b"));
+        assert!(
+            matches!(parse("search-transcript a  b", '/'), SlashOutcome::Search(Some(q)) if q == "a  b")
+        );
     }
 
     #[test]
@@ -1213,12 +1950,27 @@ mod tests {
         for c in COMMANDS {
             assert!(seen.insert(c.name), "duplicate command name: {}", c.name);
             assert!(!c.usage.is_empty(), "{} has empty usage", c.name);
-            assert!(!c.description.is_empty(), "{} has empty description", c.name);
+            assert!(
+                !c.description.is_empty(),
+                "{} has empty description",
+                c.name
+            );
         }
         // Verb-noun lint: every name contains '-' except the whitelist.
         for c in COMMANDS {
-            if c.name == "quit" || c.name == "help" || c.name == "volume" || c.name == "trace" || c.name == "debug" { continue; }
-            assert!(c.name.contains('-'), "non-verb-noun command name: {}", c.name);
+            if c.name == "quit"
+                || c.name == "help"
+                || c.name == "volume"
+                || c.name == "trace"
+                || c.name == "debug"
+            {
+                continue;
+            }
+            assert!(
+                c.name.contains('-'),
+                "non-verb-noun command name: {}",
+                c.name
+            );
         }
         // Spot-check representative commands exist with the right category.
         let by = |n: &str| COMMANDS.iter().find(|c| c.name == n).expect(n);
@@ -1285,7 +2037,11 @@ mod tests {
         // `scroll-document` for the Journal's Documents tab, and made
         // `create-documents-folder` a second command both worlds share.
         // SQ-1707 added `set-glk-fit`: stretch/aspect fit for design-size Glulx games.
-        assert_eq!(COMMANDS.len(), 102, "registry must match the spec's Full command table");
+        assert_eq!(
+            COMMANDS.len(),
+            102,
+            "registry must match the spec's Full command table"
+        );
     }
 
     /// SQ-1237 unified the panel vocabulary — `command band` became `command
@@ -1328,7 +2084,9 @@ mod tests {
         // ── crates/app/src/**/*.rs — string literals only ──────────────────────
         let mut stack = vec![root.join("crates/app/src")];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -1338,7 +2096,9 @@ mod tests {
                 if path.extension().and_then(|x| x.to_str()) != Some("rs") {
                     continue;
                 }
-                let Ok(src) = std::fs::read_to_string(&path) else { continue };
+                let Ok(src) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
                 for (lineno, line) in src.lines().enumerate() {
                     let lower = line.to_lowercase();
                     for &needle in &needles {
@@ -1363,9 +2123,15 @@ mod tests {
 
         // ── docs/**/*.md and README.md — whole file, prose is the product ──────
         let mut md_files = vec![root.join("README.md")];
-        let mut stack = vec![root.join("docs/guide"), root.join("docs/internals"), root.join("docs/reference")];
+        let mut stack = vec![
+            root.join("docs/guide"),
+            root.join("docs/internals"),
+            root.join("docs/reference"),
+        ];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -1376,7 +2142,9 @@ mod tests {
             }
         }
         for path in &md_files {
-            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
             let lower = text.to_lowercase();
             for &needle in &needles {
                 if lower.contains(needle) {
@@ -1408,7 +2176,11 @@ mod tests {
             }
         }
 
-        assert!(hits.is_empty(), "stale panel wording survives:\n{}", hits.join("\n"));
+        assert!(
+            hits.is_empty(),
+            "stale panel wording survives:\n{}",
+            hits.join("\n")
+        );
     }
 
     /// SQ-0796: `Category::ORDER` must list every category, or a whole group of
@@ -1450,14 +2222,22 @@ mod tests {
 
         // `help <command>` parses to HelpCommand; bare help to Help.
         assert!(matches!(parse("help", '/'), SlashOutcome::Help));
-        assert!(matches!(parse("help zoom-map", '/'), SlashOutcome::HelpCommand(n) if n == "zoom-map"));
+        assert!(
+            matches!(parse("help zoom-map", '/'), SlashOutcome::HelpCommand(n) if n == "zoom-map")
+        );
     }
 
     #[test]
     fn print_colors_command_parses_flag() {
         assert!(find_command("print-colors").is_some());
-        assert!(matches!(parse("print-colors", '/'), SlashOutcome::PrintColors { actual: false }));
-        assert!(matches!(parse("print-colors color", '/'), SlashOutcome::PrintColors { actual: true }));
+        assert!(matches!(
+            parse("print-colors", '/'),
+            SlashOutcome::PrintColors { actual: false }
+        ));
+        assert!(matches!(
+            parse("print-colors color", '/'),
+            SlashOutcome::PrintColors { actual: true }
+        ));
     }
 
     /// SQ-1420. `set-transcript` throws the STORY's stream-2 switch (ZMSD §7.4)
@@ -1469,16 +2249,31 @@ mod tests {
     #[test]
     fn set_transcript_parses_on_and_off_and_rejects_anything_else() {
         assert!(find_command("set-transcript").is_some());
-        assert!(matches!(parse("set-transcript on", '/'), SlashOutcome::SetTranscript(true)));
-        assert!(matches!(parse("set-transcript off", '/'), SlashOutcome::SetTranscript(false)));
-        assert!(matches!(parse("set-transcript", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("set-transcript maybe", '/'), SlashOutcome::Error(_)));
+        assert!(matches!(
+            parse("set-transcript on", '/'),
+            SlashOutcome::SetTranscript(true)
+        ));
+        assert!(matches!(
+            parse("set-transcript off", '/'),
+            SlashOutcome::SetTranscript(false)
+        ));
+        assert!(matches!(
+            parse("set-transcript", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse("set-transcript maybe", '/'),
+            SlashOutcome::Error(_)
+        ));
     }
 
     #[test]
     fn dump_windows_command_parses() {
         assert!(find_command("dump-windows").is_some());
-        assert!(matches!(parse("dump-windows", '/'), SlashOutcome::DumpWindows));
+        assert!(matches!(
+            parse("dump-windows", '/'),
+            SlashOutcome::DumpWindows
+        ));
     }
 
     /// SQ-0994. The description names BOTH destinations, because the on-screen
@@ -1488,8 +2283,15 @@ mod tests {
     #[test]
     fn dump_terminal_command_parses_and_names_its_log() {
         let spec = find_command("dump-terminal").expect("dump-terminal is registered");
-        assert!(matches!(parse("dump-terminal", '/'), SlashOutcome::DumpTerminal));
-        assert!(spec.description.contains("dump-terminal.log"), "{}", spec.description);
+        assert!(matches!(
+            parse("dump-terminal", '/'),
+            SlashOutcome::DumpTerminal
+        ));
+        assert!(
+            spec.description.contains("dump-terminal.log"),
+            "{}",
+            spec.description
+        );
         assert_eq!(spec.category, Category::Help);
     }
 
@@ -1510,14 +2312,26 @@ mod tests {
 
     #[test]
     fn play_sound_command_parses_optional_number() {
-        assert!(matches!(parse("play-sound", '/'), SlashOutcome::PlaySound(None)));
-        assert!(matches!(parse("play-sound 3", '/'), SlashOutcome::PlaySound(Some(3))));
-        assert!(matches!(parse("play-sound nope", '/'), SlashOutcome::Error(_)));
+        assert!(matches!(
+            parse("play-sound", '/'),
+            SlashOutcome::PlaySound(None)
+        ));
+        assert!(matches!(
+            parse("play-sound 3", '/'),
+            SlashOutcome::PlaySound(Some(3))
+        ));
+        assert!(matches!(
+            parse("play-sound nope", '/'),
+            SlashOutcome::Error(_)
+        ));
     }
 
     #[test]
     fn play_sound_command_present() {
-        assert_eq!(find_command("play-sound").expect("play-sound").category, Category::Game);
+        assert_eq!(
+            find_command("play-sound").expect("play-sound").category,
+            Category::Game
+        );
     }
 
     #[test]
@@ -1529,38 +2343,104 @@ mod tests {
 
     #[test]
     fn set_game_colours_parses_on_off_auto() {
-        assert!(matches!(parse("set-game-colours on", '/'), SlashOutcome::SetGameColours(Some(true))));
-        assert!(matches!(parse("set-game-colours off", '/'), SlashOutcome::SetGameColours(Some(false))));
-        assert!(matches!(parse("set-game-colours auto", '/'), SlashOutcome::SetGameColours(None)));
-        assert!(matches!(parse("set-game-colours", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("set-game-colours maybe", '/'), SlashOutcome::Error(_)));
-        assert_eq!(find_command("set-game-colours").expect("set-game-colours").category, Category::Style);
+        assert!(matches!(
+            parse("set-game-colours on", '/'),
+            SlashOutcome::SetGameColours(Some(true))
+        ));
+        assert!(matches!(
+            parse("set-game-colours off", '/'),
+            SlashOutcome::SetGameColours(Some(false))
+        ));
+        assert!(matches!(
+            parse("set-game-colours auto", '/'),
+            SlashOutcome::SetGameColours(None)
+        ));
+        assert!(matches!(
+            parse("set-game-colours", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse("set-game-colours maybe", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert_eq!(
+            find_command("set-game-colours")
+                .expect("set-game-colours")
+                .category,
+            Category::Style
+        );
     }
 
     #[test]
     fn set_game_borders_parses_on_off_auto() {
         // on = show borders (borderless=false); off = borderless (true); auto = clear.
-        assert!(matches!(parse("set-game-borders on", '/'), SlashOutcome::SetGameBorderless(Some(false))));
-        assert!(matches!(parse("set-game-borders off", '/'), SlashOutcome::SetGameBorderless(Some(true))));
-        assert!(matches!(parse("set-game-borders auto", '/'), SlashOutcome::SetGameBorderless(None)));
-        assert!(matches!(parse("set-game-borders", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("set-game-borders maybe", '/'), SlashOutcome::Error(_)));
-        assert_eq!(find_command("set-game-borders").expect("set-game-borders").category, Category::Style);
+        assert!(matches!(
+            parse("set-game-borders on", '/'),
+            SlashOutcome::SetGameBorderless(Some(false))
+        ));
+        assert!(matches!(
+            parse("set-game-borders off", '/'),
+            SlashOutcome::SetGameBorderless(Some(true))
+        ));
+        assert!(matches!(
+            parse("set-game-borders auto", '/'),
+            SlashOutcome::SetGameBorderless(None)
+        ));
+        assert!(matches!(
+            parse("set-game-borders", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse("set-game-borders maybe", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert_eq!(
+            find_command("set-game-borders")
+                .expect("set-game-borders")
+                .category,
+            Category::Style
+        );
     }
 
     #[test]
     fn set_v6_render_parses_modes_and_bare_cycles() {
         use crate::config::V6RenderMode;
-        assert!(matches!(parse("set-v6-render hybrid", '/'), SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Hybrid))));
-        assert!(matches!(parse("set-v6-render raster", '/'), SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Raster))));
-        assert!(matches!(parse("set-v6-render extended", '/'), SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Extended))));
+        assert!(matches!(
+            parse("set-v6-render hybrid", '/'),
+            SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Hybrid))
+        ));
+        assert!(matches!(
+            parse("set-v6-render raster", '/'),
+            SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Raster))
+        ));
+        assert!(matches!(
+            parse("set-v6-render extended", '/'),
+            SlashOutcome::SetV6Render(V6RenderArg::Mode(V6RenderMode::Extended))
+        ));
         // SQ-0895 removed `frameless`; it must now be rejected like any other
         // unknown token rather than silently parsing to a mode.
-        assert!(matches!(parse("set-v6-render frameless", '/'), SlashOutcome::Error(_)));
-        assert!(matches!(parse("set-v6-render", '/'), SlashOutcome::SetV6Render(V6RenderArg::Cycle)));
-        assert!(matches!(parse("set-v6-render auto", '/'), SlashOutcome::SetV6Render(V6RenderArg::Auto)));
-        assert!(matches!(parse("set-v6-render sepia", '/'), SlashOutcome::Error(_)));
-        assert_eq!(find_command("set-v6-render").expect("set-v6-render").category, Category::Style);
+        assert!(matches!(
+            parse("set-v6-render frameless", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert!(matches!(
+            parse("set-v6-render", '/'),
+            SlashOutcome::SetV6Render(V6RenderArg::Cycle)
+        ));
+        assert!(matches!(
+            parse("set-v6-render auto", '/'),
+            SlashOutcome::SetV6Render(V6RenderArg::Auto)
+        ));
+        assert!(matches!(
+            parse("set-v6-render sepia", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert_eq!(
+            find_command("set-v6-render")
+                .expect("set-v6-render")
+                .category,
+            Category::Style
+        );
     }
 
     /// SQ-0945: the runtime switch for SQ-0936's magnification ladder. Bare is a
@@ -1568,31 +2448,79 @@ mod tests {
     /// clears this game's override rather than flipping it.
     #[test]
     fn set_v6_pixel_lock_parses_on_off_auto_and_bare_toggles() {
-        assert!(matches!(parse("set-v6-pixel-lock on", '/'), SlashOutcome::SetV6PixelLock(V6PixelLockArg::On)));
-        assert!(matches!(parse("set-v6-pixel-lock off", '/'), SlashOutcome::SetV6PixelLock(V6PixelLockArg::Off)));
-        assert!(matches!(parse("set-v6-pixel-lock auto", '/'), SlashOutcome::SetV6PixelLock(V6PixelLockArg::Auto)));
-        assert!(matches!(parse("set-v6-pixel-lock", '/'), SlashOutcome::SetV6PixelLock(V6PixelLockArg::Toggle)));
-        assert!(matches!(parse("set-v6-pixel-lock maybe", '/'), SlashOutcome::Error(_)));
+        assert!(matches!(
+            parse("set-v6-pixel-lock on", '/'),
+            SlashOutcome::SetV6PixelLock(V6PixelLockArg::On)
+        ));
+        assert!(matches!(
+            parse("set-v6-pixel-lock off", '/'),
+            SlashOutcome::SetV6PixelLock(V6PixelLockArg::Off)
+        ));
+        assert!(matches!(
+            parse("set-v6-pixel-lock auto", '/'),
+            SlashOutcome::SetV6PixelLock(V6PixelLockArg::Auto)
+        ));
+        assert!(matches!(
+            parse("set-v6-pixel-lock", '/'),
+            SlashOutcome::SetV6PixelLock(V6PixelLockArg::Toggle)
+        ));
+        assert!(matches!(
+            parse("set-v6-pixel-lock maybe", '/'),
+            SlashOutcome::Error(_)
+        ));
         // SQ-1045: on/off, bare toggles, anything else is an error rather than a
         // silent no-op — the same shape, one state shorter (there is no `auto`:
         // guidance is one global setting with nothing per-game to inherit from).
-        assert!(matches!(parse("set-guidance on", '/'), SlashOutcome::SetGuidance(GuidanceArg::On)));
-        assert!(matches!(parse("set-guidance off", '/'), SlashOutcome::SetGuidance(GuidanceArg::Off)));
-        assert!(matches!(parse("set-guidance", '/'), SlashOutcome::SetGuidance(GuidanceArg::Toggle)));
-        assert!(matches!(parse("set-guidance auto", '/'), SlashOutcome::SetGuidance(GuidanceArg::Auto)));
-        assert!(matches!(parse("set-guidance maybe", '/'), SlashOutcome::Error(_)));
-        assert_eq!(find_command("set-guidance").expect("set-guidance").category, Category::Style);
+        assert!(matches!(
+            parse("set-guidance on", '/'),
+            SlashOutcome::SetGuidance(GuidanceArg::On)
+        ));
+        assert!(matches!(
+            parse("set-guidance off", '/'),
+            SlashOutcome::SetGuidance(GuidanceArg::Off)
+        ));
+        assert!(matches!(
+            parse("set-guidance", '/'),
+            SlashOutcome::SetGuidance(GuidanceArg::Toggle)
+        ));
+        assert!(matches!(
+            parse("set-guidance auto", '/'),
+            SlashOutcome::SetGuidance(GuidanceArg::Auto)
+        ));
+        assert!(matches!(
+            parse("set-guidance maybe", '/'),
+            SlashOutcome::Error(_)
+        ));
+        assert_eq!(
+            find_command("set-guidance").expect("set-guidance").category,
+            Category::Style
+        );
         // SQ-1104: no arguments at all — the dialog is the question, so anything
         // typed after the name is ignored rather than being a second grammar to
         // keep in step with the two buttons.
-        assert!(matches!(parse("run-font-check", '/'), SlashOutcome::RunFontCheck));
-        assert_eq!(find_command("run-font-check").expect("run-font-check").category, Category::Style);
-        assert_eq!(find_command("set-v6-pixel-lock").expect("set-v6-pixel-lock").category, Category::Style);
+        assert!(matches!(
+            parse("run-font-check", '/'),
+            SlashOutcome::RunFontCheck
+        ));
+        assert_eq!(
+            find_command("run-font-check")
+                .expect("run-font-check")
+                .category,
+            Category::Style
+        );
+        assert_eq!(
+            find_command("set-v6-pixel-lock")
+                .expect("set-v6-pixel-lock")
+                .category,
+            Category::Style
+        );
     }
 
     #[test]
     fn create_game_style_command_removed() {
-        assert!(find_command("create-game-style").is_none(),
-            "create-game-style is replaced by the Save Game Style button");
+        assert!(
+            find_command("create-game-style").is_none(),
+            "create-game-style is replaced by the Save Game Style button"
+        );
     }
 }

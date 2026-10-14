@@ -116,15 +116,14 @@ fn click_inside_window(st: &mut AppState) -> Option<HintMouse> {
 // ── Tab model ────────────────────────────────────────────────────────────────
 
 #[test]
-fn hints_is_the_fourth_tab_on_alt_4_and_journal_tab_hints() {
+fn files_is_the_fourth_tab_and_hints_remains_selectable() {
     assert_eq!(
         JournalTab::ALL,
         [
             JournalTab::Map,
             JournalTab::Room,
             JournalTab::Inventory,
-            JournalTab::Hints,
-            JournalTab::Documents,
+            JournalTab::Files,
             JournalTab::Notes,
         ]
     );
@@ -139,7 +138,7 @@ fn hints_is_the_fourth_tab_on_alt_4_and_journal_tab_hints() {
 }
 
 #[test]
-fn the_bar_names_hints_between_inventory_and_documents_and_degrades() {
+fn the_bar_names_files_after_inventory_and_degrades() {
     let wide = tab_bar_cells(60, JournalTab::Map);
     let text: Vec<&str> = wide.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(
@@ -148,15 +147,14 @@ fn the_bar_names_hints_between_inventory_and_documents_and_degrades() {
             " Map ",
             " Room ",
             " Inventory ",
-            " Hints ",
-            " Documents ",
+            " Files ",
             " Notes ",
         ]
     );
     let short = tab_bar_cells(36, JournalTab::Map);
-    assert_eq!(short[3].text, " Hint ");
+    assert_eq!(short[3].text, " Files ");
     let narrow = tab_bar_cells(10, JournalTab::Hints);
-    assert!(narrow.iter().any(|c| c.hit == TabBarHit::Tab(JournalTab::Hints)), "the active tab always shows");
+    assert!(narrow.iter().any(|c| c.hit == TabBarHit::Tab(JournalTab::Files)), "the active tab always shows");
     assert_eq!(narrow.len(), 3, "‹ active ›");
 }
 
@@ -636,7 +634,7 @@ fn the_cursor_shows_only_in_the_focused_input_and_the_other_is_dimmed() {
 }
 
 #[test]
-fn the_hints_tab_label_wears_a_focus_marker_only_while_hint_focused() {
+fn the_files_tab_label_wears_a_focus_marker_only_while_hint_focused() {
     for honor in [true, false] {
         let mut st = AppState::default();
         st.config.honor_game_colours = honor;
@@ -644,7 +642,7 @@ fn the_hints_tab_label_wears_a_focus_marker_only_while_hint_focused() {
 
         let mut plain = Buffer::empty(r);
         let hits = draw_tab_bar(r, JournalTab::Hints, false, &st.colors, &mut plain);
-        let hint_rect = hits.iter().find(|(h, _)| *h == TabBarHit::Tab(JournalTab::Hints)).unwrap().1;
+        let hint_rect = hits.iter().find(|(h, _)| *h == TabBarHit::Tab(JournalTab::Files)).unwrap().1;
         assert_eq!(plain.cell((hint_rect.x, r.y)).unwrap().symbol(), " ");
 
         let mut marked = Buffer::empty(r);

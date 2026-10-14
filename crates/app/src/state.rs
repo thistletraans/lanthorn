@@ -516,7 +516,10 @@ impl CommandBandState {
     // ── Phrase ───────────────────────────────────────────────────────────────
 
     fn slot_text(&self, slot: BandSlot) -> Option<&str> {
-        self.picks.iter().find(|p| p.slot == slot).map(|p| p.text.as_str())
+        self.picks
+            .iter()
+            .find(|p| p.slot == slot)
+            .map(|p| p.text.as_str())
     }
 
     /// The table entry for `word`, matched case-insensitively (the player types
@@ -644,7 +647,11 @@ impl CommandBandState {
             // Unlabelled when the words ARE the story's own grammar — see
             // `VerbSource::column_label`, and `draw_column` for the row that
             // header only costs when there is something to admit.
-            COL_VERB => self.verb_source.column_label().unwrap_or("VERB").to_string(),
+            COL_VERB => self
+                .verb_source
+                .column_label()
+                .unwrap_or("VERB")
+                .to_string(),
             // The label has to be true of the WHOLE column (SQ-1135): with the
             // object tree's rows and the story's printed words stacked in one
             // list, neither qualifier is, and the bare noun is what is left.
@@ -724,7 +731,10 @@ impl CommandBandState {
         let push = |out: &mut Vec<BandRow>, src: &[String], seen: bool| {
             for w in src {
                 if !out.iter().any(|r| r.text.eq_ignore_ascii_case(w)) {
-                    out.push(BandRow { text: w.clone(), seen });
+                    out.push(BandRow {
+                        text: w.clone(),
+                        seen,
+                    });
                 }
             }
         };
@@ -732,10 +742,11 @@ impl CommandBandState {
             COL_VERB => self
                 .verbs
                 .iter()
-                .filter(|v| {
-                    v.takes_object || !self.quick.iter().any(|q| same_word(q, &v.word))
+                .filter(|v| v.takes_object || !self.quick.iter().any(|q| same_word(q, &v.word)))
+                .map(|v| BandRow {
+                    text: v.word.clone(),
+                    seen: false,
                 })
-                .map(|v| BandRow { text: v.word.clone(), seen: false })
                 .collect(),
             // Here first, then what the story has merely PRINTED (SQ-1135). One
             // column and not two: the second block is the same question asked
@@ -785,7 +796,10 @@ impl CommandBandState {
     fn parse_phrase(&self, input: &str) -> ParsedPhrase {
         let toks: Vec<&str> = input.split_whitespace().collect();
         let Some(vi) = toks.iter().position(|t| self.verb_by_word(t).is_some()) else {
-            return ParsedPhrase { picks: Vec::new(), expected: vec![COL_VERB] };
+            return ParsedPhrase {
+                picks: Vec::new(),
+                expected: vec![COL_VERB],
+            };
         };
         let entry = self.verb_by_word(toks[vi]).expect("just matched");
         let (max_nouns, joiners) = (entry.max_nouns(), entry.joiners());
@@ -801,7 +815,10 @@ impl CommandBandState {
         } else {
             toks[vi].to_string()
         };
-        let mut picks = vec![BandPick { slot: BandSlot::Verb, text: verb_text }];
+        let mut picks = vec![BandPick {
+            slot: BandSlot::Verb,
+            text: verb_text,
+        }];
         let rest = &toks[vi + 1..];
         let push = |picks: &mut Vec<BandPick>, slot, text: String| {
             if !text.is_empty() {
@@ -812,12 +829,12 @@ impl CommandBandState {
         // preposition: a story that writes `put noun in noun` and
         // `put noun on noun` as two lines accepts both, and reading the line
         // back has to accept both too (SQ-1111 — `Arity` had room for one).
-        let split =
-            if max_nouns >= 2 {
-                rest.iter().position(|t| joiners.iter().any(|j| t.eq_ignore_ascii_case(j)))
-            } else {
-                None
-            };
+        let split = if max_nouns >= 2 {
+            rest.iter()
+                .position(|t| joiners.iter().any(|j| t.eq_ignore_ascii_case(j)))
+        } else {
+            None
+        };
         let expected = if max_nouns == 0 {
             Vec::new()
         } else if let Some(j) = split {
@@ -873,7 +890,9 @@ impl CommandBandState {
         }
         let mut best: Option<(u8, usize)> = None;
         for (idx, item) in self.items(self.focus).iter().enumerate() {
-            let Some(rank) = band_match_rank(item, &token) else { continue };
+            let Some(rank) = band_match_rank(item, &token) else {
+                continue;
+            };
             if best.is_none_or(|(r, _)| rank < r) {
                 best = Some((rank, idx));
             }
@@ -893,7 +912,8 @@ impl CommandBandState {
     /// (SQ-0677 unifies the two — Tab picks whichever of these is showing).
     /// `None` when neither applies.
     pub fn highlighted_row(&self, input: &str) -> Option<usize> {
-        self.row_sel.or_else(|| self.nearest_match(input).map(|(_, idx)| idx))
+        self.row_sel
+            .or_else(|| self.nearest_match(input).map(|(_, idx)| idx))
     }
 
     // ── Focus ────────────────────────────────────────────────────────────────
@@ -935,7 +955,13 @@ impl CommandBandState {
     /// clamp math itself stays bespoke to the band (neither of the other two
     /// consumers has a "first press only arms" rule), which is why this
     /// isn't just a call to `list_scroll::nav_key`.
-    pub fn step_row(&mut self, input: &str, delta: i32, viewport: usize, anim: &crate::config::AnimationConfig) {
+    pub fn step_row(
+        &mut self,
+        input: &str,
+        delta: i32,
+        viewport: usize,
+        anim: &crate::config::AnimationConfig,
+    ) {
         let len = self.items(self.focus).len();
         if len == 0 {
             return;
@@ -969,13 +995,23 @@ impl CommandBandState {
     /// same shared [`crate::list_scroll::nav_key`] the story picker and IFDB
     /// modal page with (SQ-0682) — the band adopts standard PageUp/PageDown
     /// here, where it previously had none at all.
-    pub fn page_row(&mut self, input: &str, dir: i32, viewport: usize, anim: &crate::config::AnimationConfig) {
+    pub fn page_row(
+        &mut self,
+        input: &str,
+        dir: i32,
+        viewport: usize,
+        anim: &crate::config::AnimationConfig,
+    ) {
         let len = self.items(self.focus).len();
         if len == 0 {
             return;
         }
         self.seed_scroll_selection(input);
-        let code = if dir > 0 { KeyCode::PageDown } else { KeyCode::PageUp };
+        let code = if dir > 0 {
+            KeyCode::PageDown
+        } else {
+            KeyCode::PageUp
+        };
         crate::list_scroll::nav_key(&mut self.scroll[self.focus], code, len, viewport, anim);
         self.row_sel = Some(self.scroll[self.focus].selected);
     }
@@ -988,7 +1024,13 @@ impl CommandBandState {
         if len == 0 {
             return;
         }
-        crate::list_scroll::nav_key(&mut self.scroll[self.focus], KeyCode::Home, len, viewport, anim);
+        crate::list_scroll::nav_key(
+            &mut self.scroll[self.focus],
+            KeyCode::Home,
+            len,
+            viewport,
+            anim,
+        );
         self.row_sel = Some(0);
     }
 
@@ -1000,7 +1042,13 @@ impl CommandBandState {
         if len == 0 {
             return;
         }
-        crate::list_scroll::nav_key(&mut self.scroll[self.focus], KeyCode::End, len, viewport, anim);
+        crate::list_scroll::nav_key(
+            &mut self.scroll[self.focus],
+            KeyCode::End,
+            len,
+            viewport,
+            anim,
+        );
         self.row_sel = Some(len - 1);
     }
 
@@ -1017,7 +1065,11 @@ impl CommandBandState {
                 return;
             }
         }
-        self.focus = self.focus_stops().into_iter().next_back().unwrap_or(COL_VERB);
+        self.focus = self
+            .focus_stops()
+            .into_iter()
+            .next_back()
+            .unwrap_or(COL_VERB);
     }
 
     // ── Picking ──────────────────────────────────────────────────────────────
@@ -1037,7 +1089,9 @@ impl CommandBandState {
         if !self.col_reachable(col) {
             return;
         }
-        let Some(text) = self.items(col).get(idx).cloned() else { return };
+        let Some(text) = self.items(col).get(idx).cloned() else {
+            return;
+        };
         self.set_slot(Self::col_slot(col), text);
         self.advance();
     }
@@ -1127,8 +1181,14 @@ pub(crate) struct TranscriptSink {
 
 impl TranscriptSink {
     fn open(path: &std::path::Path) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { file, wrote_any: false })
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            file,
+            wrote_any: false,
+        })
     }
 
     /// Write one entry and flush. A blank line separates it from what came
@@ -1168,7 +1228,9 @@ pub fn apply_transcript_elems(state: &mut AppState, elems: &[crate::session::Tra
 }
 
 /// A run of characters in a transcript line carrying Z-machine text-style bits and colour.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct StyleRun {
     pub start: usize, // char offset within the line, inclusive
     pub end: usize,   // char offset, exclusive
@@ -1197,7 +1259,9 @@ pub const GLK_STYLE_TYPED_INPUT: u8 = 0xFF;
 /// the Z-machine and any buffer that set no layout hints render exactly as before.
 /// The renderer turns these into LEADING-SPACE padding in the wrap (so
 /// selection/copy/search coordinates stay consistent with what is drawn).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ParaFmt {
     /// Left indent applied to every wrapped row of the paragraph, in cells.
     #[serde(default)]
@@ -1232,10 +1296,10 @@ pub struct ParaFmt {
 pub fn pack_zcolour(c: zvm::screen::ZColour) -> u32 {
     use zvm::screen::ZColour;
     match c {
-        ZColour::Default    => 0,
+        ZColour::Default => 0,
         ZColour::Standard(n) => (1 << 24) | n as u32,
-        ZColour::True(v)    => (2 << 24) | v as u32,
-        ZColour::True24(v)  => (3 << 24) | (v & 0x00FF_FFFF),
+        ZColour::True(v) => (2 << 24) | v as u32,
+        ZColour::True24(v) => (3 << 24) | (v & 0x00FF_FFFF),
         _ => 0,
     }
 }
@@ -1345,7 +1409,11 @@ pub fn format_sound_resource_list(
     let Some(blorb) = blorb else {
         return vec!["no sound blorb resolved, and none on the medium".to_string()];
     };
-    let sounds: Vec<_> = blorb.resources().iter().filter(|r| &r.usage == b"Snd ").collect();
+    let sounds: Vec<_> = blorb
+        .resources()
+        .iter()
+        .filter(|r| &r.usage == b"Snd ")
+        .collect();
     if sounds.is_empty() {
         return vec!["no Snd resources".to_string()];
     }
@@ -1357,8 +1425,17 @@ pub fn format_sound_resource_list(
             b"MOD " => blorb::SoundKind::Mod,
             _ => blorb::SoundKind::Other,
         };
-        let playable = if sound_kind_to_format(kind).is_some() { "playable" } else { "not decodable" };
-        lines.push(format!("  #{}  {}  {} bytes  {playable}", r.number, sound_kind_label(kind), r.len));
+        let playable = if sound_kind_to_format(kind).is_some() {
+            "playable"
+        } else {
+            "not decodable"
+        };
+        lines.push(format!(
+            "  #{}  {}  {} bytes  {playable}",
+            r.number,
+            sound_kind_label(kind),
+            r.len
+        ));
     }
     lines
 }
@@ -1424,16 +1501,27 @@ pub fn format_play_sound_report(r: &PlaySoundReport) -> Vec<String> {
     let mut lines = vec![format!("/play-sound {}", r.number)];
     lines.push(format!(
         "enable_sound: {}",
-        if r.enable_sound { "on" } else { "off (attempting playback anyway — diagnostic)" }
+        if r.enable_sound {
+            "on"
+        } else {
+            "off (attempting playback anyway — diagnostic)"
+        }
     ));
-    lines.push(format!("audio backend: {}", if r.backend_present { "present" } else { "NONE" }));
+    lines.push(format!(
+        "audio backend: {}",
+        if r.backend_present { "present" } else { "NONE" }
+    ));
     // The medium is listed FIRST because it is consulted first (SQ-0914), and a
     // report whose order disagrees with the resolution order is a report that
     // misleads — which is the same defect SQ-0907 fixed by mentioning the medium at
     // all, over a story whose disk carries fourteen effects.
     lines.push(format!(
         "medium sounds: {}",
-        if r.disk_sounds == 0 { "none".to_string() } else { format!("{} effect(s)", r.disk_sounds) }
+        if r.disk_sounds == 0 {
+            "none".to_string()
+        } else {
+            format!("{} effect(s)", r.disk_sounds)
+        }
     ));
     lines.push(format!(
         "sound blorb: {}",
@@ -1444,7 +1532,10 @@ pub fn format_play_sound_report(r: &PlaySoundReport) -> Vec<String> {
         }
     ));
     let Some((kind, len)) = r.resource else {
-        lines.push(format!("resource #{}: NOT FOUND in either source", r.number));
+        lines.push(format!(
+            "resource #{}: NOT FOUND in either source",
+            r.number
+        ));
         return lines;
     };
     match &r.from_medium {
@@ -1452,7 +1543,10 @@ pub fn format_play_sound_report(r: &PlaySoundReport) -> Vec<String> {
             "effect #{}: found on the medium as {name}, {len} bytes of {kind:?}",
             r.number
         )),
-        None => lines.push(format!("resource #{}: found, kind={:?}, {len} bytes", r.number, kind)),
+        None => lines.push(format!(
+            "resource #{}: found, kind={:?}, {len} bytes",
+            r.number, kind
+        )),
     }
     let Some(format) = r.format else {
         lines.push("format: not decodable".to_string());
@@ -1543,7 +1637,10 @@ pub(crate) fn transcript_filter_matches(filter: TranscriptFilter, kind: Transcri
         // Assist joins the META bucket, not the story one: `/filter story` is
         // the player asking for 1982, and an assist is exactly what 1982 did
         // not have (SQ-1045).
-        TranscriptFilter::Meta => matches!(kind, TranscriptKind::Meta | TranscriptKind::Warning | TranscriptKind::Assist),
+        TranscriptFilter::Meta => matches!(
+            kind,
+            TranscriptKind::Meta | TranscriptKind::Warning | TranscriptKind::Assist
+        ),
     }
 }
 
@@ -1568,10 +1665,15 @@ impl TidyFrame {
     /// A frame is a `layer_subgraph`, which drops every connection leaving the layer, so
     /// rendering it bare shows no ghost rooms (SQ-1697). The crossings are grafted on from
     /// `live` first; a layer with none renders the frame directly, with no extra clone.
-    pub fn render_with_crossings(&self, live: &MapGraph, layer: LayerId) -> mapper::render::RenderMap {
-        let crosses = live.connections().iter().any(|c| {
-            (live.layer_of(c.origin) == layer) != (live.layer_of(c.dest) == layer)
-        });
+    pub fn render_with_crossings(
+        &self,
+        live: &MapGraph,
+        layer: LayerId,
+    ) -> mapper::render::RenderMap {
+        let crosses = live
+            .connections()
+            .iter()
+            .any(|c| (live.layer_of(c.origin) == layer) != (live.layer_of(c.dest) == layer));
         if !crosses {
             return mapper::render::render_layer(&self.graph, layer);
         }
@@ -1599,7 +1701,13 @@ pub struct TidyAnim {
 
 impl TidyAnim {
     pub fn new(frames: Vec<TidyFrame>, layer: LayerId) -> Self {
-        Self { frames, idx: 0, playing: true, layer, last_advance: Instant::now() }
+        Self {
+            frames,
+            idx: 0,
+            playing: true,
+            layer,
+            last_advance: Instant::now(),
+        }
     }
 
     pub fn current(&self) -> &TidyFrame {
@@ -1663,12 +1771,21 @@ impl ReplayState {
     pub fn new(last_idx: usize) -> Self {
         let mut scroll = crate::list_scroll::ListScroll::new();
         scroll.selected = last_idx;
-        Self { idx: last_idx, playing: false, last_advance: Instant::now(), scroll }
+        Self {
+            idx: last_idx,
+            playing: false,
+            last_advance: Instant::now(),
+            scroll,
+        }
     }
 
     /// Step `delta` turns (clamped to `[0, len-1]`) and pause.
     pub fn step(&mut self, delta: isize, len: usize) {
-        if len == 0 { self.idx = 0; self.playing = false; return; }
+        if len == 0 {
+            self.idx = 0;
+            self.playing = false;
+            return;
+        }
         let last = (len - 1) as isize;
         self.idx = (self.idx as isize + delta).clamp(0, last) as usize;
         self.playing = false;
@@ -1759,7 +1876,14 @@ impl ScrollAnim {
     /// every caller of `to` (the transcript's reader-driven scroll, `ListScroll`,
     /// the hint panel) is an ordinary scroll, never a follow.
     pub fn to(from: usize, to: usize, cfg: &crate::config::AnimationConfig) -> Option<Self> {
-        Self::over(from, to, cfg.enabled, cfg.scroll_ms, cfg.easing, ScrollAnimKind::Scroll)
+        Self::over(
+            from,
+            to,
+            cfg.enabled,
+            cfg.scroll_ms,
+            cfg.easing,
+            ScrollAnimKind::Scroll,
+        )
     }
 
     /// Same as [`Self::to`], but with an explicit duration and an explicit
@@ -1778,7 +1902,12 @@ impl ScrollAnim {
         if !enabled || ms == 0 {
             return None;
         }
-        Some(Self { from, to, tween: crate::anim::Tween::new(Duration::from_millis(ms), easing), kind })
+        Some(Self {
+            from,
+            to,
+            tween: crate::anim::Tween::new(Duration::from_millis(ms), easing),
+            kind,
+        })
     }
 
     /// The current displayed offset: `lerp(from, to, tween.progress())`.
@@ -1930,7 +2059,10 @@ pub struct FilePickerState {
 
 impl FilePickerState {
     pub fn new(names: Vec<String>) -> Self {
-        FilePickerState { names, scroll: Default::default() }
+        FilePickerState {
+            names,
+            scroll: Default::default(),
+        }
     }
     pub fn selected(&self) -> Option<&str> {
         self.names.get(self.scroll.selected).map(|s| s.as_str())
@@ -2036,7 +2168,9 @@ pub enum TextEntryKind {
     /// Rename the layer with the given id.
     RenameLayer(LayerId),
     /// Edit a config path field (user_dir) from the config screen.
-    ConfigEditPath { field: ConfigPathField },
+    ConfigEditPath {
+        field: ConfigPathField,
+    },
     /// Enter a filename for a game `create_by_prompt` (write modes). The pending
     /// request lives on `AppState.pending_filename`.
     CreateFile,
@@ -2156,7 +2290,10 @@ pub struct TextEntryDialog {
 impl TextEntryDialog {
     /// Open for `kind`, prefilled with `initial` (caret at the end).
     pub fn new(kind: TextEntryKind, initial: impl Into<String>) -> TextEntryDialog {
-        TextEntryDialog { kind, field: crate::text_field::TextField::new(initial) }
+        TextEntryDialog {
+            kind,
+            field: crate::text_field::TextField::new(initial),
+        }
     }
 }
 
@@ -2166,10 +2303,17 @@ impl TextEntryDialog {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegionOption {
     /// Send the rooms here. The label is `new` or a layer's name.
-    Dest { label: String, target: mapper::layer::MoveTarget },
+    Dest {
+        label: String,
+        target: mapper::layer::MoveTarget,
+    },
     /// Cut this passage, and take the side the selected room is on. The label reads as the
     /// passage does — `s from At West End of Long Hall`.
-    Seam { label: String, from: RoomId, dir: mapper::direction::Direction },
+    Seam {
+        label: String,
+        from: RoomId,
+        dir: mapper::direction::Direction,
+    },
 }
 
 /// What the region prompt is asking, and everything the answer needs (SQ-0439).
@@ -2191,7 +2335,10 @@ pub enum RegionPromptKind {
     /// Several passages lead into the selected room and each cuts a different map, so the options
     /// are those passages. `dest` is whatever the player already named, carried through so
     /// answering this question does not silently reopen the other one.
-    PickSeam { room: RoomId, dest: crate::input::MoveDest },
+    PickSeam {
+        room: RoomId,
+        dest: crate::input::MoveDest,
+    },
     /// The rooms are settled and the destination is not, so the options are the layers they could
     /// land on. `cut` is the passage the seam step chose, kept only to report it once the move
     /// goes through.
@@ -2236,7 +2383,11 @@ impl RegionPrompt {
     /// How many buttons this prompt shows — four declining outcomes for a suggestion (SQ-1298:
     /// Not now / Not this passage / Never for this story, plus Separate), Move/Cancel for a pick.
     pub fn buttons(&self) -> usize {
-        if matches!(self.kind, RegionPromptKind::Suggest { .. }) { 4 } else { 2 }
+        if matches!(self.kind, RegionPromptKind::Suggest { .. }) {
+            4
+        } else {
+            2
+        }
     }
 
     /// The chosen option, or `None` when the list is somehow empty.
@@ -2277,9 +2428,16 @@ pub enum FilenameModal {
 /// Decide the modal for a filename request. Read mode (`fmode == 0x02`) picks from
 /// existing VFS files (or auto-cancels when there are none); every other mode
 /// prompts for a name.
-pub fn filename_modal_for(req: crate::session::FilenameReq, existing_files: usize) -> FilenameModal {
+pub fn filename_modal_for(
+    req: crate::session::FilenameReq,
+    existing_files: usize,
+) -> FilenameModal {
     if req.fmode == 0x02 {
-        if existing_files == 0 { FilenameModal::AutoCancel } else { FilenameModal::Picker }
+        if existing_files == 0 {
+            FilenameModal::AutoCancel
+        } else {
+            FilenameModal::Picker
+        }
     } else {
         FilenameModal::NamePrompt
     }
@@ -2321,7 +2479,12 @@ impl FileBrowserState {
     /// (PickFile only).  Entries that fail to read are silently omitted.
     pub fn build(cwd: std::path::PathBuf, mode: FbMode) -> Self {
         let entries = Self::read_entries(&cwd, mode);
-        FileBrowserState { cwd, entries, scroll: Default::default(), mode }
+        FileBrowserState {
+            cwd,
+            entries,
+            scroll: Default::default(),
+            mode,
+        }
     }
 
     /// (Re)build entries for the current `cwd` and `mode`.
@@ -2343,7 +2506,9 @@ impl FileBrowserState {
         if let Ok(iter) = std::fs::read_dir(cwd) {
             for entry in iter.flatten() {
                 let path = entry.path();
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
                 // Skip hidden files (starting with '.') except we add '..' explicitly.
                 if name.starts_with('.') {
                     continue;
@@ -2365,13 +2530,22 @@ impl FileBrowserState {
         let mut entries: Vec<FbEntry> = Vec::new();
         // Prepend ".." if not at root.
         if cwd.parent().is_some() {
-            entries.push(FbEntry { name: "..".to_owned(), is_dir: true });
+            entries.push(FbEntry {
+                name: "..".to_owned(),
+                is_dir: true,
+            });
         }
         for d in dirs {
-            entries.push(FbEntry { name: d, is_dir: true });
+            entries.push(FbEntry {
+                name: d,
+                is_dir: true,
+            });
         }
         for f in files {
-            entries.push(FbEntry { name: f, is_dir: false });
+            entries.push(FbEntry {
+                name: f,
+                is_dir: false,
+            });
         }
         entries
     }
@@ -2429,7 +2603,11 @@ impl ExitTarget {
     /// intent (`quit_dialog` cancel) is abandoned, so nothing has to remember to
     /// pick `Exit` by hand at each of those sites.
     pub fn for_launch(launched_from_library: bool) -> ExitTarget {
-        if launched_from_library { ExitTarget::Library } else { ExitTarget::Exit }
+        if launched_from_library {
+            ExitTarget::Library
+        } else {
+            ExitTarget::Exit
+        }
     }
 }
 
@@ -2486,8 +2664,12 @@ impl Zoom {
 
 /// Stashed restore data for the launch dialog: (engine save, transcript lines,
 /// transcript kinds, screen state).
-pub type PendingResume =
-    Option<(crate::engine::EngineSave, Vec<String>, Vec<TranscriptKind>, Option<zvm::screen::ScreenState>)>;
+pub type PendingResume = Option<(
+    crate::engine::EngineSave,
+    Vec<String>,
+    Vec<TranscriptKind>,
+    Option<zvm::screen::ScreenState>,
+)>;
 
 /// Transcript bundle loaded from an archive at startup: (lines, kinds, per-line
 /// style runs, per-line paragraph layout, per-line inline image, clear anchors).
@@ -2769,7 +2951,11 @@ pub struct AppState {
     pub scan_attempted: Vec<mapper::graph::RoomId>,
     /// In/Out passages `(origin, portal, dest)` whose compass alias has already been searched
     /// for (SQ-1771): each is asked once, the first time the map sees it. Session state.
-    pub alias_searched: Vec<(mapper::graph::RoomId, mapper::direction::Direction, mapper::graph::RoomId)>,
+    pub alias_searched: Vec<(
+        mapper::graph::RoomId,
+        mapper::direction::Direction,
+        mapper::graph::RoomId,
+    )>,
     /// A Phase-2 randomness search running right now, if any (SQ-1257): after a move Phase 1
     /// could not classify statically (`DeclaredExit::Absent`/`Code`), a reseeded shadow walk
     /// asked whether the story is deciding this direction at random. Session state, never
@@ -2785,8 +2971,10 @@ pub struct AppState {
     /// before a restore/reset is useless data about a room the player is not standing in any
     /// more, and is discarded rather than trusted the moment it disagrees with the room this
     /// turn's move was actually taken from.
-    pub random_exit_pre_move_save:
-        Option<(mapper::graph::RoomId, std::sync::Arc<crate::engine::EngineSave>)>,
+    pub random_exit_pre_move_save: Option<(
+        mapper::graph::RoomId,
+        std::sync::Arc<crate::engine::EngineSave>,
+    )>,
     /// How many Upgrade answers IN A ROW have agreed with the live landing for one marked
     /// direction (SQ-1370) — `(room, direction, count)`, the streak the mark is currently being
     /// judged on, or `None` when nothing is being counted.
@@ -2916,7 +3104,8 @@ pub struct AppState {
     /// so an unchanged transcript (idle redraw / scroll) is not re-wrapped and the
     /// per-line filter+clone waterfall is skipped. Published/consumed by render.
     /// (SQ-0305)
-    pub(crate) transcript_wrap: std::cell::RefCell<Option<crate::render::wrap_cache::CellWrapCache>>,
+    pub(crate) transcript_wrap:
+        std::cell::RefCell<Option<crate::render::wrap_cache::CellWrapCache>>,
     /// The RASTER path's twin of `transcript_wrap` (SQ-1034): the v6 pixel
     /// composite's wrapped story rows, under the same key type and the same
     /// append-or-rebuild rule. Two caches because the two products are different
@@ -3438,8 +3627,6 @@ pub struct AppState {
     /// Defaults to the built-in layout; overwritten at startup from config.
     pub hotkeys: crate::keymap::HotkeyLayout,
 
-
-
     /// Set while a game-initiated (v4+) `@save`/`@restore` is awaiting the host's
     /// file I/O. The saves dialog runs in "in-game" mode: its confirm/cancel call
     /// `session.resume_save`/`resume_restore` instead of the Ctrl+S/Ctrl+R path.
@@ -3449,9 +3636,6 @@ pub struct AppState {
     /// the run loop (where `session`/`mapper`/`last_panes` are in scope) performs
     /// the VM resume + recenter. `Some(true)` = file written. Cleared on resume.
     pub ingame_resume_save: Option<bool>,
-
-
-
 
     /// The resolved runtime config. Set at startup; updated on config-screen Save.
     pub config: crate::config::Config,
@@ -3502,7 +3686,11 @@ pub struct AppState {
     /// hovers below never populate this and it never populates them. Same reasoning as
     /// `matrix_hover` for carrying the rect alongside the id: one room can own more than one
     /// marker (an alias count AND a `?` stub), so the id alone would not say which.
-    pub map_hover: Option<(RoomId, crate::render::map::MarkerKind, ratatui::layout::Rect)>,
+    pub map_hover: Option<(
+        RoomId,
+        crate::render::map::MarkerKind,
+        ratatui::layout::Rect,
+    )>,
 
     /// Session turn counter; incremented on each non-empty `SubmitCommand`.
     /// Written into `Meta` on every save (quick-save and named).
@@ -3536,7 +3724,6 @@ pub struct AppState {
     /// snapshot.
     pub history: Vec<std::sync::Arc<crate::history::TurnRecord>>,
 
-
     /// A game `create_by_prompt` awaiting a host filename (its modal is open).
     pub pending_filename: Option<crate::session::FilenameReq>,
     /// Flag-hop: the chosen filename (`Some(name)`) or cancel (`None`) from the
@@ -3545,7 +3732,6 @@ pub struct AppState {
     pub filename_submitted: Option<Option<String>>,
 
     // ── Autocomplete state ────────────────────────────────────────────────────
-
     /// Cached parser-vocabulary words from the Z-machine dictionary.
     /// Populated once by the run loop after session creation via
     /// `zvm::dictionary::load(&session.machine.mem).words(&session.machine.mem)`.
@@ -3625,7 +3811,6 @@ pub struct AppState {
     pub suggestion_active: bool,
 
     // ── Command history (shell-style Up/Down recall) ──────────────────────────
-
     /// Every non-empty submitted line (game commands and slash commands), oldest
     /// first. Capped at `COMMAND_HISTORY_CAP`; consecutive duplicates are skipped.
     /// Persisted per-game in the `.lanthorn` archive.
@@ -3639,7 +3824,6 @@ pub struct AppState {
     pub history_draft: String,
 
     // ── Adventure title ───────────────────────────────────────────────────────
-
     /// Resolved adventure title (override > banner > filename stem).
     /// Set once at startup. Used bare by the statusbar `{title}` placeholder;
     /// the pane border uses `pane_title` instead.
@@ -3675,10 +3859,12 @@ pub struct AppState {
     pub data_roots: Option<crate::data_roots::DataRoots>,
 
     // ── Inventory panel state ─────────────────────────────────────────────────
-
     /// Which tab the Journal shows (SQ-1684). The Journal itself is on screen
     /// whenever `layout` is `Split`; this is which of its tabs is up.
     pub journal_tab: crate::journal::JournalTab,
+    /// The selected view inside the combined Files tab, retained while another
+    /// Journal tab is selected.
+    pub files_subtab: crate::journal::FilesSubtab,
     /// Per-story player-authored notes (stored in that story's config sidecar).
     pub journal_notes: String,
     /// Character index of the Notes editor caret while editing.
@@ -3737,18 +3923,13 @@ pub struct AppState {
 
     // ── Reset dialog state ────────────────────────────────────────────────────
 
-
     // ── Save-name dialog state ────────────────────────────────────────────────
-
 
     // ── Aux-storage prompt state ──────────────────────────────────────────────
 
-
     // ── Quit dialog state ─────────────────────────────────────────────────────
 
-
     // ── Launch dialog state ───────────────────────────────────────────────────
-
     /// Stashed restore data shown while the launch dialog is open.
     /// Tuple is (engine-tagged save, transcript lines, transcript kinds, screen).
     pub pending_resume: PendingResume,
@@ -3768,9 +3949,7 @@ pub struct AppState {
 
     // ── Hints panel state ─────────────────────────────────────────────────────
 
-
     // ── Search state ──────────────────────────────────────────────────────────
-
     /// The active search query, if any. `None` means no search is active.
     pub search_query: Option<String>,
     /// Positions (0-based) within the visible-index list of lines that match the query.
@@ -3780,9 +3959,7 @@ pub struct AppState {
 
     // ── Dialog focus state ────────────────────────────────────────────────────
 
-
     // ── Char-input mode ───────────────────────────────────────────────────────
-
     /// True when the Z-machine is awaiting a single keypress (`read_char`).
     /// Set each frame by the run loop from `session.pending_input()`.
     /// Used by the renderer to hide the bottom input prompt.
@@ -3797,7 +3974,6 @@ pub struct AppState {
     pub event_wait: bool,
 
     // ── Timed input ───────────────────────────────────────────────────────────
-
     /// When a timed read/read_char is active and honored (`config.honor_timed_input`),
     /// the wall-clock instant the next interrupt tick is due. `None` when no timer
     /// is armed (untimed read, honor disabled, or an overlay/dialog is open).
@@ -4174,6 +4350,7 @@ impl Default for AppState {
             game_dir: std::path::PathBuf::new(),
             data_roots: None,
             journal_tab: crate::journal::JournalTab::default(),
+            files_subtab: crate::journal::FilesSubtab::default(),
             journal_notes: String::new(),
             journal_notes_cursor: 0,
             journal_notes_selection: None,
@@ -4242,12 +4419,36 @@ impl AppState {
             || self.scroll_anim.is_some()
             || self.transcript_scrollbar_animating()
             || self.transcript_scroll_in_motion()
-            || self.overlays.saves.as_ref().is_some_and(|s| s.scroll.has_active_animation())
-            || self.overlays.file_browser.as_ref().is_some_and(|fb| fb.scroll.has_active_animation())
-            || self.overlays.config_screen.as_ref().is_some_and(|cs| cs.scroll.has_active_animation())
-            || self.overlays.command_band.as_ref().is_some_and(|b| b.has_active_animation())
-            || self.overlays.replay.as_ref().is_some_and(|r| r.scroll.has_active_animation())
-            || self.overlays.hints.as_ref().is_some_and(|h| h.has_active_animation())
+            || self
+                .overlays
+                .saves
+                .as_ref()
+                .is_some_and(|s| s.scroll.has_active_animation())
+            || self
+                .overlays
+                .file_browser
+                .as_ref()
+                .is_some_and(|fb| fb.scroll.has_active_animation())
+            || self
+                .overlays
+                .config_screen
+                .as_ref()
+                .is_some_and(|cs| cs.scroll.has_active_animation())
+            || self
+                .overlays
+                .command_band
+                .as_ref()
+                .is_some_and(|b| b.has_active_animation())
+            || self
+                .overlays
+                .replay
+                .as_ref()
+                .is_some_and(|r| r.scroll.has_active_animation())
+            || self
+                .overlays
+                .hints
+                .as_ref()
+                .is_some_and(|h| h.has_active_animation())
             || self.band_dock.active()
             || self.notifications.needs_tick()
     }
@@ -4303,15 +4504,24 @@ impl AppState {
 
     /// True while the Journal's Documents tab is on screen (SQ-1681).
     pub fn documents_tab_visible(&self) -> bool {
-        self.journal_tab == crate::journal::JournalTab::Documents && self.layout == Layout::Split
+        self.journal_tab.top_level() == crate::journal::JournalTab::Files
+            && self.current_files_subtab() == crate::journal::FilesSubtab::Documents
+            && self.layout == Layout::Split
     }
 
     /// True while the Journal's Hints tab is on screen (SQ-1685). The inspector
     /// takes the Journal's slot while it is open, so it hides the tab too.
     pub fn hints_tab_visible(&self) -> bool {
-        self.journal_tab == crate::journal::JournalTab::Hints
+        self.journal_tab.top_level() == crate::journal::JournalTab::Files
+            && self.current_files_subtab() == crate::journal::FilesSubtab::Hints
             && self.layout == Layout::Split
             && self.debug.is_none()
+    }
+
+    /// The active Files child. Legacy direct assignments to `journal_tab`
+    /// remain meaningful for tests and old integrations.
+    pub fn current_files_subtab(&self) -> crate::journal::FilesSubtab {
+        crate::journal::FilesSubtab::from_journal_tab(self.journal_tab).unwrap_or(self.files_subtab)
     }
 
     /// True when the hint session is what typed keys reach (SQ-1685): focus is on
@@ -4325,7 +4535,8 @@ impl AppState {
     /// Whether the Hints tab has something to focus: a running session, or the
     /// chooser's rows (SQ-1690).
     pub fn hints_tab_interactive(&self) -> bool {
-        self.overlays.hints.is_some() || matches!(self.hints_tab.phase, crate::hints_tab::Phase::Choose(_))
+        self.overlays.hints.is_some()
+            || matches!(self.hints_tab.phase, crate::hints_tab::Phase::Choose(_))
     }
 
     /// Show `tab` in the Journal, revealing the Journal first if the layout had
@@ -4333,28 +4544,45 @@ impl AppState {
     /// apart from that reveal.
     pub fn set_journal_tab(&mut self, tab: crate::journal::JournalTab) {
         use crate::journal::JournalTab;
-        if self.journal_notes_editing && tab != JournalTab::Notes {
+        let requested_subtab = crate::journal::FilesSubtab::from_journal_tab(tab);
+        let next_subtab = requested_subtab.unwrap_or(self.files_subtab);
+        let next_tab = match next_subtab {
+            crate::journal::FilesSubtab::Hints => JournalTab::Hints,
+            crate::journal::FilesSubtab::Documents => JournalTab::Documents,
+        };
+        let next_tab = if tab.top_level() == JournalTab::Files {
+            next_tab
+        } else {
+            tab
+        };
+        let was_hints = self.hints_tab_visible() || self.journal_tab == JournalTab::Hints;
+        let was_documents =
+            self.documents_tab_visible() || self.journal_tab == JournalTab::Documents;
+        let will_be_hints = next_tab == JournalTab::Hints;
+        let will_be_documents = next_tab == JournalTab::Documents;
+
+        if self.journal_notes_editing && next_tab != JournalTab::Notes {
             crate::journal_notes::finish_edit(self);
         }
-        if self.journal_tab == JournalTab::Documents && tab != JournalTab::Documents {
+        if was_documents && !will_be_documents {
             // The image view's upload is freed while its tab is away; the
             // re-draw re-places it when the tab is back.
             crate::documents_tab::release_image(self);
         }
-        if tab != JournalTab::Hints && self.focus == Focus::Hints {
+        if !will_be_hints && self.focus == Focus::Hints {
             // Leaving the tab gives the keyboard back to the story.
             self.focus = Focus::Game;
         }
-        if tab == JournalTab::Hints
-            && self.journal_tab != JournalTab::Hints
-            && self.hints_tab.phase == crate::hints_tab::Phase::Ended
-        {
+        if will_be_hints && !was_hints && self.hints_tab.phase == crate::hints_tab::Phase::Ended {
             self.hints_tab.phase = crate::hints_tab::Phase::NotStarted; // a quit session starts afresh
         }
-        if tab == JournalTab::Documents && self.journal_tab != JournalTab::Documents {
+        if will_be_documents && !was_documents {
             self.documents_tab.mark_dirty(); // read the folder when the tab is shown
         }
-        self.journal_tab = tab;
+        if requested_subtab.is_some() || tab == JournalTab::Files {
+            self.files_subtab = next_subtab;
+        }
+        self.journal_tab = next_tab;
         if self.layout == Layout::TranscriptFull {
             self.layout = Layout::Split;
         }
@@ -4421,7 +4649,11 @@ impl AppState {
                 // operand; zvm now defaults a real sound's omitted effect to
                 // 2 = play, so the compensation is gone with it).
                 1 | 2 => {
-                    let freq = if ev.number == 1 { audio::HIGH_BLEEP_HZ } else { audio::LOW_BLEEP_HZ };
+                    let freq = if ev.number == 1 {
+                        audio::HIGH_BLEEP_HZ
+                    } else {
+                        audio::LOW_BLEEP_HZ
+                    };
                     self.audio
                         .get_or_insert_with(|| crate::host::sound::default_sound_sink(volume))
                         .tone(freq, audio::BLEEP_MS, ev.volume);
@@ -4430,7 +4662,9 @@ impl AppState {
                     3 => {
                         if let Some(id) = self.sound_ids.remove(&n) {
                             self.audio
-                                .get_or_insert_with(|| crate::host::sound::default_sound_sink(volume))
+                                .get_or_insert_with(|| {
+                                    crate::host::sound::default_sound_sink(volume)
+                                })
                                 .stop(id);
                         }
                     }
@@ -4442,12 +4676,16 @@ impl AppState {
                             .and_then(|(bytes, kind, _)| {
                                 sound_kind_to_format(kind).and_then(|format| {
                                     self.audio
-                                        .get_or_insert_with(|| crate::host::sound::default_sound_sink(volume))
+                                        .get_or_insert_with(|| {
+                                            crate::host::sound::default_sound_sink(volume)
+                                        })
                                         .play(crate::host::sound::SampleStart {
                                             resource: u32::from(n),
                                             bytes,
                                             format,
-                                            level: crate::host::sound::SampleLevel::ZVolume(ev.volume),
+                                            level: crate::host::sound::SampleLevel::ZVolume(
+                                                ev.volume,
+                                            ),
                                             repeats: ev.repeats,
                                         })
                                 })
@@ -4483,21 +4721,32 @@ impl AppState {
         let volume = self.config.volume;
         for op in ops {
             match *op {
-                SchannelOp::Play { chan, snd, repeats, notify, volume: vol, paused } => {
+                SchannelOp::Play {
+                    chan,
+                    snd,
+                    repeats,
+                    notify,
+                    volume: vol,
+                    paused,
+                } => {
                     // Playing on a busy channel stops the old sound first; the
                     // replaced sound fires no notify.
                     if let Some(old) = self.glulx_channels.remove(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.stop(old); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.stop(old);
+                        }
                         self.glulx_sound_notify.remove(&old);
                     }
-                    let Some(reps) = glk_repeats_to_audio(repeats) else { continue };
+                    let Some(reps) = glk_repeats_to_audio(repeats) else {
+                        continue;
+                    };
                     if let Some(blorb) = &self.sound_blorb {
                         if let Some((bytes, kind)) = blorb.sound(snd) {
                             if let Some(format) = sound_kind_to_format(kind) {
                                 let gain = glk_volume_to_gain(vol);
-                                let sink = self
-                                    .audio
-                                    .get_or_insert_with(|| crate::host::sound::default_sound_sink(volume));
+                                let sink = self.audio.get_or_insert_with(|| {
+                                    crate::host::sound::default_sound_sink(volume)
+                                });
                                 if let Some(id) = sink.play(crate::host::sound::SampleStart {
                                     resource: snd,
                                     bytes,
@@ -4519,7 +4768,9 @@ impl AppState {
                                     // not "empty", so no finish-notify fires until it
                                     // is unpaused and actually plays out.
                                     if paused {
-                                        if let Some(sink) = self.audio.as_mut() { sink.pause(id); }
+                                        if let Some(sink) = self.audio.as_mut() {
+                                            sink.pause(id);
+                                        }
                                     }
                                 }
                             }
@@ -4528,13 +4779,17 @@ impl AppState {
                 }
                 SchannelOp::Stop { chan } => {
                     if let Some(id) = self.glulx_channels.remove(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.stop(id); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.stop(id);
+                        }
                         self.glulx_sound_notify.remove(&id);
                     }
                 }
                 SchannelOp::Destroy { chan } => {
                     if let Some(id) = self.glulx_channels.remove(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.stop(id); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.stop(id);
+                        }
                         self.glulx_sound_notify.remove(&id);
                     }
                     // A destroyed channel can never complete a pending ramp.
@@ -4545,7 +4800,9 @@ impl AppState {
                 SchannelOp::SetVolume { chan, vol } => {
                     let gain = glk_volume_to_gain(vol);
                     if let Some(&id) = self.glulx_channels.get(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.set_gain(id, gain); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.set_gain(id, gain);
+                        }
                     }
                     // A plain set_volume is an immediate change; it interrupts any
                     // in-progress ramp (whose notify is then dropped, per spec §8.3).
@@ -4555,15 +4812,24 @@ impl AppState {
                 }
                 SchannelOp::Pause { chan } => {
                     if let Some(&id) = self.glulx_channels.get(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.pause(id); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.pause(id);
+                        }
                     }
                 }
                 SchannelOp::Unpause { chan } => {
                     if let Some(&id) = self.glulx_channels.get(&chan) {
-                        if let Some(sink) = self.audio.as_mut() { sink.unpause(id); }
+                        if let Some(sink) = self.audio.as_mut() {
+                            sink.unpause(id);
+                        }
                     }
                 }
-                SchannelOp::SetVolumeExt { chan, vol, duration_ms, notify } => {
+                SchannelOp::SetVolumeExt {
+                    chan,
+                    vol,
+                    duration_ms,
+                    notify,
+                } => {
                     let target = glk_volume_to_gain(vol);
                     // A new volume change interrupts any prior one on this channel:
                     // the prior notify AND ramp are dropped (spec §8.3).
@@ -4572,7 +4838,9 @@ impl AppState {
                     if duration_ms == 0 {
                         // Immediate change: jump the sink and current gain to target.
                         if let Some(&id) = self.glulx_channels.get(&chan) {
-                            if let Some(sink) = self.audio.as_mut() { sink.set_gain(id, target); }
+                            if let Some(sink) = self.audio.as_mut() {
+                                sink.set_gain(id, target);
+                            }
                         }
                         self.glulx_gain.insert(chan, target);
                     } else {
@@ -4582,12 +4850,15 @@ impl AppState {
                         // the first step (no jump). Interrupting a live ramp starts the
                         // new one from wherever the gain currently sits.
                         let start_gain = self.glulx_gain.get(&chan).copied().unwrap_or(target);
-                        self.glulx_volume_ramp.insert(chan, VolumeRamp {
-                            start: std::time::Instant::now(),
-                            duration_ms,
-                            start_gain,
-                            target_gain: target,
-                        });
+                        self.glulx_volume_ramp.insert(
+                            chan,
+                            VolumeRamp {
+                                start: std::time::Instant::now(),
+                                duration_ms,
+                                start_gain,
+                                target_gain: target,
+                            },
+                        );
                     }
                     // Schedule the notify at now + duration, regardless of whether a
                     // sound is playing (a volume change may occur between sounds).
@@ -4716,7 +4987,9 @@ impl AppState {
     /// applies to the v6 picture pacer. Both share this one finalize path
     /// rather than forking a second copy of it.
     pub fn finalize_transcript_scroll_anim_now(&mut self) -> bool {
-        let Some(a) = self.scroll_anim.take() else { return false };
+        let Some(a) = self.scroll_anim.take() else {
+            return false;
+        };
         self.transcript_scroll = a.target() as u16;
         true
     }
@@ -4770,8 +5043,14 @@ impl AppState {
         if anim.scrollbar_hide_ms == 0 {
             return 1.0;
         }
-        let Some(shown) = self.scrollbar_shown_at else { return 0.0 };
-        let fade_ms = if anim.enabled { anim.scrollbar_fade_ms } else { 0 };
+        let Some(shown) = self.scrollbar_shown_at else {
+            return 0.0;
+        };
+        let fade_ms = if anim.enabled {
+            anim.scrollbar_fade_ms
+        } else {
+            0
+        };
         let elapsed = shown.elapsed().as_millis() as u64;
         if elapsed < anim.scrollbar_hide_ms {
             return 1.0;
@@ -4808,7 +5087,11 @@ impl AppState {
         if anim.scrollbar_hide_ms == 0 {
             return false;
         }
-        let fade_ms = if anim.enabled { anim.scrollbar_fade_ms } else { 0 };
+        let fade_ms = if anim.enabled {
+            anim.scrollbar_fade_ms
+        } else {
+            0
+        };
         self.scrollbar_shown_at
             .is_some_and(|t| (t.elapsed().as_millis() as u64) < anim.scrollbar_hide_ms + fade_ms)
     }
@@ -4929,7 +5212,10 @@ impl AppState {
                     0 => "the frame on screen now".to_string(),
                     n => format!("{n} modal frame(s) ago — NOT the palette/dialog frame this command runs in"),
                 };
-                (Some(f), format!("  frame described: the last frame the game drew, {age}"))
+                (
+                    Some(f),
+                    format!("  frame described: the last frame the game drew, {age}"),
+                )
             }
             None => (
                 None,
@@ -4998,7 +5284,10 @@ impl AppState {
             return;
         }
         let map = self.v6_cell_map.borrow();
-        let path = map.iter().find(|e| e.label.starts_with("path:")).map(|e| e.label.clone());
+        let path = map
+            .iter()
+            .find(|e| e.label.starts_with("path:"))
+            .map(|e| e.label.clone());
         // An art strip is an uploaded image: under kitty it draws ABOVE the cells,
         // so a region it covers can hold intact text that nobody can see (SQ-0747).
         // Naming those rects beside the grid is what keeps such a region from
@@ -5006,7 +5295,10 @@ impl AppState {
         let images = map
             .iter()
             .filter(|e| e.label.contains("art") && !e.label.contains("rasterised"))
-            .map(|e| crate::cell_dump::ImagePlacement { label: e.label.clone(), rect: e.cells })
+            .map(|e| crate::cell_dump::ImagePlacement {
+                label: e.label.clone(),
+                rect: e.cells,
+            })
             .collect();
         *slot = Some(crate::cell_dump::FrameCells {
             buf: buf.clone(),
@@ -5021,27 +5313,69 @@ impl AppState {
     /// not run" is only half an answer.
     pub fn open_modal_overlays(&self) -> Vec<&'static str> {
         let mut v = Vec::new();
-        if self.overlays.saves.is_some() { v.push("saves"); }
-        if self.overlays.file_browser.is_some() { v.push("file_browser"); }
-        if self.overlays.file_picker.is_some() { v.push("file_picker"); }
-        if self.overlays.config_screen.is_some() { v.push("config_screen"); }
-        if self.overlays.palette.is_some() { v.push("palette"); }
-        if self.overlays.hotkey_dialog { v.push("hotkey_dialog"); }
-        if self.overlays.text_entry.is_some() { v.push("text_entry"); }
-        if self.overlays.confirm_delete_save.is_some() { v.push("confirm_delete_save"); }
-        if self.overlays.confirm_overwrite_save.is_some() { v.push("confirm_overwrite_save"); }
-        if self.overlays.confirm_spoiler_document.is_some() { v.push("confirm_spoiler_document"); }
-        if self.overlays.fetch_keep.is_some() { v.push("fetch_keep"); }
-        if self.overlays.reset_dialog { v.push("reset_dialog"); }
-        if self.overlays.game_over { v.push("game_over"); }
-        if self.overlays.save_name_dialog.is_some() { v.push("save_name_dialog"); }
-        if self.overlays.history_prompt { v.push("history_prompt"); }
-        if self.overlays.font_check { v.push("font_check"); }
-        if self.overlays.aux_prompt { v.push("aux_prompt"); }
-        if self.overlays.quit_dialog { v.push("quit_dialog"); }
-        if self.overlays.launch_dialog { v.push("launch_dialog"); }
-        if self.overlays.replay.is_some() { v.push("replay"); }
-        if self.resize_mode { v.push("resize_mode"); }
+        if self.overlays.saves.is_some() {
+            v.push("saves");
+        }
+        if self.overlays.file_browser.is_some() {
+            v.push("file_browser");
+        }
+        if self.overlays.file_picker.is_some() {
+            v.push("file_picker");
+        }
+        if self.overlays.config_screen.is_some() {
+            v.push("config_screen");
+        }
+        if self.overlays.palette.is_some() {
+            v.push("palette");
+        }
+        if self.overlays.hotkey_dialog {
+            v.push("hotkey_dialog");
+        }
+        if self.overlays.text_entry.is_some() {
+            v.push("text_entry");
+        }
+        if self.overlays.confirm_delete_save.is_some() {
+            v.push("confirm_delete_save");
+        }
+        if self.overlays.confirm_overwrite_save.is_some() {
+            v.push("confirm_overwrite_save");
+        }
+        if self.overlays.confirm_spoiler_document.is_some() {
+            v.push("confirm_spoiler_document");
+        }
+        if self.overlays.fetch_keep.is_some() {
+            v.push("fetch_keep");
+        }
+        if self.overlays.reset_dialog {
+            v.push("reset_dialog");
+        }
+        if self.overlays.game_over {
+            v.push("game_over");
+        }
+        if self.overlays.save_name_dialog.is_some() {
+            v.push("save_name_dialog");
+        }
+        if self.overlays.history_prompt {
+            v.push("history_prompt");
+        }
+        if self.overlays.font_check {
+            v.push("font_check");
+        }
+        if self.overlays.aux_prompt {
+            v.push("aux_prompt");
+        }
+        if self.overlays.quit_dialog {
+            v.push("quit_dialog");
+        }
+        if self.overlays.launch_dialog {
+            v.push("launch_dialog");
+        }
+        if self.overlays.replay.is_some() {
+            v.push("replay");
+        }
+        if self.resize_mode {
+            v.push("resize_mode");
+        }
         v
     }
 
@@ -5078,7 +5412,10 @@ impl AppState {
                 return l;
             }
         }
-        graph.current().map(|id| graph.layer_of(id)).unwrap_or(MAIN_LAYER)
+        graph
+            .current()
+            .map(|id| graph.layer_of(id))
+            .unwrap_or(MAIN_LAYER)
     }
 
     /// Borrow the live map's routed render model for `layer`. The routing in
@@ -5192,7 +5529,12 @@ impl AppState {
             };
             mapper::render::render_layer_traced(&g, layer, &mut push)
         });
-        *job = Some(RenderJob { handle, layer, gen, started: std::time::Instant::now() });
+        *job = Some(RenderJob {
+            handle,
+            layer,
+            gen,
+            started: std::time::Instant::now(),
+        });
     }
 
     /// Poll the background map-render worker: if it has finished, install its
@@ -5221,8 +5563,11 @@ impl AppState {
                         let steps = self.render_steps_snapshot();
                         write_map_trace(self.config.logs_root(), &steps, true);
                     }
-                    *self.map_render.borrow_mut() =
-                        Some(MapRenderCache { gen: job.gen, layer: job.layer, rm });
+                    *self.map_render.borrow_mut() = Some(MapRenderCache {
+                        gen: job.gen,
+                        layer: job.layer,
+                        rm,
+                    });
                     // The derived tables described the model this replaces — and
                     // the first real route lands at the SAME `(gen, layer)` as
                     // the empty placeholder it supersedes, so the key alone
@@ -5274,13 +5619,21 @@ impl AppState {
         self.tidy_job
             .as_ref()
             .map(|j| j.started.elapsed())
-            .or_else(|| self.render_job.borrow().as_ref().map(|j| j.started.elapsed()))
+            .or_else(|| {
+                self.render_job
+                    .borrow()
+                    .as_ref()
+                    .map(|j| j.started.elapsed())
+            })
     }
 
     /// Snapshot the in-flight render worker's phase trace, for the map's top-right
     /// progress overlay (SQ-0379).
     pub fn render_steps_snapshot(&self) -> Vec<String> {
-        self.render_steps.lock().map(|s| s.clone()).unwrap_or_default()
+        self.render_steps
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     /// Advance keyboard focus one step (Tab). See [`cycle_focus`].
@@ -5314,10 +5667,20 @@ impl AppState {
         let total = hint_stops + extra + 1;
         let cur = match self.focus {
             Focus::Game => 0,
-            Focus::Hints => if hints { 1 } else { 0 },
+            Focus::Hints => {
+                if hints {
+                    1
+                } else {
+                    0
+                }
+            }
             Focus::Map => hint_stops + 1 + self.debug.as_ref().map_or(0, |p| p.focus),
         };
-        let next = if forward { (cur + 1) % total } else { (cur + total - 1) % total };
+        let next = if forward {
+            (cur + 1) % total
+        } else {
+            (cur + total - 1) % total
+        };
         if next == 0 {
             self.focus = Focus::Game;
         } else if hints && next == 1 {
@@ -5370,7 +5733,11 @@ impl AppState {
         match targets.iter().position(|t| *t == self.resize_target) {
             Some(idx) => {
                 let n = targets.len();
-                let next = if forward { (idx + 1) % n } else { (idx + n - 1) % n };
+                let next = if forward {
+                    (idx + 1) % n
+                } else {
+                    (idx + n - 1) % n
+                };
                 self.resize_target = targets[next];
             }
             None => self.resize_target = *first,
@@ -5496,7 +5863,7 @@ impl AppState {
     /// is smaller than `zoom.steps()` (19×11). Using the actual cell footprint
     /// keeps the target room near the pane centre rather than at the top edge.
     pub fn recenter_on(&mut self, cell: (i32, i32), pane_w: u16, pane_h: u16) {
-        use crate::render::map::{BOX_W, BOX_H, MIN_GUTTER};
+        use crate::render::map::{BOX_H, BOX_W, MIN_GUTTER};
         let (sw, sh) = match self.zoom {
             Zoom::Boxes => (BOX_W + MIN_GUTTER, BOX_H + MIN_GUTTER), // 13 × 7
             _ => self.zoom.steps(),
@@ -5527,7 +5894,11 @@ impl AppState {
     pub fn visible_transcript_indices_from(&self, from: usize) -> Vec<usize> {
         (from.min(self.transcript.len())..self.transcript.len())
             .filter(|&i| {
-                let kind = self.transcript_kinds.get(i).copied().unwrap_or(TranscriptKind::Story);
+                let kind = self
+                    .transcript_kinds
+                    .get(i)
+                    .copied()
+                    .unwrap_or(TranscriptKind::Story);
                 transcript_filter_matches(self.transcript_filter, kind)
             })
             .collect()
@@ -5587,8 +5958,12 @@ impl AppState {
     /// no-op when the line is already that short. Not an epoch bump: it only
     /// undoes a tail-grow.
     pub fn shrink_last_transcript_line(&mut self, chars: usize) {
-        let Some(last) = self.transcript.last_mut() else { return };
-        let Some((byte, _)) = last.char_indices().nth(chars) else { return };
+        let Some(last) = self.transcript.last_mut() else {
+            return;
+        };
+        let Some((byte, _)) = last.char_indices().nth(chars) else {
+            return;
+        };
         last.truncate(byte);
         if let Some(runs) = self.transcript_runs.last_mut() {
             runs.retain(|r| r.start < chars);
@@ -5640,10 +6015,18 @@ impl AppState {
     /// A write error disables the sink and reports once, rather than
     /// crashing or spamming a Warning on every subsequent turn.
     fn stream_transcript(&mut self, text: &str, kind: TranscriptKind) {
-        if !matches!(kind, TranscriptKind::Story | TranscriptKind::Input | TranscriptKind::Warning | TranscriptKind::Assist) {
+        if !matches!(
+            kind,
+            TranscriptKind::Story
+                | TranscriptKind::Input
+                | TranscriptKind::Warning
+                | TranscriptKind::Assist
+        ) {
             return;
         }
-        let Some(mut sink) = self.transcript_sink.take() else { return };
+        let Some(mut sink) = self.transcript_sink.take() else {
+            return;
+        };
         match sink.write_entry(text, kind) {
             Ok(()) => self.transcript_sink = Some(sink),
             Err(_) => self.push_transcript_kind(
@@ -5689,14 +6072,23 @@ impl AppState {
                 self.transcript_tail_insert.set(None);
             }
             TranscriptEdit::Inserted { at, count } => {
-                debug_assert!(count > 0, "an insert of zero lines is a no-op mischaracterized as Inserted");
+                debug_assert!(
+                    count > 0,
+                    "an insert of zero lines is a no-op mischaracterized as Inserted"
+                );
                 // Lines at and after `at` shifted down (SQ-1715).
                 self.bump_transcript_epoch();
                 self.transcript_edits = self.transcript_edits.wrapping_add(1);
                 let since_edits = self.transcript_edits - 1;
                 let run = match self.transcript_tail_insert.take() {
-                    Some(prev) => TailInsertRun { since_edits: prev.since_edits, min_at: prev.min_at.min(at) },
-                    None => TailInsertRun { since_edits, min_at: at },
+                    Some(prev) => TailInsertRun {
+                        since_edits: prev.since_edits,
+                        min_at: prev.min_at.min(at),
+                    },
+                    None => TailInsertRun {
+                        since_edits,
+                        min_at: at,
+                    },
                 };
                 self.transcript_tail_insert.set(Some(run));
             }
@@ -5730,8 +6122,10 @@ impl AppState {
     pub fn push_transcript_kind(&mut self, text: &str, kind: TranscriptKind) {
         self.touch_transcript(TranscriptEdit::Appended);
         self.transcript_styles.resize(self.transcript.len(), None); // self-heal alignment
-        self.transcript_runs.resize(self.transcript.len(), Vec::new()); // self-heal alignment
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default()); // self-heal alignment
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new()); // self-heal alignment
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default()); // self-heal alignment
         self.transcript_images.resize(self.transcript.len(), None); // self-heal alignment
         for line in text.split('\n') {
             self.transcript.push(line.to_owned());
@@ -5760,8 +6154,10 @@ impl AppState {
             None => TranscriptEdit::Appended,
         });
         self.transcript_styles.resize(self.transcript.len(), None);
-        self.transcript_runs.resize(self.transcript.len(), Vec::new());
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default());
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new());
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default());
         self.transcript_images.resize(self.transcript.len(), None);
         for (k, line) in text.split('\n').enumerate() {
             match base {
@@ -5860,7 +6256,11 @@ impl AppState {
         self.assist_intro_line = None;
         if !self.assist_preamble_shown {
             self.assist_preamble_shown = true;
-            let intro = self.colors.theme.get(crate::assist::AssistTone::Help.selector()).style;
+            let intro = self
+                .colors
+                .theme
+                .get(crate::assist::AssistTone::Help.selector())
+                .style;
             let line = crate::assist::preamble(self.symbols.assist_gutter);
             // Capture where the line will land BEFORE pushing it, not
             // `len() - 1` after: in inline-prompt mode (`command_bar = false`)
@@ -5871,7 +6271,9 @@ impl AppState {
             // call and the one below, so it agrees with the index
             // `push_transcript_internal_styled`'s own `insert_above_prompt_at()`
             // call computes internally.
-            let intro_at = self.insert_above_prompt_at().unwrap_or(self.transcript.len());
+            let intro_at = self
+                .insert_above_prompt_at()
+                .unwrap_or(self.transcript.len());
             self.push_transcript_internal_styled(&line, TranscriptKind::Assist, intro);
             self.assist_intro_line = Some(intro_at);
         }
@@ -5929,7 +6331,8 @@ impl AppState {
         self.transcript.last_mut().unwrap().push_str(text);
         let end = start + text.chars().count();
         if end > start {
-            self.transcript_runs.resize(self.transcript.len(), Vec::new()); // self-heal alignment
+            self.transcript_runs
+                .resize(self.transcript.len(), Vec::new()); // self-heal alignment
             if let Some(runs) = self.transcript_runs.last_mut() {
                 // The prompt's colours are the trailing run's fg/bg (SQ-0269). Only
                 // fg/bg are taken, not reverse/bold bits or a hyperlink.
@@ -5964,7 +6367,10 @@ impl AppState {
     /// run, else the colour prevailing before it -- never from engine memory, which
     /// a Save State restore would reset. With neither, there is no reference and
     /// the story's ink (and Z-machine bits) count as no opinion.
-    pub fn input_style_against_prompt(&self, raw: crate::engine::InputStyle) -> crate::engine::InputStyle {
+    pub fn input_style_against_prompt(
+        &self,
+        raw: crate::engine::InputStyle,
+    ) -> crate::engine::InputStyle {
         let trailing = self.transcript_runs.last().and_then(|runs| runs.last());
         let prevailing = self.prevailing_run_colour_before(self.transcript.len());
         // Nothing on screen to compare with (the boot banner is pushed as flat text):
@@ -5983,7 +6389,11 @@ impl AppState {
             _ => prevailing.map(|(fg, _)| fg).unwrap_or(0),
         };
         crate::engine::InputStyle {
-            bits: if raw.bits_vs_prompt && raw.bits == bits { 0 } else { raw.bits },
+            bits: if raw.bits_vs_prompt && raw.bits == bits {
+                0
+            } else {
+                raw.bits
+            },
             ink: if raw.ink == fg { 0 } else { raw.ink },
             bits_vs_prompt: raw.bits_vs_prompt,
         }
@@ -6090,10 +6500,26 @@ impl AppState {
         let mut runs: Vec<StyleRun> = Vec::new();
         for (c, &(bits, cf, cb, link, gs)) in per.iter().enumerate() {
             match runs.last_mut() {
-                Some(last) if last.end == c && last.bits == bits && last.fg == cf && last.bg == cb && last.link == link && last.glk_style == gs => {
+                Some(last)
+                    if last.end == c
+                        && last.bits == bits
+                        && last.fg == cf
+                        && last.bg == cb
+                        && last.link == link
+                        && last.glk_style == gs =>
+                {
                     last.end = c + 1;
                 }
-                _ => runs.push(StyleRun { start: c, end: c + 1, bits, fg: cf, bg: cb, link, glk_style: gs, ink: 0 }),
+                _ => runs.push(StyleRun {
+                    start: c,
+                    end: c + 1,
+                    bits,
+                    fg: cf,
+                    bg: cb,
+                    link,
+                    glk_style: gs,
+                    ink: 0,
+                }),
             }
         }
         if idx < self.transcript_runs.len() {
@@ -6110,11 +6536,18 @@ impl AppState {
     }
 
     /// Append lines with the given kind and an explicit per-line render style.
-    pub fn push_transcript_styled(&mut self, text: &str, kind: TranscriptKind, style: ratatui::style::Style) {
+    pub fn push_transcript_styled(
+        &mut self,
+        text: &str,
+        kind: TranscriptKind,
+        style: ratatui::style::Style,
+    ) {
         self.touch_transcript(TranscriptEdit::Appended);
         self.transcript_styles.resize(self.transcript.len(), None); // self-heal alignment
-        self.transcript_runs.resize(self.transcript.len(), Vec::new()); // self-heal alignment
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default()); // self-heal alignment
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new()); // self-heal alignment
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default()); // self-heal alignment
         self.transcript_images.resize(self.transcript.len(), None); // self-heal alignment
         for line in text.split('\n') {
             self.transcript.push(line.to_owned());
@@ -6129,7 +6562,12 @@ impl AppState {
 
     /// Like [`push_transcript_styled`], but inserts app-internal styled output
     /// above a trailing game prompt in inline-prompt mode (SQ-0270).
-    pub fn push_transcript_internal_styled(&mut self, text: &str, kind: TranscriptKind, style: ratatui::style::Style) {
+    pub fn push_transcript_internal_styled(
+        &mut self,
+        text: &str,
+        kind: TranscriptKind,
+        style: ratatui::style::Style,
+    ) {
         let base = self.insert_above_prompt_at();
         // See `push_transcript_internal`: an insert above the prompt is a
         // repairable `Inserted`, not the opaque `Rewrote` (SQ-1179).
@@ -6139,8 +6577,10 @@ impl AppState {
             None => TranscriptEdit::Appended,
         });
         self.transcript_styles.resize(self.transcript.len(), None);
-        self.transcript_runs.resize(self.transcript.len(), Vec::new());
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default());
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new());
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default());
         self.transcript_images.resize(self.transcript.len(), None);
         for (k, line) in text.split('\n').enumerate() {
             match base {
@@ -6192,8 +6632,10 @@ impl AppState {
         }
         self.touch_transcript(TranscriptEdit::Appended);
         self.transcript_styles.resize(self.transcript.len(), None);
-        self.transcript_runs.resize(self.transcript.len(), Vec::new());
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default());
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new());
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default());
         self.transcript_images.resize(self.transcript.len(), None);
 
         // Walk `text` char-by-char while consuming the chunk list in lockstep.
@@ -6249,7 +6691,16 @@ impl AppState {
             // Consume the '\n' separator's chunk char (one per separator, i.e.
             // before every line except the first).
             if !first {
-                refill(&mut rem, &mut bits, &mut fg, &mut bg, &mut link, &mut para, &mut glk_style, &mut nowrap);
+                refill(
+                    &mut rem,
+                    &mut bits,
+                    &mut fg,
+                    &mut bg,
+                    &mut link,
+                    &mut para,
+                    &mut glk_style,
+                    &mut nowrap,
+                );
                 rem = rem.saturating_sub(1);
             }
             first = false;
@@ -6261,7 +6712,16 @@ impl AppState {
             let mut line_nowrap: Option<u32> = None;
             let mut runs: Vec<StyleRun> = Vec::new();
             for (col, _ch) in line.chars().enumerate() {
-                refill(&mut rem, &mut bits, &mut fg, &mut bg, &mut link, &mut para, &mut glk_style, &mut nowrap);
+                refill(
+                    &mut rem,
+                    &mut bits,
+                    &mut fg,
+                    &mut bg,
+                    &mut link,
+                    &mut para,
+                    &mut glk_style,
+                    &mut nowrap,
+                );
                 if line_para.is_none() {
                     line_para = Some(para);
                 }
@@ -6276,10 +6736,26 @@ impl AppState {
                 let has_style = bits != 0 || pfg != 0 || pbg != 0 || link != 0 || glk_style != 0;
                 if has_style {
                     match runs.last_mut() {
-                        Some(r) if r.end == col && r.bits == bits && r.fg == pfg && r.bg == pbg && r.link == link && r.glk_style == glk_style => {
+                        Some(r)
+                            if r.end == col
+                                && r.bits == bits
+                                && r.fg == pfg
+                                && r.bg == pbg
+                                && r.link == link
+                                && r.glk_style == glk_style =>
+                        {
                             r.end = col + 1;
                         }
-                        _ => runs.push(StyleRun { start: col, end: col + 1, bits, fg: pfg, bg: pbg, link, glk_style, ink: 0 }),
+                        _ => runs.push(StyleRun {
+                            start: col,
+                            end: col + 1,
+                            bits,
+                            fg: pfg,
+                            bg: pbg,
+                            link,
+                            glk_style,
+                            ink: 0,
+                        }),
                     }
                 }
                 rem = rem.saturating_sub(1);
@@ -6289,7 +6765,10 @@ impl AppState {
             self.transcript_kinds.push(kind);
             self.transcript_styles.push(None);
             self.transcript_runs.push(runs);
-            self.transcript_para.push(ParaFmt { nowrap_from: line_nowrap, ..line_para.unwrap_or_default() });
+            self.transcript_para.push(ParaFmt {
+                nowrap_from: line_nowrap,
+                ..line_para.unwrap_or_default()
+            });
             self.transcript_images.push(None);
         }
         self.stream_transcript(text, kind);
@@ -6366,8 +6845,10 @@ impl AppState {
     pub fn push_transcript_image(&mut self, img: crate::inline_image::InlineImage) {
         self.touch_transcript(TranscriptEdit::Appended);
         self.transcript_styles.resize(self.transcript.len(), None);
-        self.transcript_runs.resize(self.transcript.len(), Vec::new());
-        self.transcript_para.resize(self.transcript.len(), ParaFmt::default());
+        self.transcript_runs
+            .resize(self.transcript.len(), Vec::new());
+        self.transcript_para
+            .resize(self.transcript.len(), ParaFmt::default());
         self.transcript_images.resize(self.transcript.len(), None);
         self.transcript.push(String::new());
         self.transcript_kinds.push(TranscriptKind::Story);
@@ -6492,7 +6973,9 @@ impl AppState {
             return None;
         }
         let cell = (col - x0) as usize;
-        Some(crate::textwidth::col_to_char_idx(self.input.as_str(), cell).min(self.input.char_len()))
+        Some(
+            crate::textwidth::col_to_char_idx(self.input.as_str(), cell).min(self.input.char_len()),
+        )
     }
 
     /// Clear the current autocomplete suggestions.
@@ -6572,7 +7055,8 @@ impl AppState {
         } else {
             // Past the newest entry: restore the draft.
             self.history_cursor = None;
-            self.input.set(std::mem::take(&mut self.history_draft), true);
+            self.input
+                .set(std::mem::take(&mut self.history_draft), true);
         }
         self.clear_suggestions();
     }
@@ -6594,12 +7078,18 @@ impl AppState {
             .iter()
             .enumerate()
             .filter(|&(_, &raw_idx)| {
-                self.transcript[raw_idx].to_lowercase().contains(&query_lower)
+                self.transcript[raw_idx]
+                    .to_lowercase()
+                    .contains(&query_lower)
             })
             .map(|(pos, _)| pos)
             .collect();
         let count = self.search_matches.len();
-        self.search_idx = if start_backward && count > 0 { count - 1 } else { 0 };
+        self.search_idx = if start_backward && count > 0 {
+            count - 1
+        } else {
+            0
+        };
         self.search_query = Some(query.to_string());
         count
     }
@@ -6660,11 +7150,56 @@ mod tests {
     fn filename_modal_for_picks_prompt_picker_or_autocancel() {
         use super::{filename_modal_for, FilenameModal};
         use crate::session::FilenameReq;
-        assert_eq!(filename_modal_for(FilenameReq { usage: 0, fmode: 0x01 }, 3), FilenameModal::NamePrompt);
-        assert_eq!(filename_modal_for(FilenameReq { usage: 0, fmode: 0x05 }, 0), FilenameModal::NamePrompt);
-        assert_eq!(filename_modal_for(FilenameReq { usage: 0, fmode: 0x03 }, 0), FilenameModal::NamePrompt);
-        assert_eq!(filename_modal_for(FilenameReq { usage: 0, fmode: 0x02 }, 2), FilenameModal::Picker);
-        assert_eq!(filename_modal_for(FilenameReq { usage: 0, fmode: 0x02 }, 0), FilenameModal::AutoCancel);
+        assert_eq!(
+            filename_modal_for(
+                FilenameReq {
+                    usage: 0,
+                    fmode: 0x01
+                },
+                3
+            ),
+            FilenameModal::NamePrompt
+        );
+        assert_eq!(
+            filename_modal_for(
+                FilenameReq {
+                    usage: 0,
+                    fmode: 0x05
+                },
+                0
+            ),
+            FilenameModal::NamePrompt
+        );
+        assert_eq!(
+            filename_modal_for(
+                FilenameReq {
+                    usage: 0,
+                    fmode: 0x03
+                },
+                0
+            ),
+            FilenameModal::NamePrompt
+        );
+        assert_eq!(
+            filename_modal_for(
+                FilenameReq {
+                    usage: 0,
+                    fmode: 0x02
+                },
+                2
+            ),
+            FilenameModal::Picker
+        );
+        assert_eq!(
+            filename_modal_for(
+                FilenameReq {
+                    usage: 0,
+                    fmode: 0x02
+                },
+                0
+            ),
+            FilenameModal::AutoCancel
+        );
     }
 
     #[test]
@@ -6688,11 +7223,19 @@ mod tests {
         state.sound_routines.insert(1, 0x1234);
         state.glulx_channels.insert(1, 5);
         state.glulx_sound_notify.insert(5, (7, 42));
-        state.glulx_volume_notify.insert(1, (std::time::Instant::now(), 9));
+        state
+            .glulx_volume_notify
+            .insert(1, (std::time::Instant::now(), 9));
         state.glulx_gain.insert(1, 0.5);
-        state.glulx_volume_ramp.insert(1, VolumeRamp {
-            start: std::time::Instant::now(), duration_ms: 500, start_gain: 1.0, target_gain: 0.0,
-        });
+        state.glulx_volume_ramp.insert(
+            1,
+            VolumeRamp {
+                start: std::time::Instant::now(),
+                duration_ms: 500,
+                start_gain: 1.0,
+                target_gain: 0.0,
+            },
+        );
         state.reset_sound_sidecars();
         assert!(state.sound_ids.is_empty());
         assert!(state.sound_routines.is_empty());
@@ -6706,11 +7249,31 @@ mod tests {
     #[test]
     fn ramp_gain_interpolates_at_endpoints_and_midpoint() {
         // t=0 → start; t=mid → linear midpoint; t>=end (and zero duration) → target.
-        assert_eq!(ramp_gain(1.0, 0.0, 0, 1000), 1.0, "t=0 sits at the start gain");
-        assert_eq!(ramp_gain(1.0, 0.0, 500, 1000), 0.5, "halfway is the midpoint");
-        assert_eq!(ramp_gain(1.0, 0.0, 1000, 1000), 0.0, "t=end lands on target");
-        assert_eq!(ramp_gain(1.0, 0.0, 5000, 1000), 0.0, "past the end clamps to target");
-        assert_eq!(ramp_gain(0.2, 0.8, 0, 0), 0.8, "zero duration is an immediate jump");
+        assert_eq!(
+            ramp_gain(1.0, 0.0, 0, 1000),
+            1.0,
+            "t=0 sits at the start gain"
+        );
+        assert_eq!(
+            ramp_gain(1.0, 0.0, 500, 1000),
+            0.5,
+            "halfway is the midpoint"
+        );
+        assert_eq!(
+            ramp_gain(1.0, 0.0, 1000, 1000),
+            0.0,
+            "t=end lands on target"
+        );
+        assert_eq!(
+            ramp_gain(1.0, 0.0, 5000, 1000),
+            0.0,
+            "past the end clamps to target"
+        );
+        assert_eq!(
+            ramp_gain(0.2, 0.8, 0, 0),
+            0.8,
+            "zero duration is an immediate jump"
+        );
         // Rising ramp, quarter point.
         assert!((ramp_gain(0.0, 1.0, 250, 1000) - 0.25).abs() < 1e-6);
     }
@@ -6721,37 +7284,87 @@ mod tests {
         let mut state = AppState::default();
         state.config.enable_sound = true;
         state.audio = Some(crate::host::sound::default_sound_sink(50)); // silent in tests: no device
-        // Seed the channel's current gain (as a prior play/set_volume would).
+                                                                        // Seed the channel's current gain (as a prior play/set_volume would).
         state.glulx_gain.insert(1, 1.0);
         // A ramped set_volume_ext installs a ramp from the current gain to target
         // (vol 0 → gain 0) and does NOT jump the stored gain immediately.
         let t0 = std::time::Instant::now();
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt { chan: 1, vol: 0, duration_ms: 1000, notify: 7 }]);
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt {
+            chan: 1,
+            vol: 0,
+            duration_ms: 1000,
+            notify: 7,
+        }]);
         let ramp = *state.glulx_volume_ramp.get(&1).expect("ramp installed");
-        assert_eq!(ramp.start_gain, 1.0, "ramp starts from the channel's current gain");
+        assert_eq!(
+            ramp.start_gain, 1.0,
+            "ramp starts from the channel's current gain"
+        );
         assert_eq!(ramp.target_gain, 0.0, "ramp targets the new volume's gain");
-        assert_eq!(state.glulx_volume_notify.get(&1).map(|&(_, n)| n), Some(7), "notify still scheduled at the deadline");
+        assert_eq!(
+            state.glulx_volume_notify.get(&1).map(|&(_, n)| n),
+            Some(7),
+            "notify still scheduled at the deadline"
+        );
         // Halfway through, the interpolated gain is ~0.5.
         state.advance_volume_ramps(t0 + std::time::Duration::from_millis(500));
         let mid = *state.glulx_gain.get(&1).unwrap();
-        assert!((mid - 0.5).abs() < 0.1, "gain interpolates to ~0.5 at half-time, got {mid}");
-        assert!(state.glulx_volume_ramp.contains_key(&1), "ramp still active mid-way");
+        assert!(
+            (mid - 0.5).abs() < 0.1,
+            "gain interpolates to ~0.5 at half-time, got {mid}"
+        );
+        assert!(
+            state.glulx_volume_ramp.contains_key(&1),
+            "ramp still active mid-way"
+        );
         // A new change interrupts: the old ramp is replaced and heads to the new
         // target from wherever the gain currently sits (spec §8.3).
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt { chan: 1, vol: 0x10000, duration_ms: 1000, notify: 9 }]);
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt {
+            chan: 1,
+            vol: 0x10000,
+            duration_ms: 1000,
+            notify: 9,
+        }]);
         let ramp2 = *state.glulx_volume_ramp.get(&1).expect("new ramp installed");
-        assert_eq!(ramp2.target_gain, 1.0, "interruption retargets to the new volume");
-        assert!((ramp2.start_gain - mid).abs() < 1e-6, "new ramp starts from the current gain");
-        assert_eq!(state.glulx_volume_notify.get(&1).map(|&(_, n)| n), Some(9), "the prior notify was dropped, the new one scheduled");
+        assert_eq!(
+            ramp2.target_gain, 1.0,
+            "interruption retargets to the new volume"
+        );
+        assert!(
+            (ramp2.start_gain - mid).abs() < 1e-6,
+            "new ramp starts from the current gain"
+        );
+        assert_eq!(
+            state.glulx_volume_notify.get(&1).map(|&(_, n)| n),
+            Some(9),
+            "the prior notify was dropped, the new one scheduled"
+        );
         // Stepping past the duration completes the ramp: gain lands on target and
         // the ramp is removed.
         state.advance_volume_ramps(ramp2.start + std::time::Duration::from_millis(1000));
-        assert_eq!(*state.glulx_gain.get(&1).unwrap(), 1.0, "completed ramp lands on target");
-        assert!(!state.glulx_volume_ramp.contains_key(&1), "completed ramp is dropped");
+        assert_eq!(
+            *state.glulx_gain.get(&1).unwrap(),
+            1.0,
+            "completed ramp lands on target"
+        );
+        assert!(
+            !state.glulx_volume_ramp.contains_key(&1),
+            "completed ramp is dropped"
+        );
         // An immediate (duration 0) change jumps and installs no ramp.
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolume { chan: 1, vol: 0x8000 }]);
-        assert_eq!(*state.glulx_gain.get(&1).unwrap(), 0.5, "plain set_volume jumps the gain");
-        assert!(!state.glulx_volume_ramp.contains_key(&1), "plain set_volume leaves no ramp");
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolume {
+            chan: 1,
+            vol: 0x8000,
+        }]);
+        assert_eq!(
+            *state.glulx_gain.get(&1).unwrap(),
+            0.5,
+            "plain set_volume jumps the gain"
+        );
+        assert!(
+            !state.glulx_volume_ramp.contains_key(&1),
+            "plain set_volume leaves no ramp"
+        );
     }
 
     #[test]
@@ -6760,23 +7373,57 @@ mod tests {
         let mut state = AppState::default();
         state.config.enable_sound = true;
         state.audio = Some(crate::host::sound::default_sound_sink(50)); // silent in tests: no device
-        // A ramped set_volume_ext with a nonzero notify schedules a pending
-        // volume-notify keyed by channel (no live sound needed).
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt { chan: 1, vol: 0x8000, duration_ms: 1000, notify: 7 }]);
-        assert_eq!(state.glulx_volume_notify.get(&1).map(|&(_, n)| n), Some(7), "notify scheduled");
+                                                                        // A ramped set_volume_ext with a nonzero notify schedules a pending
+                                                                        // volume-notify keyed by channel (no live sound needed).
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt {
+            chan: 1,
+            vol: 0x8000,
+            duration_ms: 1000,
+            notify: 7,
+        }]);
+        assert_eq!(
+            state.glulx_volume_notify.get(&1).map(|&(_, n)| n),
+            Some(7),
+            "notify scheduled"
+        );
         // A second change on the same channel interrupts the first (spec §8.3):
         // the prior notify is dropped and replaced.
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt { chan: 1, vol: 0x2000, duration_ms: 500, notify: 9 }]);
-        assert_eq!(state.glulx_volume_notify.get(&1).map(|&(_, n)| n), Some(9), "new change replaces the prior notify");
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt {
+            chan: 1,
+            vol: 0x2000,
+            duration_ms: 500,
+            notify: 9,
+        }]);
+        assert_eq!(
+            state.glulx_volume_notify.get(&1).map(|&(_, n)| n),
+            Some(9),
+            "new change replaces the prior notify"
+        );
         // notify == 0 requests no event → schedules nothing and clears the channel.
-        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt { chan: 1, vol: 0, duration_ms: 0, notify: 0 }]);
-        assert!(state.glulx_volume_notify.is_empty(), "notify=0 schedules no event and clears the channel");
+        state.play_glulx_sound_ops(&[SchannelOp::SetVolumeExt {
+            chan: 1,
+            vol: 0,
+            duration_ms: 0,
+            notify: 0,
+        }]);
+        assert!(
+            state.glulx_volume_notify.is_empty(),
+            "notify=0 schedules no event and clears the channel"
+        );
         // Destroy cancels a channel's pending ramp notify.
         state.play_glulx_sound_ops(&[
-            SchannelOp::SetVolumeExt { chan: 2, vol: 0x8000, duration_ms: 1000, notify: 3 },
+            SchannelOp::SetVolumeExt {
+                chan: 2,
+                vol: 0x8000,
+                duration_ms: 1000,
+                notify: 3,
+            },
             SchannelOp::Destroy { chan: 2 },
         ]);
-        assert!(state.glulx_volume_notify.is_empty(), "destroy cancels the pending volume-notify");
+        assert!(
+            state.glulx_volume_notify.is_empty(),
+            "destroy cancels the pending volume-notify"
+        );
     }
 
     #[test]
@@ -6786,16 +7433,46 @@ mod tests {
         let dummy = crate::inline_image::InlineImage {
             pixels: std::sync::Arc::new(image::RgbaImage::new(4, 4)),
             align: crate::inline_image::ImageAlign::InlineUp,
-            scaled: None, margin_px: None,
-            rule: None, link: 0, resource: None,
+            scaled: None,
+            margin_px: None,
+            rule: None,
+            link: 0,
+            resource: None,
         };
         let elems = vec![
-            TranscriptElem::Text { text: "a".into(), runs: vec![(1, 0, zvm::screen::ZColour::Default, zvm::screen::ZColour::Default, 0, ParaFmt::default(), 0, false)] },
+            TranscriptElem::Text {
+                text: "a".into(),
+                runs: vec![(
+                    1,
+                    0,
+                    zvm::screen::ZColour::Default,
+                    zvm::screen::ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                )],
+            },
             TranscriptElem::Image(dummy),
-            TranscriptElem::Text { text: "b".into(), runs: vec![(1, 0, zvm::screen::ZColour::Default, zvm::screen::ZColour::Default, 0, ParaFmt::default(), 0, false)] },
+            TranscriptElem::Text {
+                text: "b".into(),
+                runs: vec![(
+                    1,
+                    0,
+                    zvm::screen::ZColour::Default,
+                    zvm::screen::ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                )],
+            },
         ];
         apply_transcript_elems(&mut st, &elems);
-        assert_eq!(st.transcript, vec!["a".to_string(), "".to_string(), "b".to_string()]);
+        assert_eq!(
+            st.transcript,
+            vec!["a".to_string(), "".to_string(), "b".to_string()]
+        );
         assert!(st.transcript_images[1].is_some());
         assert!(st.transcript_images[0].is_none() && st.transcript_images[2].is_none());
     }
@@ -6807,7 +7484,7 @@ mod tests {
         let mut s = AppState::default();
         s.record_command("north");
         s.record_command("north"); // consecutive dup → skipped
-        s.record_command("   ");    // blank → skipped
+        s.record_command("   "); // blank → skipped
         s.record_command("south");
         s.record_command("north"); // not consecutive → recorded
         assert_eq!(s.command_history, vec!["north", "south", "north"]);
@@ -6950,21 +7627,35 @@ mod tests {
         let path = dir.join("transcript.txt");
         let mut s = AppState::default();
         s.attach_transcript_sink(&path);
-        assert!(s.transcript_kinds.is_empty(), "attach itself must not write to the visible transcript");
+        assert!(
+            s.transcript_kinds.is_empty(),
+            "attach itself must not write to the visible transcript"
+        );
 
         // Turn 1: the player's command, then the game's reply.
         s.push_transcript_kind("> look", TranscriptKind::Input);
-        s.push_transcript_runs("West of House\nYou are standing in an open field.", TranscriptKind::Story, &[]);
+        s.push_transcript_runs(
+            "West of House\nYou are standing in an open field.",
+            TranscriptKind::Story,
+            &[],
+        );
 
         // Flushed after the first turn, before the second is even typed.
         let after_turn_one = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after_turn_one, "> look\nWest of House\nYou are standing in an open field.\n");
+        assert_eq!(
+            after_turn_one,
+            "> look\nWest of House\nYou are standing in an open field.\n"
+        );
 
         // Turn 2: a blank line separates it, and a Meta line (a `/help` dump)
         // must not reach the file at all.
         s.push_transcript_kind("/help dump", TranscriptKind::Meta);
         s.push_transcript_kind("> north", TranscriptKind::Input);
-        s.push_transcript_runs("North of House\nYou can't go that way.", TranscriptKind::Story, &[]);
+        s.push_transcript_runs(
+            "North of House\nYou can't go that way.",
+            TranscriptKind::Story,
+            &[],
+        );
 
         let after_turn_two = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
@@ -6983,7 +7674,10 @@ mod tests {
         // must not silently do nothing either.
         let mut s = AppState::default();
         s.attach_transcript_sink(&dir);
-        assert!(s.transcript_sink.is_none(), "a path that cannot be opened must not leave a sink attached");
+        assert!(
+            s.transcript_sink.is_none(),
+            "a path that cannot be opened must not leave a sink attached"
+        );
         assert_eq!(s.transcript_kinds.len(), 1);
         assert!(matches!(s.transcript_kinds[0], TranscriptKind::Warning));
 
@@ -6991,8 +7685,15 @@ mod tests {
         // warnings, since there is no sink left to fail.
         s.push_transcript_kind("> look", TranscriptKind::Input);
         s.push_transcript_runs("West of House", TranscriptKind::Story, &[]);
-        let warnings = s.transcript_kinds.iter().filter(|k| matches!(k, TranscriptKind::Warning)).count();
-        assert_eq!(warnings, 1, "no spam: exactly one warning for the whole session");
+        let warnings = s
+            .transcript_kinds
+            .iter()
+            .filter(|k| matches!(k, TranscriptKind::Warning))
+            .count();
+        assert_eq!(
+            warnings, 1,
+            "no spam: exactly one warning for the whole session"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7026,15 +7727,34 @@ mod tests {
         s.push_transcript_runs(
             ">",
             TranscriptKind::Story,
-            &[(1, 0, ZColour::Default, ZColour::True24(0x00FF_FFFF), 0, ParaFmt::default(), 0, false)],
+            &[(
+                1,
+                0,
+                ZColour::Default,
+                ZColour::True24(0x00FF_FFFF),
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
         );
         s.append_to_last_transcript_line("look", Default::default());
         assert_eq!(s.transcript.last().unwrap(), ">look");
         let tail = s.transcript_runs.last().unwrap().last().unwrap();
-        assert_eq!((tail.start, tail.end), (1, 5), "run covers the appended 'look'");
-        assert_eq!(tail.bg, pack_zcolour(ZColour::True24(0x00FF_FFFF)),
-            "echo inherits the prompt's white background (keeps the SQ-0263 band)");
-        assert_eq!(tail.bits, 0, "the PROMPT's reverse/bold bits are not carried onto the echo");
+        assert_eq!(
+            (tail.start, tail.end),
+            (1, 5),
+            "run covers the appended 'look'"
+        );
+        assert_eq!(
+            tail.bg,
+            pack_zcolour(ZColour::True24(0x00FF_FFFF)),
+            "echo inherits the prompt's white background (keeps the SQ-0263 band)"
+        );
+        assert_eq!(
+            tail.bits, 0,
+            "the PROMPT's reverse/bold bits are not carried onto the echo"
+        );
         assert_eq!(tail.glk_style, GLK_STYLE_TYPED_INPUT);
     }
 
@@ -7044,12 +7764,20 @@ mod tests {
         s.push_transcript_kind(">", TranscriptKind::Story); // no coloured runs
         s.append_to_last_transcript_line("look", Default::default());
         assert_eq!(s.transcript.last().unwrap(), ">look");
-        assert_eq!(s.transcript_kinds.last(), Some(&TranscriptKind::Story), "the line stays a Story line");
+        assert_eq!(
+            s.transcript_kinds.last(),
+            Some(&TranscriptKind::Story),
+            "the line stays a Story line"
+        );
         let runs = s.transcript_runs.last().unwrap();
         assert_eq!(runs.len(), 1, "exactly one run: the typed command");
         let r = runs[0];
         assert_eq!((r.start, r.end, r.glk_style), (1, 5, GLK_STYLE_TYPED_INPUT));
-        assert_eq!((r.fg, r.bg, r.ink, r.bits), (0, 0, 0, 0), "no prompt colours, no story opinion");
+        assert_eq!(
+            (r.fg, r.bg, r.ink, r.bits),
+            (0, 0, 0, 0),
+            "no prompt colours, no story opinion"
+        );
     }
 
     // ── SQ-1758: raw engine style vs the prompt on screen ───────────────────
@@ -7059,14 +7787,27 @@ mod tests {
         s.push_transcript_runs(
             ">",
             TranscriptKind::Story,
-            &[(1, bits, fg, zvm::screen::ZColour::Default, 0, ParaFmt::default(), 0, false)],
+            &[(
+                1,
+                bits,
+                fg,
+                zvm::screen::ZColour::Default,
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
         );
         s
     }
     type ZColourForTest = zvm::screen::ZColour;
 
     fn raw(bits: u8, ink: u32, vs: bool) -> crate::engine::InputStyle {
-        crate::engine::InputStyle { bits, ink, bits_vs_prompt: vs }
+        crate::engine::InputStyle {
+            bits,
+            ink,
+            bits_vs_prompt: vs,
+        }
     }
 
     #[test]
@@ -7094,7 +7835,12 @@ mod tests {
         assert_eq!((st.bits, st.ink), (0x02, 0));
         // …and bold throughout the page is not an input style.
         let bold_page = prompt_in(0x02, ZColour::Default);
-        assert_eq!(bold_page.input_style_against_prompt(raw(0x02, 0, true)).bits, 0);
+        assert_eq!(
+            bold_page
+                .input_style_against_prompt(raw(0x02, 0, true))
+                .bits,
+            0
+        );
     }
 
     #[test]
@@ -7126,7 +7872,16 @@ mod tests {
         s.push_transcript_runs(
             "You are in a room.",
             TranscriptKind::Story,
-            &[(18, 0, ZColour::Standard(3), ZColour::Default, 0, ParaFmt::default(), 0, false)],
+            &[(
+                18,
+                0,
+                ZColour::Standard(3),
+                ZColour::Default,
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
         );
         s.push_transcript_kind(">", TranscriptKind::Story); // the prompt line carries no run
         assert_eq!(s.input_style_against_prompt(raw(0, red, true)).ink, 0);
@@ -7136,7 +7891,14 @@ mod tests {
     fn append_to_last_transcript_line_carries_the_stories_own_input_style() {
         let mut s = AppState::default();
         s.push_transcript_kind(">", TranscriptKind::Story);
-        s.append_to_last_transcript_line("look", crate::engine::InputStyle { bits: 0x02, ink: 0x0300_FF00, ..Default::default() });
+        s.append_to_last_transcript_line(
+            "look",
+            crate::engine::InputStyle {
+                bits: 0x02,
+                ink: 0x0300_FF00,
+                ..Default::default()
+            },
+        );
         let r = s.transcript_runs.last().unwrap()[0];
         assert_eq!((r.bits, r.ink), (0x02, 0x0300_FF00));
     }
@@ -7148,8 +7910,20 @@ mod tests {
         // The `>` prompt line (bare, no runs), then the game's own bold echo "look"
         // as a separate pushed line — CounterfeitMonkey's shape.
         s.push_transcript_kind(">", TranscriptKind::Story);
-        s.push_transcript_runs("look", TranscriptKind::Story,
-            &[(4, 2 /* bold */, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false)]);
+        s.push_transcript_runs(
+            "look",
+            TranscriptKind::Story,
+            &[(
+                4,
+                2, /* bold */
+                ZColour::Default,
+                ZColour::Default,
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
+        );
         assert_eq!(s.transcript.len(), 2);
         s.merge_line_into_previous(1);
         // One line now: ">look", and the bold run is shifted past the ">".
@@ -7157,8 +7931,15 @@ mod tests {
         assert_eq!(s.transcript.len(), s.transcript_kinds.len());
         assert_eq!(s.transcript.len(), s.transcript_runs.len());
         assert_eq!(s.transcript.len(), s.transcript_images.len());
-        let run = s.transcript_runs[0].iter().find(|r| r.bits == 2).expect("bold run kept");
-        assert_eq!((run.start, run.end), (1, 5), "bold echo run shifted past the `>`");
+        let run = s.transcript_runs[0]
+            .iter()
+            .find(|r| r.bits == 2)
+            .expect("bold run kept");
+        assert_eq!(
+            (run.start, run.end),
+            (1, 5),
+            "bold echo run shifted past the `>`"
+        );
     }
 
     #[test]
@@ -7170,25 +7951,79 @@ mod tests {
         let red = pack_zcolour(ZColour::True24(0x00FF_0000));
         // A `>look` line where `>` has no run and "look" is bold with DEFAULT colour,
         // except a single char CM coloured red explicitly.
-        s.push_transcript_runs(">look", TranscriptKind::Story, &[
-            (1, 0, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false),       // '>' — unstyled
-            (1, 2, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false),       // 'l' — bold, default colour
-            (1, 2, ZColour::True24(0x00FF_0000), ZColour::Default, 0, ParaFmt::default(), 0, false), // 'o' — bold + explicit red fg
-            (2, 2, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false),       // 'ok' — bold, default colour
-        ]);
+        s.push_transcript_runs(
+            ">look",
+            TranscriptKind::Story,
+            &[
+                (
+                    1,
+                    0,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ), // '>' — unstyled
+                (
+                    1,
+                    2,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ), // 'l' — bold, default colour
+                (
+                    1,
+                    2,
+                    ZColour::True24(0x00FF_0000),
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ), // 'o' — bold + explicit red fg
+                (
+                    2,
+                    2,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ), // 'ok' — bold, default colour
+            ],
+        );
         s.fill_line_default_colours(0, black, white);
         // Every char now has fg/bg resolved; the '>' and default chars take black/white,
         // the explicit red fg is kept, bold bits preserved.
         let runs = &s.transcript_runs[0];
         // Char 0 ('>'): no bits, black on white.
         let r0 = runs.iter().find(|r| r.start == 0).unwrap();
-        assert_eq!((r0.bits, r0.fg, r0.bg), (0, black, white), "bare '>' gets current colours");
+        assert_eq!(
+            (r0.bits, r0.fg, r0.bg),
+            (0, black, white),
+            "bare '>' gets current colours"
+        );
         // The explicit-red char keeps red fg but gains the current white bg.
-        let red_run = runs.iter().find(|r| r.fg == red).expect("explicit red preserved");
-        assert_eq!((red_run.bits, red_run.bg), (2, white), "override kept, default bg filled, bold kept");
+        let red_run = runs
+            .iter()
+            .find(|r| r.fg == red)
+            .expect("explicit red preserved");
+        assert_eq!(
+            (red_run.bits, red_run.bg),
+            (2, white),
+            "override kept, default bg filled, bold kept"
+        );
         // A default bold char: bold + black on white.
-        assert!(runs.iter().any(|r| r.bits == 2 && r.fg == black && r.bg == white),
-            "default bold echo chars take the current black-on-white");
+        assert!(
+            runs.iter()
+                .any(|r| r.bits == 2 && r.fg == black && r.bg == white),
+            "default bold echo chars take the current black-on-white"
+        );
     }
 
     /// SQ-0823: the char-echo push reports whether it folded, because a folded
@@ -7215,7 +8050,12 @@ mod tests {
         // The game's own leading newline is the game's line break, not the host's.
         let mut s = AppState::default();
         prompt(&mut s);
-        assert!(!s.push_transcript_runs_char_echo(&format!("\n{page}"), TranscriptKind::Story, &[], true));
+        assert!(!s.push_transcript_runs_char_echo(
+            &format!("\n{page}"),
+            TranscriptKind::Story,
+            &[],
+            true
+        ));
 
         // Nothing to fold onto: the last line is not game output.
         let mut s = AppState::default();
@@ -7247,27 +8087,40 @@ mod tests {
     fn internal_messages_insert_above_the_inline_prompt() {
         let mut s = AppState::default();
         s.config.command_bar = false; // inline-prompt mode
-        // Game output goes through push_transcript_runs (appends); it ends with the
-        // kept `>` prompt.
+                                      // Game output goes through push_transcript_runs (appends); it ends with the
+                                      // kept `>` prompt.
         s.push_transcript_runs("You are in a hall.", TranscriptKind::Story, &[]);
         s.push_transcript_runs(">", TranscriptKind::Story, &[]);
         // A /help-style internal dump must land ABOVE the `>`, keeping it last.
         s.push_transcript_internal("help: N, S, LOOK, X", TranscriptKind::Meta);
         assert_eq!(
             s.transcript,
-            vec!["You are in a hall.".to_string(), "help: N, S, LOOK, X".to_string(), ">".to_string()],
+            vec![
+                "You are in a hall.".to_string(),
+                "help: N, S, LOOK, X".to_string(),
+                ">".to_string()
+            ],
         );
-        assert!(s.last_transcript_line_is_story(), "the `>` prompt stays the last line");
+        assert!(
+            s.last_transcript_line_is_story(),
+            "the `>` prompt stays the last line"
+        );
         assert_eq!(s.transcript.len(), s.transcript_kinds.len());
         assert_eq!(s.transcript.len(), s.transcript_styles.len());
         assert_eq!(s.transcript.len(), s.transcript_runs.len());
         assert_eq!(s.transcript.len(), s.transcript_images.len());
-        assert!(matches!(s.transcript_kinds[1], TranscriptKind::Meta), "inserted line keeps its kind");
+        assert!(
+            matches!(s.transcript_kinds[1], TranscriptKind::Meta),
+            "inserted line keeps its kind"
+        );
 
         // Multi-line internal output preserves order above the prompt.
         s.push_transcript_internal("a\nb", TranscriptKind::Meta);
         assert_eq!(s.transcript.last().unwrap(), ">");
-        assert_eq!(&s.transcript[s.transcript.len() - 3..], &["a".to_string(), "b".to_string(), ">".to_string()]);
+        assert_eq!(
+            &s.transcript[s.transcript.len() - 3..],
+            &["a".to_string(), "b".to_string(), ">".to_string()]
+        );
     }
 
     #[test]
@@ -7289,12 +8142,21 @@ mod tests {
     #[test]
     fn last_transcript_line_is_story_distinguishes_game_output_from_meta() {
         let mut s = AppState::default();
-        assert!(!s.last_transcript_line_is_story(), "empty transcript is not a story prompt");
+        assert!(
+            !s.last_transcript_line_is_story(),
+            "empty transcript is not a story prompt"
+        );
         s.push_transcript_kind(">", TranscriptKind::Story);
-        assert!(s.last_transcript_line_is_story(), "game `>` prompt is a story line");
+        assert!(
+            s.last_transcript_line_is_story(),
+            "game `>` prompt is a story line"
+        );
         // A /help-style meta dump lands after the prompt: no longer a story last line.
         s.push_transcript_kind("help: available commands", TranscriptKind::Meta);
-        assert!(!s.last_transcript_line_is_story(), "meta dump is not the game prompt");
+        assert!(
+            !s.last_transcript_line_is_story(),
+            "meta dump is not the game prompt"
+        );
     }
 
     #[test]
@@ -7304,15 +8166,27 @@ mod tests {
         s.push_transcript_kind("a", TranscriptKind::Meta);
         let cyan = Style::new().fg(Color::Cyan);
         s.push_transcript_styled("b", TranscriptKind::Meta, cyan);
-        assert_eq!(s.transcript.len(), s.transcript_styles.len(), "lengths stay equal");
+        assert_eq!(
+            s.transcript.len(),
+            s.transcript_styles.len(),
+            "lengths stay equal"
+        );
         assert_eq!(s.transcript_styles[0], None, "plain push has no override");
-        assert_eq!(s.transcript_styles[1], Some(cyan), "styled push records the style");
+        assert_eq!(
+            s.transcript_styles[1],
+            Some(cyan),
+            "styled push records the style"
+        );
 
         // Simulate a wholesale reassignment that leaves transcript_styles short.
         s.transcript = vec!["x".into(), "y".into(), "z".into()];
         s.transcript_kinds = vec![TranscriptKind::Story; 3];
         s.push_transcript_kind("w", TranscriptKind::Meta); // must self-heal
-        assert_eq!(s.transcript.len(), s.transcript_styles.len(), "self-heal re-aligns lengths");
+        assert_eq!(
+            s.transcript.len(),
+            s.transcript_styles.len(),
+            "self-heal re-aligns lengths"
+        );
     }
 
     #[test]
@@ -7322,8 +8196,11 @@ mod tests {
         let dummy = crate::inline_image::InlineImage {
             pixels: std::sync::Arc::new(image::RgbaImage::new(4, 4)),
             align: crate::inline_image::ImageAlign::InlineUp,
-            scaled: None, margin_px: None,
-            rule: None, link: 0, resource: None,
+            scaled: None,
+            margin_px: None,
+            rule: None,
+            link: 0,
+            resource: None,
         };
         st.push_transcript_image(dummy);
         st.push_transcript("world");
@@ -7333,11 +8210,19 @@ mod tests {
         assert_eq!(st.transcript_runs.len(), n);
         assert_eq!(st.transcript_images.len(), n);
         // The image unit sits between the two text lines.
-        let img_idx = st.transcript_images.iter().position(|o| o.is_some()).unwrap();
+        let img_idx = st
+            .transcript_images
+            .iter()
+            .position(|o| o.is_some())
+            .unwrap();
         assert_eq!(st.transcript[img_idx], "");
         assert_eq!(st.transcript_kinds[img_idx], TranscriptKind::Story);
         assert!(st.transcript_images.iter().filter(|o| o.is_some()).count() == 1);
-        assert_eq!(st.transcript_para.len(), n, "transcript_para stays length-synced");
+        assert_eq!(
+            st.transcript_para.len(),
+            n,
+            "transcript_para stays length-synced"
+        );
     }
 
     #[test]
@@ -7346,19 +8231,52 @@ mod tests {
         // the parallel `transcript_para` stays length-synced. A default-layout line
         // keeps the default ParaFmt (the Z-machine path).
         let mut st = AppState::default();
-        let centered = ParaFmt { indent: 0, para_indent: 0, justify: 2, nowrap_from: None };
+        let centered = ParaFmt {
+            indent: 0,
+            para_indent: 0,
+            justify: 2,
+            nowrap_from: None,
+        };
         st.push_transcript_runs(
             "plain\ncentered",
             TranscriptKind::Story,
             &[
-                (6, 0, zvm::screen::ZColour::Default, zvm::screen::ZColour::Default, 0, ParaFmt::default(), 0, false), // "plain\n"
-                (8, 0, zvm::screen::ZColour::Default, zvm::screen::ZColour::Default, 0, centered, 0, false),        // "centered"
+                (
+                    6,
+                    0,
+                    zvm::screen::ZColour::Default,
+                    zvm::screen::ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ), // "plain\n"
+                (
+                    8,
+                    0,
+                    zvm::screen::ZColour::Default,
+                    zvm::screen::ZColour::Default,
+                    0,
+                    centered,
+                    0,
+                    false,
+                ), // "centered"
             ],
         );
-        assert_eq!(st.transcript, vec!["plain".to_string(), "centered".to_string()]);
+        assert_eq!(
+            st.transcript,
+            vec!["plain".to_string(), "centered".to_string()]
+        );
         assert_eq!(st.transcript_para.len(), st.transcript.len());
-        assert_eq!(st.transcript_para[0], ParaFmt::default(), "first line is left/no-indent");
-        assert_eq!(st.transcript_para[1], centered, "second line takes its run's Centered layout");
+        assert_eq!(
+            st.transcript_para[0],
+            ParaFmt::default(),
+            "first line is left/no-indent"
+        );
+        assert_eq!(
+            st.transcript_para[1], centered,
+            "second line takes its run's Centered layout"
+        );
     }
 
     #[test]
@@ -7373,9 +8291,15 @@ mod tests {
         s.append_to_last_transcript_line("look", Default::default());
         s.push_transcript("reply\n>");
         s.merge_line_into_previous(s.transcript.len() - 1);
-        assert_eq!(s.transcript_epoch, e, "append / echo / fold do not move the epoch");
+        assert_eq!(
+            s.transcript_epoch, e,
+            "append / echo / fold do not move the epoch"
+        );
         s.shrink_last_transcript_line(1);
-        assert_eq!(s.transcript_epoch, e, "undoing a tail growth does not either");
+        assert_eq!(
+            s.transcript_epoch, e,
+            "undoing a tail growth does not either"
+        );
         s.truncate_transcript(s.transcript.len());
         assert_eq!(s.transcript_epoch, e, "a no-op truncate does not");
         s.truncate_transcript(1);
@@ -7403,13 +8327,19 @@ mod tests {
         assert_eq!(s.transcript_runs.len(), 1);
         assert_eq!(s.transcript_para.len(), 1);
         assert_eq!(s.transcript_images.len(), 1);
-        assert_ne!(s.transcript_gen, gen, "truncation must bump the wrap-cache generation");
+        assert_ne!(
+            s.transcript_gen, gen,
+            "truncation must bump the wrap-cache generation"
+        );
 
         // No-op when the length is already at/beyond the end.
         let gen2 = s.transcript_gen;
         s.truncate_transcript(5);
         assert_eq!(s.transcript.len(), 1);
-        assert_eq!(s.transcript_gen, gen2, "a no-op truncate must not bump the generation");
+        assert_eq!(
+            s.transcript_gen, gen2,
+            "a no-op truncate must not bump the generation"
+        );
     }
 
     /// SQ-1660 (reverting SQ-1656): every `mark_screen_clear` call moves
@@ -7431,8 +8361,15 @@ mod tests {
 
         s.mark_screen_clear();
         assert_eq!(s.clear_anchor, Some(0));
-        assert_eq!(s.top_anchor, Some(0), "top_anchor moves with clear_anchor on every clear");
-        assert!(s.scroll_anim.is_none(), "a clear is instant — no scroll animation armed");
+        assert_eq!(
+            s.top_anchor,
+            Some(0),
+            "top_anchor moves with clear_anchor on every clear"
+        );
+        assert!(
+            s.scroll_anim.is_none(),
+            "a clear is instant — no scroll animation armed"
+        );
 
         s.push_transcript("a different screen's content");
         s.mark_screen_clear();
@@ -7452,19 +8389,33 @@ mod tests {
         let dummy = crate::inline_image::InlineImage {
             pixels: std::sync::Arc::new(image::RgbaImage::new(4, 4)),
             align: crate::inline_image::ImageAlign::InlineUp,
-            scaled: None, margin_px: None,
-            rule: None, link: 0, resource: None,
+            scaled: None,
+            margin_px: None,
+            rule: None,
+            link: 0,
+            resource: None,
         };
         s.push_transcript_image(dummy); // transcript_images[0] = Some, len 1
         s.push_transcript("a\nb"); // grow to len 3
-        assert!(s.transcript_images[0].is_some(), "precondition: stale image present");
+        assert!(
+            s.transcript_images[0].is_some(),
+            "precondition: stale image present"
+        );
 
         // Wholesale reassign to a shorter transcript, then apply the fix.
         s.transcript = vec!["only".into()];
         s.reset_transcript_sidecars();
 
-        assert_eq!(s.transcript_images.len(), s.transcript.len(), "length matches");
-        assert_eq!(s.transcript_styles.len(), s.transcript.len(), "length matches");
+        assert_eq!(
+            s.transcript_images.len(),
+            s.transcript.len(),
+            "length matches"
+        );
+        assert_eq!(
+            s.transcript_styles.len(),
+            s.transcript.len(),
+            "length matches"
+        );
         assert!(
             s.transcript_images.iter().all(Option::is_none),
             "no stale Some survives within range",
@@ -7475,10 +8426,46 @@ mod tests {
     fn push_runs_extracts_per_line_spans() {
         use zvm::screen::ZColour;
         let mut s = AppState::default();
-        s.push_transcript_runs("ab cd", TranscriptKind::Story,
-            &[(2, 0x02, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false), (3, 0, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false)]);
+        s.push_transcript_runs(
+            "ab cd",
+            TranscriptKind::Story,
+            &[
+                (
+                    2,
+                    0x02,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+                (
+                    3,
+                    0,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+            ],
+        );
         assert_eq!(s.transcript.last().unwrap(), "ab cd");
-        assert_eq!(s.transcript_runs.last().unwrap(), &vec![StyleRun { start: 0, end: 2, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]);
+        assert_eq!(
+            s.transcript_runs.last().unwrap(),
+            &vec![StyleRun {
+                start: 0,
+                end: 2,
+                bits: 0x02,
+                fg: 0,
+                bg: 0,
+                link: 0,
+                glk_style: 0,
+                ink: 0
+            }]
+        );
         assert_eq!(s.transcript.len(), s.transcript_runs.len());
         assert_eq!(s.transcript.len(), s.transcript_kinds.len());
     }
@@ -7487,15 +8474,71 @@ mod tests {
     fn push_runs_splits_across_newlines() {
         use zvm::screen::ZColour;
         let mut s = AppState::default();
-        s.push_transcript_runs("A\nB", TranscriptKind::Story,
-            &[(1, 0x02, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false),
-              (1, 0, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false),
-              (1, 0x02, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false)]);
+        s.push_transcript_runs(
+            "A\nB",
+            TranscriptKind::Story,
+            &[
+                (
+                    1,
+                    0x02,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+                (
+                    1,
+                    0,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+                (
+                    1,
+                    0x02,
+                    ZColour::Default,
+                    ZColour::Default,
+                    0,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+            ],
+        );
         let n = s.transcript.len();
         assert_eq!(s.transcript[n - 2], "A");
         assert_eq!(s.transcript[n - 1], "B");
-        assert_eq!(s.transcript_runs[n - 2], vec![StyleRun { start: 0, end: 1, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]);
-        assert_eq!(s.transcript_runs[n - 1], vec![StyleRun { start: 0, end: 1, bits: 0x02, fg: 0, bg: 0, link: 0, glk_style: 0, ink: 0 }]);
+        assert_eq!(
+            s.transcript_runs[n - 2],
+            vec![StyleRun {
+                start: 0,
+                end: 1,
+                bits: 0x02,
+                fg: 0,
+                bg: 0,
+                link: 0,
+                glk_style: 0,
+                ink: 0
+            }]
+        );
+        assert_eq!(
+            s.transcript_runs[n - 1],
+            vec![StyleRun {
+                start: 0,
+                end: 1,
+                bits: 0x02,
+                fg: 0,
+                bg: 0,
+                link: 0,
+                glk_style: 0,
+                ink: 0
+            }]
+        );
     }
 
     #[test]
@@ -7506,9 +8549,32 @@ mod tests {
         // the link value must be carried AND be part of the coalescing key, so
         // the two spans stay separate runs. (Unstyled/default spans emit no run,
         // which is why both spans here carry a nonzero link.)
-        s.push_transcript_runs("link more", TranscriptKind::Story,
-            &[(4, 0, ZColour::Default, ZColour::Default, 42, ParaFmt::default(), 0, false),
-              (5, 0, ZColour::Default, ZColour::Default, 99, ParaFmt::default(), 0, false)]);
+        s.push_transcript_runs(
+            "link more",
+            TranscriptKind::Story,
+            &[
+                (
+                    4,
+                    0,
+                    ZColour::Default,
+                    ZColour::Default,
+                    42,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+                (
+                    5,
+                    0,
+                    ZColour::Default,
+                    ZColour::Default,
+                    99,
+                    ParaFmt::default(),
+                    0,
+                    false,
+                ),
+            ],
+        );
         let runs = s.transcript_runs.last().unwrap();
         assert_eq!(runs.len(), 2, "differing links do not coalesce");
         assert_eq!((runs[0].start, runs[0].end, runs[0].link), (0, 4, 42));
@@ -7527,8 +8593,20 @@ mod tests {
     fn push_runs_all_plain_is_empty() {
         use zvm::screen::ZColour;
         let mut s = AppState::default();
-        s.push_transcript_runs("hello", TranscriptKind::Story,
-            &[(5, 0, ZColour::Default, ZColour::Default, 0, ParaFmt::default(), 0, false)]);
+        s.push_transcript_runs(
+            "hello",
+            TranscriptKind::Story,
+            &[(
+                5,
+                0,
+                ZColour::Default,
+                ZColour::Default,
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
+        );
         assert!(s.transcript_runs.last().unwrap().is_empty());
     }
 
@@ -7538,7 +8616,18 @@ mod tests {
     #[test]
     fn push_runs_folds_buffering_off_into_para_nowrap_from() {
         use zvm::screen::ZColour;
-        let plain = |n: usize, nw: bool| (n, 0u8, ZColour::Default, ZColour::Default, 0u32, ParaFmt::default(), 0u8, nw);
+        let plain = |n: usize, nw: bool| {
+            (
+                n,
+                0u8,
+                ZColour::Default,
+                ZColour::Default,
+                0u32,
+                ParaFmt::default(),
+                0u8,
+                nw,
+            )
+        };
         let mut s = AppState::default();
         // "buffered\nmixed" + "DOTS" printed unbuffered on the second line.
         s.push_transcript_runs(
@@ -7547,8 +8636,16 @@ mod tests {
             &[plain(14, false), plain(4, true)], // 8 + '\n' + 5 chars, then "DOTS"
         );
         let n = s.transcript_para.len();
-        assert_eq!(s.transcript_para[n - 2].nowrap_from, None, "fully buffered line");
-        assert_eq!(s.transcript_para[n - 1].nowrap_from, Some(5), "offset is line-relative");
+        assert_eq!(
+            s.transcript_para[n - 2].nowrap_from,
+            None,
+            "fully buffered line"
+        );
+        assert_eq!(
+            s.transcript_para[n - 1].nowrap_from,
+            Some(5),
+            "offset is line-relative"
+        );
     }
 
     #[test]
@@ -7560,7 +8657,11 @@ mod tests {
         let mut s = AppState::default();
         let before = s.transcript.len();
         s.push_transcript_runs("", TranscriptKind::Story, &[]);
-        assert_eq!(s.transcript.len(), before, "empty transcript must add no line");
+        assert_eq!(
+            s.transcript.len(),
+            before,
+            "empty transcript must add no line"
+        );
     }
 
     #[test]
@@ -7582,50 +8683,81 @@ mod tests {
             ZColour::True(0x1234),
             ZColour::True24(0x00AB_CDEF),
         ] {
-            assert_eq!(unpack_zcolour(pack_zcolour(c)), c,
-                "pack/unpack round-trip failed for {c:?}");
+            assert_eq!(
+                unpack_zcolour(pack_zcolour(c)),
+                c,
+                "pack/unpack round-trip failed for {c:?}"
+            );
         }
         // Thread colour through push_transcript_runs → StyleRun.
         let mut s = AppState::default();
-        s.push_transcript_runs("ab", TranscriptKind::Story,
-            &[(2, 0x02, ZColour::Standard(3), ZColour::Default, 0, ParaFmt::default(), 0, false)]);
-        let run = s.transcript_runs.last().unwrap().first()
+        s.push_transcript_runs(
+            "ab",
+            TranscriptKind::Story,
+            &[(
+                2,
+                0x02,
+                ZColour::Standard(3),
+                ZColour::Default,
+                0,
+                ParaFmt::default(),
+                0,
+                false,
+            )],
+        );
+        let run = s
+            .transcript_runs
+            .last()
+            .unwrap()
+            .first()
             .expect("coloured chunk must produce a StyleRun");
-        assert_eq!(unpack_zcolour(run.fg), ZColour::Standard(3),
-            "fg colour must survive the push → StyleRun round-trip");
-        assert_eq!(unpack_zcolour(run.bg), ZColour::Default,
-            "bg colour must survive the push → StyleRun round-trip");
+        assert_eq!(
+            unpack_zcolour(run.fg),
+            ZColour::Standard(3),
+            "fg colour must survive the push → StyleRun round-trip"
+        );
+        assert_eq!(
+            unpack_zcolour(run.bg),
+            ZColour::Default,
+            "bg colour must survive the push → StyleRun round-trip"
+        );
     }
 
     #[test]
     fn play_turn_sounds_never_panics_without_device() {
         use zvm::cpu::exec::SoundEvent;
-        let mut s = AppState::default();       // audio = None, sound_blorb = None
+        let mut s = AppState::default(); // audio = None, sound_blorb = None
         s.config.enable_sound = true;
         // A #1 bleep event: play_turn_sounds must not panic with no backend.
         let ev = SoundEvent::new(1, 2, 8, 0, 0);
-        s.play_turn_sounds(&[ev]);             // no device -> silent, no panic
-        // A #3 sampled start with no blorb loaded: no id remembered, no panic.
+        s.play_turn_sounds(&[ev]); // no device -> silent, no panic
+                                   // A #3 sampled start with no blorb loaded: no id remembered, no panic.
         let ev3 = SoundEvent::new(3, 2, 8, 1, 0);
         s.play_turn_sounds(&[ev3]);
-        assert!(s.sound_ids.is_empty(), "no sound id remembered without a blorb");
+        assert!(
+            s.sound_ids.is_empty(),
+            "no sound id remembered without a blorb"
+        );
     }
 
     #[test]
     fn glk_volume_to_gain_is_linear_over_0x10000() {
         assert_eq!(glk_volume_to_gain(0), 0.0);
-        assert_eq!(glk_volume_to_gain(0x10000), 1.0);   // Glk full
-        assert_eq!(glk_volume_to_gain(0x8000), 0.5);    // half
-        assert!(glk_volume_to_gain(0x20000) > 1.0, "amplification passes through");
+        assert_eq!(glk_volume_to_gain(0x10000), 1.0); // Glk full
+        assert_eq!(glk_volume_to_gain(0x8000), 0.5); // half
+        assert!(
+            glk_volume_to_gain(0x20000) > 1.0,
+            "amplification passes through"
+        );
     }
 
     #[test]
     fn glk_repeats_to_audio_maps_counts_and_forever() {
-        assert_eq!(glk_repeats_to_audio(0), None);            // play zero times → skip
-        assert_eq!(glk_repeats_to_audio(1), Some(1));         // once
-        assert_eq!(glk_repeats_to_audio(5), Some(5));         // N times
+        assert_eq!(glk_repeats_to_audio(0), None); // play zero times → skip
+        assert_eq!(glk_repeats_to_audio(1), Some(1)); // once
+        assert_eq!(glk_repeats_to_audio(5), Some(5)); // N times
         assert_eq!(glk_repeats_to_audio(0xFFFF_FFFF), Some(255)); // -1 → forever
-        assert_eq!(glk_repeats_to_audio(300), Some(254));     // clamp below the forever sentinel
+        assert_eq!(glk_repeats_to_audio(300), Some(254)); // clamp below the forever sentinel
     }
 
     #[test]
@@ -7633,17 +8765,29 @@ mod tests {
         use crate::state::BeepKind;
         let mut s = AppState::default();
         assert!(s.sound_pulse.is_none(), "no pulse by default");
-        s.sound_pulse = Some(SoundPulse { kind: BeepKind::High, started: std::time::Instant::now() });
-        assert!(matches!(s.sound_pulse.as_ref().map(|p| p.kind), Some(BeepKind::High)));
+        s.sound_pulse = Some(SoundPulse {
+            kind: BeepKind::High,
+            started: std::time::Instant::now(),
+        });
+        assert!(matches!(
+            s.sound_pulse.as_ref().map(|p| p.kind),
+            Some(BeepKind::High)
+        ));
     }
 
     #[test]
     fn has_active_animation_reflects_sources() {
         use crate::state::BeepKind;
         let mut s = AppState::default();
-        assert!(!s.has_active_animation(), "idle state has no active animation");
+        assert!(
+            !s.has_active_animation(),
+            "idle state has no active animation"
+        );
 
-        s.sound_pulse = Some(SoundPulse { kind: BeepKind::High, started: std::time::Instant::now() });
+        s.sound_pulse = Some(SoundPulse {
+            kind: BeepKind::High,
+            started: std::time::Instant::now(),
+        });
         assert!(s.has_active_animation(), "sound pulse counts as active");
         s.sound_pulse = None;
 
@@ -7674,7 +8818,10 @@ mod tests {
         cs.scroll.len(100);
         cs.scroll.move_by(40, 5, &cfg); // arms a scroll animation
         s.overlays.config_screen = Some(cs);
-        assert!(s.has_active_animation(), "an open modal's list scroll anim counts as active");
+        assert!(
+            s.has_active_animation(),
+            "an open modal's list scroll anim counts as active"
+        );
         s.overlays.config_screen = None;
         assert!(!s.has_active_animation());
     }
@@ -7682,7 +8829,10 @@ mod tests {
     #[test]
     fn has_active_animation_true_while_dock_slides() {
         let mut s = AppState::default();
-        assert!(!s.has_active_animation(), "fresh default state has no active animation");
+        assert!(
+            !s.has_active_animation(),
+            "fresh default state has no active animation"
+        );
 
         let cfg = crate::config::AnimationConfig {
             enabled: true,
@@ -7692,7 +8842,10 @@ mod tests {
         };
         s.band_dock.toggle_to(true, false);
         s.band_dock.arm(&cfg);
-        assert!(s.has_active_animation(), "arming band_dock open counts as active");
+        assert!(
+            s.has_active_animation(),
+            "arming band_dock open counts as active"
+        );
     }
 
     #[test]
@@ -7701,7 +8854,10 @@ mod tests {
         s.transcript_scroll = 3;
         s.scroll_transcript_to(8);
         assert_eq!(s.transcript_scroll, 8, "logical target updated immediately");
-        let a = s.scroll_anim.as_ref().expect("animation armed when enabled");
+        let a = s
+            .scroll_anim
+            .as_ref()
+            .expect("animation armed when enabled");
         assert_eq!(a.from, 3, "from = previous displayed offset");
         assert_eq!(a.target(), 8, "to = new target");
     }
@@ -7717,10 +8873,17 @@ mod tests {
         s.transcript_scroll = 7;
         s.snap_scroll_for_own_submission();
         assert_eq!(s.transcript_scroll, 0, "logical target is the bottom");
-        let a = s.scroll_anim.as_ref().expect("a reader-driven scroll-to-bottom must be armed");
+        let a = s
+            .scroll_anim
+            .as_ref()
+            .expect("a reader-driven scroll-to-bottom must be armed");
         assert_eq!(a.from, 7, "eases from wherever the reader had scrolled to");
         assert_eq!(a.target(), 0, "…down to the bottom");
-        assert_eq!(a.kind, ScrollAnimKind::Scroll, "this is a reader-style jump, not a content-arrival follow-ease");
+        assert_eq!(
+            a.kind,
+            ScrollAnimKind::Scroll,
+            "this is a reader-style jump, not a content-arrival follow-ease"
+        );
     }
 
     /// Already at the bottom: submitting a command must not touch `scroll_anim`
@@ -7732,8 +8895,14 @@ mod tests {
         assert_eq!(s.transcript_scroll, 0, "premise: already at the bottom");
         s.snap_scroll_for_own_submission();
         assert_eq!(s.transcript_scroll, 0);
-        assert!(s.scroll_anim.is_none(), "no animation churned for a no-op snap");
-        assert!(s.scrollbar_shown_at.is_none(), "no scrollbar flash for a no-op snap");
+        assert!(
+            s.scroll_anim.is_none(),
+            "no animation churned for a no-op snap"
+        );
+        assert!(
+            s.scrollbar_shown_at.is_none(),
+            "no scrollbar flash for a no-op snap"
+        );
     }
 
     /// `scroll_transcript_to` is the ordinary, reader-driven scroll path
@@ -7746,8 +8915,15 @@ mod tests {
         s.config.animation.scroll_ms = 250;
         s.config.animation.follow_ms = 999_000; // if this leaked in, the duration below would betray it
         s.scroll_transcript_to(8);
-        let a = s.scroll_anim.as_ref().expect("animation armed when enabled");
-        assert_eq!(a.kind, ScrollAnimKind::Scroll, "reader-driven scroll must tag Scroll, not Follow");
+        let a = s
+            .scroll_anim
+            .as_ref()
+            .expect("animation armed when enabled");
+        assert_eq!(
+            a.kind,
+            ScrollAnimKind::Scroll,
+            "reader-driven scroll must tag Scroll, not Follow"
+        );
         assert_eq!(
             a.tween.duration(),
             Duration::from_millis(250),
@@ -7766,7 +8942,11 @@ mod tests {
         s.config.animation.follow_ms = 250;
         s.arm_transcript_follow_ease(30, 12);
         let a = s.scroll_anim.as_ref().expect("follow-ease armed");
-        assert_eq!(a.kind, ScrollAnimKind::Follow, "follow-ease must tag Follow, not Scroll");
+        assert_eq!(
+            a.kind,
+            ScrollAnimKind::Follow,
+            "follow-ease must tag Follow, not Scroll"
+        );
         assert_eq!(
             a.tween.duration(),
             Duration::from_millis(250),
@@ -7791,10 +8971,15 @@ mod tests {
             ScrollAnim::over(0, 10, true, 0, Easing::EaseOut, ScrollAnimKind::Follow).is_none(),
             "0ms arms nothing"
         );
-        let a = ScrollAnim::over(5, 10, true, 200, Easing::EaseOut, ScrollAnimKind::Follow).expect("armed");
+        let a = ScrollAnim::over(5, 10, true, 200, Easing::EaseOut, ScrollAnimKind::Follow)
+            .expect("armed");
         assert_eq!(a.from, 5);
         assert_eq!(a.target(), 10);
-        assert_eq!(a.kind, ScrollAnimKind::Follow, "caller-supplied kind is carried through");
+        assert_eq!(
+            a.kind,
+            ScrollAnimKind::Follow,
+            "caller-supplied kind is carried through"
+        );
     }
 
     /// `arm_transcript_follow_ease` sets the logical target immediately (same
@@ -7810,7 +8995,10 @@ mod tests {
         s.arm_transcript_follow_ease(30, 12);
         assert_eq!(s.transcript_scroll, 12, "logical target set immediately");
         let a = s.scroll_anim.as_ref().expect("follow-ease armed");
-        assert_eq!(a.from, 30, "display starts from the pre-growth equivalent offset, not 0");
+        assert_eq!(
+            a.from, 30,
+            "display starts from the pre-growth equivalent offset, not 0"
+        );
         assert_eq!(a.target(), 12);
         std::thread::sleep(Duration::from_millis(5));
         assert!(a.done(), "a 1ms follow_ms tween must have settled by now — proves follow_ms drove it, not the 999s scroll_ms");
@@ -7836,15 +9024,35 @@ mod tests {
         let mut s = AppState::default();
         s.config.animation.follow_ms = 999_000; // long enough that it is still mid-flight
         s.arm_transcript_follow_ease(30, 12);
-        assert!(!s.scroll_anim.as_ref().unwrap().done(), "premise: still mid-tween");
-        assert_ne!(s.effective_transcript_scroll(), 12, "premise: display has not caught up yet");
+        assert!(
+            !s.scroll_anim.as_ref().unwrap().done(),
+            "premise: still mid-tween"
+        );
+        assert_ne!(
+            s.effective_transcript_scroll(),
+            12,
+            "premise: display has not caught up yet"
+        );
 
-        assert!(s.finalize_transcript_scroll_anim_now(), "an animation was in flight to finalize");
+        assert!(
+            s.finalize_transcript_scroll_anim_now(),
+            "an animation was in flight to finalize"
+        );
         assert!(s.scroll_anim.is_none(), "the animation is cleared");
-        assert_eq!(s.transcript_scroll, 12, "snapped straight to the target, not reverted");
-        assert_eq!(s.effective_transcript_scroll(), 12, "the display reads settled immediately");
+        assert_eq!(
+            s.transcript_scroll, 12,
+            "snapped straight to the target, not reverted"
+        );
+        assert_eq!(
+            s.effective_transcript_scroll(),
+            12,
+            "the display reads settled immediately"
+        );
 
-        assert!(!s.finalize_transcript_scroll_anim_now(), "nothing left to finalize");
+        assert!(
+            !s.finalize_transcript_scroll_anim_now(),
+            "nothing left to finalize"
+        );
     }
 
     // ── Story-pane scrollbar auto-hide (SQ-0782) ─────────────────────────────
@@ -7855,22 +9063,43 @@ mod tests {
         s.config.animation.scrollbar_hide_ms = 1000;
         s.config.animation.scrollbar_fade_ms = 200;
         s.config.animation.easing = crate::anim::Easing::Linear;
-        assert_eq!(s.transcript_scrollbar_opacity(), 0.0, "never scrolled = never shown");
+        assert_eq!(
+            s.transcript_scrollbar_opacity(),
+            0.0,
+            "never scrolled = never shown"
+        );
         assert!(!s.transcript_scrollbar_animating());
 
         s.scroll_transcript_to(4);
-        assert_eq!(s.transcript_scrollbar_opacity(), 1.0, "a scroll summons it, fully opaque");
-        assert!(s.transcript_scrollbar_animating(), "a hide is still to come");
+        assert_eq!(
+            s.transcript_scrollbar_opacity(),
+            1.0,
+            "a scroll summons it, fully opaque"
+        );
+        assert!(
+            s.transcript_scrollbar_animating(),
+            "a hide is still to come"
+        );
 
         // Half way through the fade.
         let now = Instant::now();
         s.scrollbar_shown_at = Some(now - Duration::from_millis(1100));
         let mid = s.transcript_scrollbar_opacity();
-        assert!((0.1..0.9).contains(&mid), "mid-fade opacity should be partial, got {mid}");
+        assert!(
+            (0.1..0.9).contains(&mid),
+            "mid-fade opacity should be partial, got {mid}"
+        );
 
         s.scrollbar_shown_at = Some(now - Duration::from_millis(2000));
-        assert_eq!(s.transcript_scrollbar_opacity(), 0.0, "gone after delay + fade");
-        assert!(!s.transcript_scrollbar_animating(), "settled: no more frames needed");
+        assert_eq!(
+            s.transcript_scrollbar_opacity(),
+            0.0,
+            "gone after delay + fade"
+        );
+        assert!(
+            !s.transcript_scrollbar_animating(),
+            "settled: no more frames needed"
+        );
     }
 
     /// The fade's own last frame still paints the bar at the dregs of its
@@ -7881,10 +9110,16 @@ mod tests {
         s.config.animation.scrollbar_hide_ms = 100;
         s.config.animation.scrollbar_fade_ms = 100;
         s.scroll_transcript_to(4);
-        assert!(!s.finalize_scrollbar_if_done(), "nothing to settle while it is still up");
+        assert!(
+            !s.finalize_scrollbar_if_done(),
+            "nothing to settle while it is still up"
+        );
 
         s.scrollbar_shown_at = Some(Instant::now() - Duration::from_millis(500));
-        assert!(s.finalize_scrollbar_if_done(), "a finished fade asks for the settle frame");
+        assert!(
+            s.finalize_scrollbar_if_done(),
+            "a finished fade asks for the settle frame"
+        );
         assert!(s.scrollbar_shown_at.is_none(), "the reveal is cleared");
         assert!(!s.finalize_scrollbar_if_done(), "and only ever asks once");
 
@@ -7901,12 +9136,21 @@ mod tests {
     #[test]
     fn transcript_scroll_in_motion_follows_the_settle_window() {
         let mut s = AppState::default();
-        assert!(!s.transcript_scroll_in_motion(), "never scrolled = not in motion");
+        assert!(
+            !s.transcript_scroll_in_motion(),
+            "never scrolled = not in motion"
+        );
         assert!(!s.has_active_animation());
 
         s.scroll_transcript_to(5);
-        assert!(s.transcript_scroll_in_motion(), "a fresh scroll is in motion");
-        assert!(s.has_active_animation(), "in-motion state keeps the run loop polling without input");
+        assert!(
+            s.transcript_scroll_in_motion(),
+            "a fresh scroll is in motion"
+        );
+        assert!(
+            s.has_active_animation(),
+            "in-motion state keeps the run loop polling without input"
+        );
 
         // Past the settle window (mirrors how the scrollbar tests fake elapsed
         // time above, since neither test can literally sleep for it).
@@ -7920,23 +9164,45 @@ mod tests {
     #[test]
     fn finalize_sixel_scroll_motion_forces_exactly_one_settle_frame() {
         let mut s = AppState::default();
-        assert!(!s.finalize_sixel_scroll_motion_if_done(), "nothing to settle when never scrolled");
+        assert!(
+            !s.finalize_sixel_scroll_motion_if_done(),
+            "nothing to settle when never scrolled"
+        );
 
         s.scroll_transcript_to(5);
-        assert!(!s.finalize_sixel_scroll_motion_if_done(), "still in motion: not done yet");
+        assert!(
+            !s.finalize_sixel_scroll_motion_if_done(),
+            "still in motion: not done yet"
+        );
 
         s.sixel_scroll_motion_at = Some(Instant::now() - Duration::from_millis(200));
-        assert!(s.finalize_sixel_scroll_motion_if_done(), "an elapsed window asks for the settle frame");
-        assert!(s.sixel_scroll_motion_at.is_none(), "the window is cleared, mirroring finalize_scrollbar_if_done");
-        assert!(!s.finalize_sixel_scroll_motion_if_done(), "and only ever asks once");
+        assert!(
+            s.finalize_sixel_scroll_motion_if_done(),
+            "an elapsed window asks for the settle frame"
+        );
+        assert!(
+            s.sixel_scroll_motion_at.is_none(),
+            "the window is cleared, mirroring finalize_scrollbar_if_done"
+        );
+        assert!(
+            !s.finalize_sixel_scroll_motion_if_done(),
+            "and only ever asks once"
+        );
     }
 
     #[test]
     fn scrollbar_hide_ms_zero_pins_it_on_and_fade_ms_zero_pops_it() {
         let mut s = AppState::default();
         s.config.animation.scrollbar_hide_ms = 0;
-        assert_eq!(s.transcript_scrollbar_opacity(), 1.0, "0 = never auto-hide, even unscrolled");
-        assert!(!s.transcript_scrollbar_animating(), "a permanent bar needs no frames");
+        assert_eq!(
+            s.transcript_scrollbar_opacity(),
+            1.0,
+            "0 = never auto-hide, even unscrolled"
+        );
+        assert!(
+            !s.transcript_scrollbar_animating(),
+            "a permanent bar needs no frames"
+        );
 
         s.config.animation.scrollbar_hide_ms = 100;
         s.config.animation.scrollbar_fade_ms = 0;
@@ -7956,7 +9222,11 @@ mod tests {
         let shown = s.scrollbar_shown_at.expect("a scroll records the reveal");
         s.push_transcript("The troll shrugs and ambles away.");
         s.mark_screen_clear();
-        assert_eq!(s.scrollbar_shown_at, Some(shown), "game output must not re-summon the bar");
+        assert_eq!(
+            s.scrollbar_shown_at,
+            Some(shown),
+            "game output must not re-summon the bar"
+        );
     }
 
     #[test]
@@ -7976,7 +9246,10 @@ mod tests {
         s.transcript_scroll = 2;
         s.scroll_transcript_to(6);
         assert_eq!(s.transcript_scroll, 6);
-        assert!(s.scroll_anim.is_none(), "scroll_ms = 0 = instant, no animation");
+        assert!(
+            s.scroll_anim.is_none(),
+            "scroll_ms = 0 = instant, no animation"
+        );
     }
 
     #[test]
@@ -7984,10 +9257,14 @@ mod tests {
         let mut s = AppState::default();
         s.transcript_scroll = 0;
         s.scroll_transcript_to(10); // arm 0 -> 10
-        // Immediately retarget: progress is ~0, so the new `from` is ~current (~0).
+                                    // Immediately retarget: progress is ~0, so the new `from` is ~current (~0).
         s.scroll_transcript_to(4);
         let a = s.scroll_anim.as_ref().unwrap();
-        assert!(a.from < 1, "retarget starts from current displayed offset, got {}", a.from);
+        assert!(
+            a.from < 1,
+            "retarget starts from current displayed offset, got {}",
+            a.from
+        );
         assert_eq!(a.target(), 4);
     }
 
@@ -7995,7 +9272,11 @@ mod tests {
     fn effective_transcript_scroll_uses_target_or_rounded_anim() {
         let mut s = AppState::default();
         s.transcript_scroll = 9;
-        assert_eq!(s.effective_transcript_scroll(), 9, "no anim = logical target");
+        assert_eq!(
+            s.effective_transcript_scroll(),
+            9,
+            "no anim = logical target"
+        );
         // A done tween reports current() == to; the offset is line-rounded.
         s.scroll_anim = Some(ScrollAnim {
             from: 0,
@@ -8003,7 +9284,11 @@ mod tests {
             tween: crate::anim::Tween::new(std::time::Duration::ZERO, crate::anim::Easing::Linear),
             kind: ScrollAnimKind::Scroll,
         });
-        assert_eq!(s.effective_transcript_scroll(), 4, "done tween shows rounded target");
+        assert_eq!(
+            s.effective_transcript_scroll(),
+            4,
+            "done tween shows rounded target"
+        );
     }
 
     #[test]
@@ -8019,43 +9304,80 @@ mod tests {
         };
         // Right after construction progress is ~0, so current() is near `from`.
         let c = a.current();
-        assert!((2.0..3.0).contains(&c), "current near from at start, got {c}");
+        assert!(
+            (2.0..3.0).contains(&c),
+            "current near from at start, got {c}"
+        );
     }
 
     #[test]
     fn scroll_anim_instant_when_disabled() {
         use crate::anim::Easing;
-        let cfg = crate::config::AnimationConfig { enabled: false, easing: Easing::EaseOut, scroll_ms: 120, ..Default::default() };
-        assert!(ScrollAnim::to(0, 10, &cfg).is_none(), "disabled animation arms nothing");
-        let cfg0 = crate::config::AnimationConfig { enabled: true, easing: Easing::EaseOut, scroll_ms: 0, ..Default::default() };
-        assert!(ScrollAnim::to(0, 10, &cfg0).is_none(), "scroll_ms = 0 arms nothing");
+        let cfg = crate::config::AnimationConfig {
+            enabled: false,
+            easing: Easing::EaseOut,
+            scroll_ms: 120,
+            ..Default::default()
+        };
+        assert!(
+            ScrollAnim::to(0, 10, &cfg).is_none(),
+            "disabled animation arms nothing"
+        );
+        let cfg0 = crate::config::AnimationConfig {
+            enabled: true,
+            easing: Easing::EaseOut,
+            scroll_ms: 0,
+            ..Default::default()
+        };
+        assert!(
+            ScrollAnim::to(0, 10, &cfg0).is_none(),
+            "scroll_ms = 0 arms nothing"
+        );
     }
 
     #[test]
     fn scroll_anim_interpolates_then_settles() {
         use crate::anim::Easing;
-        let cfg = crate::config::AnimationConfig { enabled: true, easing: Easing::Linear, scroll_ms: 40, ..Default::default() };
+        let cfg = crate::config::AnimationConfig {
+            enabled: true,
+            easing: Easing::Linear,
+            scroll_ms: 40,
+            ..Default::default()
+        };
         let a = ScrollAnim::to(0, 10, &cfg).expect("armed");
         assert_eq!(a.target(), 10);
         let c = a.current();
-        assert!((0.0..=10.0).contains(&c), "current within range during ease: {c}");
+        assert!(
+            (0.0..=10.0).contains(&c),
+            "current within range during ease: {c}"
+        );
     }
 
     #[test]
     fn any_overlay_open_reflects_state() {
         let mut s = AppState::default();
-        assert!(!s.any_overlay_open(), "default AppState must have no overlay open");
+        assert!(
+            !s.any_overlay_open(),
+            "default AppState must have no overlay open"
+        );
 
         // saves
-        s.overlays.saves = Some(SavesState { entries: vec![], scroll: Default::default() });
+        s.overlays.saves = Some(SavesState {
+            entries: vec![],
+            scroll: Default::default(),
+        });
         assert!(s.any_overlay_open(), "saves open => any_overlay_open true");
         s.overlays.saves = None;
 
         // file_browser
         s.overlays.file_browser = Some(FileBrowserState::build(
             std::path::PathBuf::from("/tmp"),
-            FbMode::PickFile));
-        assert!(s.any_overlay_open(), "file_browser open => any_overlay_open true");
+            FbMode::PickFile,
+        ));
+        assert!(
+            s.any_overlay_open(),
+            "file_browser open => any_overlay_open true"
+        );
         s.overlays.file_browser = None;
 
         // config_screen
@@ -8063,19 +9385,28 @@ mod tests {
             working: crate::config::Config::default(),
             scroll: Default::default(),
         });
-        assert!(s.any_overlay_open(), "config_screen open => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "config_screen open => any_overlay_open true"
+        );
         s.overlays.config_screen = None;
 
         // The command band is deliberately absent from this list: it is a dock,
         // not a modal, and must NOT register as an overlay at all (SQ-0664).
         s.overlays.command_band = Some(CommandBandState::default());
         assert!(!s.any_overlay_open(), "the command panel is not an overlay");
-        assert!(!s.any_modal_overlay_open(), "…and certainly not a modal one");
+        assert!(
+            !s.any_modal_overlay_open(),
+            "…and certainly not a modal one"
+        );
         s.overlays.command_band = None;
 
         // hotkey_dialog
         s.overlays.hotkey_dialog = true;
-        assert!(s.any_overlay_open(), "hotkey_dialog true => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "hotkey_dialog true => any_overlay_open true"
+        );
         s.overlays.hotkey_dialog = false;
 
         // Room tab — deliberately NOT an overlay (SQ-0692). It takes the Journal's
@@ -8083,31 +9414,46 @@ mod tests {
         // survive it; the room panel it replaced counted here and blanked both.
         s.set_journal_tab(crate::journal::JournalTab::Room);
         s.selected_room = Some(1);
-        assert!(!s.any_overlay_open(), "the room panel is not an overlay, pinned or not");
+        assert!(
+            !s.any_overlay_open(),
+            "the room panel is not an overlay, pinned or not"
+        );
         s.selected_room = None;
         assert!(!s.any_overlay_open());
         s.journal_tab = crate::journal::JournalTab::Map;
 
         // tidy_anim
-        s.tidy_anim = Some(TidyAnim::new(vec![TidyFrame {
-            label: "test".to_string(),
-            graph: mapper::graph::MapGraph::new(),
-            description: String::new(),
-            stats: mapper::layout::TidyStats::default(),
-            stage_start: false,
-            manifest: None,
-        }], mapper::layer::MAIN_LAYER));
-        assert!(s.any_overlay_open(), "tidy_anim active => any_overlay_open true");
+        s.tidy_anim = Some(TidyAnim::new(
+            vec![TidyFrame {
+                label: "test".to_string(),
+                graph: mapper::graph::MapGraph::new(),
+                description: String::new(),
+                stats: mapper::layout::TidyStats::default(),
+                stage_start: false,
+                manifest: None,
+            }],
+            mapper::layer::MAIN_LAYER,
+        ));
+        assert!(
+            s.any_overlay_open(),
+            "tidy_anim active => any_overlay_open true"
+        );
         s.tidy_anim = None;
 
         // text_entry
         s.overlays.text_entry = Some(TextEntryDialog::new(TextEntryKind::CreateFile, ""));
-        assert!(s.any_overlay_open(), "text_entry active => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "text_entry active => any_overlay_open true"
+        );
         s.overlays.text_entry = None;
 
         // confirm_delete_save
         s.overlays.confirm_delete_save = Some(std::path::PathBuf::from("/x.lanthorn"));
-        assert!(s.any_overlay_open(), "confirm_delete_save active => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "confirm_delete_save active => any_overlay_open true"
+        );
         s.overlays.confirm_delete_save = None;
 
         // confirm_overwrite_save
@@ -8116,20 +9462,32 @@ mod tests {
             existing_name: "x".to_string(),
             pending: PendingOverwrite::SaveAs,
         });
-        assert!(s.any_overlay_open(), "confirm_overwrite_save active => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "confirm_overwrite_save active => any_overlay_open true"
+        );
         s.overlays.confirm_overwrite_save = None;
 
         // launch_dialog
         s.overlays.launch_dialog = true;
-        assert!(s.any_overlay_open(), "launch_dialog true => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "launch_dialog true => any_overlay_open true"
+        );
         s.overlays.launch_dialog = false;
 
         // debug: a tiled pane, not a modal overlay
         s.debug = Some(crate::debug_panel::DebugPanelState::new(0));
-        assert!(!s.any_overlay_open(), "debug pane open => any_overlay_open still false");
+        assert!(
+            !s.any_overlay_open(),
+            "debug pane open => any_overlay_open still false"
+        );
         s.debug = None;
 
-        assert!(!s.any_overlay_open(), "all cleared => any_overlay_open false again");
+        assert!(
+            !s.any_overlay_open(),
+            "all cleared => any_overlay_open false again"
+        );
     }
 
     #[test]
@@ -8139,7 +9497,10 @@ mod tests {
         // SQ-0599: Tab does not reach the map, so focus is on the game before
         // and after — there is no hidden-pane hazard left to guard against.
         s.toggle_focus();
-        assert!(matches!(s.focus, Focus::Game), "Tab has nowhere to go without the inspector");
+        assert!(
+            matches!(s.focus, Focus::Game),
+            "Tab has nowhere to go without the inspector"
+        );
         s.toggle_map();
         assert!(matches!(s.layout, Layout::TranscriptFull));
         assert!(matches!(s.focus, Focus::Game));
@@ -8157,7 +9518,10 @@ mod tests {
         assert!(matches!(s.layout, Layout::Split), "map is visible");
         for _ in 0..4 {
             s.toggle_focus();
-            assert!(matches!(s.focus, Focus::Game), "Tab must never land on the map pane");
+            assert!(
+                matches!(s.focus, Focus::Game),
+                "Tab must never land on the map pane"
+            );
         }
         // Shift-Tab likewise.
         for _ in 0..4 {
@@ -8172,7 +9536,10 @@ mod tests {
         s.toggle_map(); // → TranscriptFull, map hidden
         assert!(matches!(s.layout, Layout::TranscriptFull));
         s.toggle_focus();
-        assert!(matches!(s.focus, Focus::Game), "Tab can't focus a hidden map");
+        assert!(
+            matches!(s.focus, Focus::Game),
+            "Tab can't focus a hidden map"
+        );
     }
 
     #[test]
@@ -8208,7 +9575,10 @@ mod tests {
         s.cycle_focus(true);
         assert_eq!(s.debug.as_ref().unwrap().focus, 2);
         s.cycle_focus(true);
-        assert!(matches!(s.focus, Focus::Game), "wraps from the last window back to the story");
+        assert!(
+            matches!(s.focus, Focus::Game),
+            "wraps from the last window back to the story"
+        );
         // Backward from the story lands on the last debug window.
         s.cycle_focus(false);
         assert!(matches!(s.focus, Focus::Map));
@@ -8220,7 +9590,10 @@ mod tests {
         let mut s = AppState::default();
         assert!(matches!(s.focus, Focus::Game));
         s.toggle_focus();
-        assert!(matches!(s.focus, Focus::Game), "no map focus stop (SQ-0599)");
+        assert!(
+            matches!(s.focus, Focus::Game),
+            "no map focus stop (SQ-0599)"
+        );
         s.toggle_map();
         assert!(matches!(s.layout, Layout::TranscriptFull));
         s.toggle_map();
@@ -8257,9 +9630,9 @@ mod tests {
     #[test]
     fn recenter_on_centers_cell() {
         let mut s = AppState::default(); // Boxes zoom: effective step 13×7
-        // Centering cell (5, 5) in a 20×10 character pane:
-        // cells_w = 20 / 13 = 1, cells_h = 10 / 7 = 1
-        // scroll = (5 - 1/2, 5 - 1/2) = (5 - 0, 5 - 0) = (5, 5)
+                                         // Centering cell (5, 5) in a 20×10 character pane:
+                                         // cells_w = 20 / 13 = 1, cells_h = 10 / 7 = 1
+                                         // scroll = (5 - 1/2, 5 - 1/2) = (5 - 0, 5 - 0) = (5, 5)
         s.recenter_on((5, 5), 20, 10);
         assert_eq!(s.scroll, (5, 5));
     }
@@ -8267,9 +9640,9 @@ mod tests {
     #[test]
     fn recenter_on_boxes_larger_pane() {
         let mut s = AppState::default(); // Boxes zoom: effective step 13×7
-        // Centering cell (0, 0) in a 80×24 character pane:
-        // cells_w = 80 / 13 = 6, cells_h = 24 / 7 = 3
-        // scroll = (0 - 6/2, 0 - 3/2) = (0 - 3, 0 - 1) = (-3, -1)
+                                         // Centering cell (0, 0) in a 80×24 character pane:
+                                         // cells_w = 80 / 13 = 6, cells_h = 24 / 7 = 3
+                                         // scroll = (0 - 6/2, 0 - 3/2) = (0 - 3, 0 - 1) = (-3, -1)
         s.recenter_on((0, 0), 80, 24);
         assert_eq!(s.scroll, (-3, -1));
     }
@@ -8279,9 +9652,9 @@ mod tests {
         use crate::state::Zoom;
         let mut s = AppState::default();
         s.zoom = Zoom::Compact; // steps = (12, 5)
-        // Centering cell (4, 4) in a 48×20 pane:
-        // cells_w = 48 / 12 = 4, cells_h = 20 / 5 = 4
-        // scroll = (4 - 4/2, 4 - 4/2) = (4 - 2, 4 - 2) = (2, 2)
+                                // Centering cell (4, 4) in a 48×20 pane:
+                                // cells_w = 48 / 12 = 4, cells_h = 20 / 5 = 4
+                                // scroll = (4 - 4/2, 4 - 4/2) = (4 - 2, 4 - 2) = (2, 2)
         s.recenter_on((4, 4), 48, 20);
         assert_eq!(s.scroll, (2, 2));
     }
@@ -8316,7 +9689,11 @@ mod tests {
         s.set_viewed_layer(Some(l));
         assert_eq!(s.active_layer(&g), l, "explicit view wins");
         s.set_viewed_layer(Some(999)); // stale id (no such layer)
-        assert_eq!(s.active_layer(&g), 0, "stale view falls back to current room's layer");
+        assert_eq!(
+            s.active_layer(&g),
+            0,
+            "stale view falls back to current room's layer"
+        );
     }
 
     /// SQ-0359: the bug in one assertion. A tidy animation's frames are `layer_subgraph`s, and a
@@ -8352,7 +9729,9 @@ mod tests {
         );
         // And that is not a cosmetic mislabel — it is the blank map the user reported.
         assert!(
-            mapper::render::render_layer(&sub, MAIN_LAYER).rooms.is_empty(),
+            mapper::render::render_layer(&sub, MAIN_LAYER)
+                .rooms
+                .is_empty(),
             "the frame holds no main-layer rooms, so drawing it as main draws nothing"
         );
         assert!(
@@ -8379,9 +9758,17 @@ mod tests {
 
         // With no animation, nothing changes: the live graph still answers for itself.
         s.tidy_anim = None;
-        assert_eq!(s.frame_layer(&live, None), cellar, "viewed layer still wins on the live graph");
+        assert_eq!(
+            s.frame_layer(&live, None),
+            cellar,
+            "viewed layer still wins on the live graph"
+        );
         s.set_viewed_layer(None);
-        assert_eq!(s.frame_layer(&live, None), MAIN_LAYER, "falls back to the current room's layer");
+        assert_eq!(
+            s.frame_layer(&live, None),
+            MAIN_LAYER,
+            "falls back to the current room's layer"
+        );
     }
 
     /// A two-layer graph: Hall -> Study on main, Study --Down--> Sump on "Under" (one way only,
@@ -8418,10 +9805,20 @@ mod tests {
         }
         // Refresh runs on every call, whatever the generation.
         let rm = s.cached_map_render(mapper::layer::MAIN_LAYER, &g);
-        let ghost = rm.rooms.iter().find(|r| r.id == 4).expect("main draws a ghost for the Sump");
+        let ghost = rm
+            .rooms
+            .iter()
+            .find(|r| r.id == 4)
+            .expect("main draws a ghost for the Sump");
         assert!(ghost.ghost.is_some(), "fixture: room 4 is a ghost here");
-        assert_eq!(ghost.label, "to Sump", "the refresh must not rename a ghost");
-        assert!(!ghost.is_current, "the player is never standing in a placeholder");
+        assert_eq!(
+            ghost.label, "to Sump",
+            "the refresh must not rename a ghost"
+        );
+        assert!(
+            !ghost.is_current,
+            "the player is never standing in a placeholder"
+        );
     }
 
     /// SQ-1697: an animation frame is a `layer_subgraph` with no crossings; rendering it through
@@ -8431,16 +9828,26 @@ mod tests {
         let g = ghost_fixture();
         let layer = mapper::layer::MAIN_LAYER;
         let live = mapper::render::render_layer(&g, layer);
-        assert!(live.rooms.iter().any(|r| r.id == 4 && r.ghost.is_some()), "fixture: live has the ghost");
+        assert!(
+            live.rooms.iter().any(|r| r.id == 4 && r.ghost.is_some()),
+            "fixture: live has the ghost"
+        );
         let frames = crate::tidy::run_tidy_pipeline(&mut g.clone(), layer, None);
         assert!(frames.len() > 2, "a real animation");
         let mid = &frames[frames.len() / 2];
         let bare = mapper::render::render_layer(&mid.graph, layer);
-        assert!(!bare.rooms.iter().any(|r| r.ghost.is_some()), "the bare frame draws no ghost (the bug)");
+        assert!(
+            !bare.rooms.iter().any(|r| r.ghost.is_some()),
+            "the bare frame draws no ghost (the bug)"
+        );
         let last = frames.last().unwrap();
         for f in [mid, last] {
             let rm = f.render_with_crossings(&g, layer);
-            let ghost = rm.rooms.iter().find(|r| r.id == 4).expect("frame draws the ghost");
+            let ghost = rm
+                .rooms
+                .iter()
+                .find(|r| r.id == 4)
+                .expect("frame draws the ghost");
             assert!(ghost.ghost.is_some());
             assert_eq!(ghost.label, "to Sump");
         }
@@ -8521,14 +9928,25 @@ mod tests {
         let _ = s.cached_map_render(0, &m.graph);
         drain_render_job(&mut s, &m.graph);
 
-        assert_eq!(classify(&m.graph, 1, Direction::N), MatrixCell::Untried, "north starts `·`");
+        assert_eq!(
+            classify(&m.graph, 1, Direction::N),
+            MatrixCell::Untried,
+            "north starts `·`"
+        );
 
-        let (gen, rooms, conns) =
-            (m.graph.struct_gen(), m.graph.rooms().count(), m.graph.connections().len());
+        let (gen, rooms, conns) = (
+            m.graph.struct_gen(),
+            m.graph.rooms().count(),
+            m.graph.connections().len(),
+        );
         m.observe(1, "Hall", Some(Direction::N)); // typed, went nowhere
         assert_eq!(m.graph.rooms().count(), rooms, "a foiled move adds no room");
         assert_eq!(m.graph.connections().len(), conns, "and no connection");
-        assert_eq!(m.graph.struct_gen(), gen, "so the map memo is NOT invalidated");
+        assert_eq!(
+            m.graph.struct_gen(),
+            gen,
+            "so the map memo is NOT invalidated"
+        );
 
         assert_eq!(
             classify(&m.graph, 1, Direction::N),
@@ -8552,9 +9970,16 @@ mod tests {
         // First call: empty placeholder served, real model routes off-thread.
         {
             let rm = s.cached_map_render(0, &g);
-            assert_eq!(rm.rooms.len(), 0, "empty placeholder while the first route runs");
+            assert_eq!(
+                rm.rooms.len(),
+                0,
+                "empty placeholder while the first route runs"
+            );
         }
-        assert!(s.render_job.borrow().is_some(), "even the first build is off-thread");
+        assert!(
+            s.render_job.borrow().is_some(),
+            "even the first build is off-thread"
+        );
         drain_render_job(&mut s, &g);
         {
             let rm = s.cached_map_render(0, &g);
@@ -8572,7 +9997,10 @@ mod tests {
             let rm = s.cached_map_render(0, &g);
             assert_eq!(rm.rooms.len(), 1, "last-ready model served while routing");
         }
-        assert!(s.render_job.borrow().is_some(), "a stale model re-routes off-thread");
+        assert!(
+            s.render_job.borrow().is_some(),
+            "a stale model re-routes off-thread"
+        );
         drain_render_job(&mut s, &g);
         {
             let rm = s.cached_map_render(0, &g);
@@ -8627,7 +10055,11 @@ mod tests {
         }
         let d = s.map_derived.borrow();
         let (_, _, tables) = d.as_ref().expect("rebuilt on the next draw");
-        assert_eq!(tables.rooms_placed(), 1, "…and they describe the routed model");
+        assert_eq!(
+            tables.rooms_placed(),
+            1,
+            "…and they describe the routed model"
+        );
     }
 
     /// SQ-0378: a step between already-placed rooms changes the current-room
@@ -8735,7 +10167,10 @@ mod tests {
         assert!(names.contains(&".."), "should contain parent link");
         assert!(names.contains(&"subdir"), "should contain subdir");
         assert!(names.contains(&"save.qzl"), "should contain .qzl file");
-        assert!(!names.contains(&"notes.txt"), ".txt file must not appear in PickFile mode");
+        assert!(
+            !names.contains(&"notes.txt"),
+            ".txt file must not appear in PickFile mode"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8755,7 +10190,10 @@ mod tests {
         let subdir = dir.join("subdir");
         fb.cd(subdir.clone());
         assert_eq!(fb.cwd, subdir, "cwd should update after cd");
-        assert_eq!(fb.scroll.selected, 0, "selection should reset to 0 after cd");
+        assert_eq!(
+            fb.scroll.selected, 0,
+            "selection should reset to 0 after cd"
+        );
         // subdir is empty (no qzl files), but ".." should be present.
         let names: Vec<&str> = fb.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&".."), "subdir should show '..'");
@@ -8771,7 +10209,10 @@ mod tests {
         let mut saw_file = false;
         for e in &fb.entries {
             if e.is_dir {
-                assert!(!saw_file, "dirs should appear before files, but saw a file first");
+                assert!(
+                    !saw_file,
+                    "dirs should appear before files, but saw a file first"
+                );
                 saw_dir = true;
             } else {
                 saw_file = true;
@@ -8799,21 +10240,36 @@ mod tests {
         // for the first visible change, and `+` never did anything at all (7 -> 8 is still Boxes).
         // One press must now equal one visible step.
         let mut s = AppState::default();
-        assert!(matches!(s.zoom, Zoom::Boxes), "default is the most detailed view");
+        assert!(
+            matches!(s.zoom, Zoom::Boxes),
+            "default is the most detailed view"
+        );
 
         s.zoom_out();
-        assert!(matches!(s.zoom, Zoom::Compact), "one press of `-` moves the map");
+        assert!(
+            matches!(s.zoom, Zoom::Compact),
+            "one press of `-` moves the map"
+        );
         s.zoom_out();
         assert!(matches!(s.zoom, Zoom::Overview), "and again");
         s.zoom_out();
-        assert!(matches!(s.zoom, Zoom::Overview), "clamped at the least detailed view");
+        assert!(
+            matches!(s.zoom, Zoom::Overview),
+            "clamped at the least detailed view"
+        );
 
         s.zoom_in();
-        assert!(matches!(s.zoom, Zoom::Compact), "one press of `+` moves it back");
+        assert!(
+            matches!(s.zoom, Zoom::Compact),
+            "one press of `+` moves it back"
+        );
         s.zoom_in();
         assert!(matches!(s.zoom, Zoom::Boxes));
         s.zoom_in();
-        assert!(matches!(s.zoom, Zoom::Boxes), "clamped at the most detailed view");
+        assert!(
+            matches!(s.zoom, Zoom::Boxes),
+            "clamped at the most detailed view"
+        );
     }
 
     #[test]
@@ -8842,12 +10298,18 @@ mod tests {
 
         let mut s = AppState::default();
         s.zoom_by(-2);
-        assert!(matches!(s.zoom, Zoom::Overview), "-2 goes two steps, not one");
+        assert!(
+            matches!(s.zoom, Zoom::Overview),
+            "-2 goes two steps, not one"
+        );
 
         // Clamps exactly as the equivalent run of keypresses would.
         let mut s = AppState::default();
         s.zoom_by(-99);
-        assert!(matches!(s.zoom, Zoom::Overview), "over-stepping clamps, it does not wrap");
+        assert!(
+            matches!(s.zoom, Zoom::Overview),
+            "over-stepping clamps, it does not wrap"
+        );
         s.zoom_by(99);
         assert!(matches!(s.zoom, Zoom::Boxes));
 
@@ -8873,10 +10335,16 @@ mod tests {
         let mut s = AppState::default(); // level 7, Boxes
         s.zoom_out_fine();
         assert_eq!(s.zoom_level, 6);
-        assert!(matches!(s.zoom, Zoom::Boxes), "one notch stays inside the band");
+        assert!(
+            matches!(s.zoom, Zoom::Boxes),
+            "one notch stays inside the band"
+        );
         s.zoom_out_fine();
         assert_eq!(s.zoom_level, 5);
-        assert!(matches!(s.zoom, Zoom::Compact), "the third notch tips into the next view");
+        assert!(
+            matches!(s.zoom, Zoom::Compact),
+            "the third notch tips into the next view"
+        );
         for _ in 0..5 {
             s.zoom_out_fine();
         }
@@ -8907,7 +10375,10 @@ mod tests {
         // Reset
         s.zoom_reset();
         assert_eq!(s.zoom_level, 7, "zoom_reset must restore level to 7");
-        assert!(matches!(s.zoom, Zoom::Boxes), "zoom_reset must restore Zoom::Boxes");
+        assert!(
+            matches!(s.zoom, Zoom::Boxes),
+            "zoom_reset must restore Zoom::Boxes"
+        );
         assert_eq!(s.char_pan, (0, 0), "zoom_reset must clear char_pan");
     }
 
@@ -8938,7 +10409,11 @@ mod tests {
         let mut s = AppState::default();
         s.char_pan = (5, -3);
         s.recenter_on((0, 0), 80, 24);
-        assert_eq!(s.char_pan, (0, 0), "recenter_on must reset char_pan to (0,0)");
+        assert_eq!(
+            s.char_pan,
+            (0, 0),
+            "recenter_on must reset char_pan to (0,0)"
+        );
     }
 
     #[test]
@@ -8946,7 +10421,10 @@ mod tests {
         let mut s = AppState::default();
         assert!(!s.any_overlay_open());
         s.overlays.reset_dialog = true;
-        assert!(s.any_overlay_open(), "reset_dialog open => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "reset_dialog open => any_overlay_open true"
+        );
     }
 
     #[test]
@@ -8954,9 +10432,15 @@ mod tests {
         let mut s = AppState::default();
         assert!(!s.any_overlay_open());
         s.overlays.game_over = true;
-        assert!(s.any_overlay_open(), "game_over open => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "game_over open => any_overlay_open true"
+        );
         s.overlays.game_over = false;
-        assert!(!s.any_overlay_open(), "game_over false => any_overlay_open false");
+        assert!(
+            !s.any_overlay_open(),
+            "game_over false => any_overlay_open false"
+        );
     }
 
     #[test]
@@ -8964,9 +10448,15 @@ mod tests {
         let mut s = AppState::default();
         assert!(!s.any_overlay_open());
         s.overlays.quit_dialog = true;
-        assert!(s.any_overlay_open(), "quit_dialog open => any_overlay_open true");
+        assert!(
+            s.any_overlay_open(),
+            "quit_dialog open => any_overlay_open true"
+        );
         s.overlays.quit_dialog = false;
-        assert!(!s.any_overlay_open(), "quit_dialog false => any_overlay_open false");
+        assert!(
+            !s.any_overlay_open(),
+            "quit_dialog false => any_overlay_open false"
+        );
     }
 
     /// The hint session lives in a Journal tab (SQ-1685), so it is NOT an overlay: a
@@ -8975,9 +10465,14 @@ mod tests {
     fn a_running_hint_session_is_not_an_overlay() {
         let mut s = AppState::default();
         assert!(!s.any_overlay_open());
-        let Some(hs) = make_hint_session() else { return }; // fixture absent — skip
+        let Some(hs) = make_hint_session() else {
+            return;
+        }; // fixture absent — skip
         s.overlays.hints = Some(hs);
-        assert!(!s.any_overlay_open(), "the hint session is a tab, not a modal");
+        assert!(
+            !s.any_overlay_open(),
+            "the hint session is a tab, not a modal"
+        );
         assert!(!s.any_modal_overlay_open());
     }
 
@@ -8989,7 +10484,8 @@ mod tests {
             return; // fixture absent — skip
         }
         let story_bytes = std::fs::read(&fixture_path).expect("read minizork.z3");
-        let session = crate::session::GameSession::new(story_bytes, true, false, None).expect("GameSession::new");
+        let session = crate::session::GameSession::new(story_bytes, true, false, None)
+            .expect("GameSession::new");
         let mut hs = HintSession {
             source: HintSource::Zcode(session),
             transcript: vec![],
@@ -9001,7 +10497,12 @@ mod tests {
             builtin_hint: false,
         };
         // Instant (animation disabled) so the logical offset settles immediately.
-        let anim = crate::config::AnimationConfig { enabled: false, easing: crate::anim::Easing::EaseOut, scroll_ms: 0, ..Default::default() };
+        let anim = crate::config::AnimationConfig {
+            enabled: false,
+            easing: crate::anim::Easing::EaseOut,
+            scroll_ms: 0,
+            ..Default::default()
+        };
         // Scrolling down (negative) at the top is clamped to 0.
         hs.scroll_by(-1, 5, &anim);
         assert_eq!(hs.scroll, 0, "scroll cannot go below 0");
@@ -9022,7 +10523,9 @@ mod tests {
     /// hint scrolling (SQ-1597).
     #[test]
     fn hint_session_scroll_by_produces_scroll_kind_not_follow() {
-        let Some(mut hs) = make_hint_session() else { return }; // fixture absent — skip
+        let Some(mut hs) = make_hint_session() else {
+            return;
+        }; // fixture absent — skip
         let anim = crate::config::AnimationConfig {
             enabled: true,
             easing: crate::anim::Easing::EaseOut,
@@ -9030,8 +10533,15 @@ mod tests {
             ..Default::default()
         };
         hs.scroll_by(3, 5, &anim);
-        let a = hs.scroll_anim.as_ref().expect("animation armed when enabled");
-        assert_eq!(a.kind, ScrollAnimKind::Scroll, "hint-panel scroll must never tag Follow");
+        let a = hs
+            .scroll_anim
+            .as_ref()
+            .expect("animation armed when enabled");
+        assert_eq!(
+            a.kind,
+            ScrollAnimKind::Scroll,
+            "hint-panel scroll must never tag Follow"
+        );
     }
 
     /// Build a minimal `HintSession` off the minizork fixture (its transcript
@@ -9086,7 +10596,9 @@ mod tests {
 
     #[test]
     fn apply_turn_collapses_successive_menu_reprints() {
-        let Some(mut hs) = make_hint_session() else { return };
+        let Some(mut hs) = make_hint_session() else {
+            return;
+        };
         hs.transcript.clear(); // fixture opening irrelevant; start clean
 
         // First menu redraw (screen clear): anchors at 0, appends its 3 lines.
@@ -9107,7 +10619,9 @@ mod tests {
 
     #[test]
     fn apply_turn_normal_turn_appends() {
-        let Some(mut hs) = make_hint_session() else { return };
+        let Some(mut hs) = make_hint_session() else {
+            return;
+        };
         hs.transcript.clear();
         hs.transcript.push("existing".to_string());
 
@@ -9127,7 +10641,9 @@ mod tests {
 
     #[test]
     fn apply_turn_empty_turn_adds_no_blank_line_and_keeps_scroll() {
-        let Some(mut hs) = make_hint_session() else { return };
+        let Some(mut hs) = make_hint_session() else {
+            return;
+        };
         hs.transcript.clear();
         hs.transcript.push("clue A".to_string());
         hs.transcript.push("clue B".to_string());
@@ -9142,21 +10658,26 @@ mod tests {
             vec!["clue A".to_string(), "clue B".to_string()],
             "an empty turn must not append a blank line to the clue window"
         );
-        assert_eq!(hs.scroll, 1, "an empty turn must not reset the scroll position");
+        assert_eq!(
+            hs.scroll, 1,
+            "an empty turn must not reset the scroll position"
+        );
     }
 
     #[test]
     fn run_search_direction_and_next_wrap() {
         let mut s = AppState::default();
-        for t in ["alpha", "beta", "alpha again", "gamma", "ALPHA"] { s.push_transcript(t); }
+        for t in ["alpha", "beta", "alpha again", "gamma", "ALPHA"] {
+            s.push_transcript(t);
+        }
         // matches for "alpha" at visible positions 0, 2, 4 (case-insensitive)
         let n = s.run_search("alpha", true); // start backward → last match
         assert_eq!(n, 3);
         assert_eq!(s.search_matches, vec![0, 2, 4]);
         assert_eq!(s.search_idx, 2); // index into search_matches → position 4
-        // n = back
+                                     // n = back
         assert_eq!(s.search_next(false), Some(2)); // now at match position 2
-        // forward wraps from 2 → 4 → back to 0
+                                                   // forward wraps from 2 → 4 → back to 0
         let _ = s.search_next(true); // → 4
         assert_eq!(s.search_next(true), Some(0)); // wrap to first
         let f = s.run_search("alpha", false); // start forward → first match
@@ -9179,8 +10700,14 @@ mod tests {
         let dir2 = std::env::temp_dir().join(format!("bm-maptrace-off-{}", std::process::id()));
         std::fs::create_dir_all(&dir2).unwrap();
         write_map_trace(&dir2, &steps, false);
-        assert!(!dir2.join("trace.log").exists() || std::fs::read_to_string(dir2.join("trace.log")).unwrap().is_empty());
-        std::fs::remove_dir_all(&dir).ok(); std::fs::remove_dir_all(&dir2).ok();
+        assert!(
+            !dir2.join("trace.log").exists()
+                || std::fs::read_to_string(dir2.join("trace.log"))
+                    .unwrap()
+                    .is_empty()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir2).ok();
     }
 }
 
@@ -9251,13 +10778,19 @@ mod play_sound_tests {
     #[test]
     fn resource_list_no_blorb_reports_none_resolved() {
         let lines = format_sound_resource_list(None, &Default::default());
-        assert_eq!(lines, vec!["no sound blorb resolved, and none on the medium".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["no sound blorb resolved, and none on the medium".to_string()]
+        );
     }
 
     /// One effect on the medium, named the way the disk names it.
-    fn disk_with(effect: u16, name: &str, rate: u32, aiff: Vec<u8>)
-        -> std::collections::HashMap<u16, crate::native_sound::DiskSound>
-    {
+    fn disk_with(
+        effect: u16,
+        name: &str,
+        rate: u32,
+        aiff: Vec<u8>,
+    ) -> std::collections::HashMap<u16, crate::native_sound::DiskSound> {
         let mut disk = std::collections::HashMap::new();
         disk.insert(
             effect,
@@ -9282,7 +10815,10 @@ mod play_sound_tests {
         let lines = format_sound_resource_list(None, &disk);
         assert_eq!(lines[0], "1 sound effect(s) on the medium:");
         assert!(lines[1].contains("#3"), "{:?}", lines[1]);
-        assert!(lines[1].contains("armor"), "the sample's own name is what a person recognises");
+        assert!(
+            lines[1].contains("armor"),
+            "the sample's own name is what a person recognises"
+        );
         assert!(lines[1].contains("15360 Hz"));
     }
 
@@ -9296,7 +10832,10 @@ mod play_sound_tests {
     #[test]
     fn resource_list_says_when_a_blorb_is_present_but_outranked() {
         let disk = disk_with(3, "armor", 15360, Vec::new());
-        let bytes = build_blorb(&[(b"Exec", 0, b"ZCOD", b"abcd"), (b"Snd ", 3, b"FORM", b"aiffbytes")]);
+        let bytes = build_blorb(&[
+            (b"Exec", 0, b"ZCOD", b"abcd"),
+            (b"Snd ", 3, b"FORM", b"aiffbytes"),
+        ]);
         let blorb = blorb::Blorb::parse(bytes).unwrap();
         let lines = format_sound_resource_list(Some(&blorb), &disk);
         assert_eq!(lines[0], "1 sound effect(s) on the medium:");
@@ -9320,10 +10859,16 @@ mod play_sound_tests {
     #[test]
     fn resolve_sound_prefers_the_medium_over_a_blorb() {
         let disk = disk_with(3, "armor", 15360, b"DISKAIFF".to_vec());
-        let bytes = build_blorb(&[(b"Exec", 0, b"ZCOD", b"abcd"), (b"Snd ", 3, b"FORM", b"blorbaiff")]);
+        let bytes = build_blorb(&[
+            (b"Exec", 0, b"ZCOD", b"abcd"),
+            (b"Snd ", 3, b"FORM", b"blorbaiff"),
+        ]);
         let blorb = blorb::Blorb::parse(bytes).unwrap();
         let (got, kind, name) = resolve_sound(&disk, Some(&blorb), 3).expect("effect 3 resolves");
-        assert_eq!(got, b"DISKAIFF", "the disk is the rendition Infocom pressed");
+        assert_eq!(
+            got, b"DISKAIFF",
+            "the disk is the rendition Infocom pressed"
+        );
         assert_eq!(kind, blorb::SoundKind::Aiff);
         assert_eq!(name, Some("armor"), "the report says which source answered");
     }
@@ -9333,26 +10878,45 @@ mod play_sound_tests {
     #[test]
     fn resolve_sound_falls_through_to_a_blorb_and_reports_nothing_for_neither() {
         let disk = disk_with(3, "armor", 15360, b"DISKAIFF".to_vec());
-        let bytes = build_blorb(&[(b"Exec", 0, b"ZCOD", b"abcd"), (b"Snd ", 5, b"OGGV", b"oggdata!")]);
+        let bytes = build_blorb(&[
+            (b"Exec", 0, b"ZCOD", b"abcd"),
+            (b"Snd ", 5, b"OGGV", b"oggdata!"),
+        ]);
         let blorb = blorb::Blorb::parse(bytes).unwrap();
         let (got, kind, name) = resolve_sound(&disk, Some(&blorb), 5).expect("effect 5 resolves");
         assert_eq!(got, b"oggdata!");
         assert_eq!(kind, blorb::SoundKind::Ogg);
-        assert_eq!(name, None, "no medium name, because the medium did not answer");
+        assert_eq!(
+            name, None,
+            "no medium name, because the medium did not answer"
+        );
 
-        assert!(resolve_sound(&disk, Some(&blorb), 9).is_none(), "in neither source");
-        assert!(resolve_sound(&Default::default(), None, 3).is_none(), "no sources at all");
+        assert!(
+            resolve_sound(&disk, Some(&blorb), 9).is_none(),
+            "in neither source"
+        );
+        assert!(
+            resolve_sound(&Default::default(), None, 3).is_none(),
+            "no sources at all"
+        );
     }
 
     /// An undecodable Blorb resource comes back rather than reading as absent, so
     /// `/play-sound` can tell "found, but not decodable" from "not found at all".
     #[test]
     fn resolve_sound_returns_a_resource_it_cannot_decode() {
-        let bytes = build_blorb(&[(b"Exec", 0, b"ZCOD", b"abcd"), (b"Snd ", 9, b"WEIR", b"whatever")]);
+        let bytes = build_blorb(&[
+            (b"Exec", 0, b"ZCOD", b"abcd"),
+            (b"Snd ", 9, b"WEIR", b"whatever"),
+        ]);
         let blorb = blorb::Blorb::parse(bytes).unwrap();
-        let (_, kind, _) = resolve_sound(&Default::default(), Some(&blorb), 9).expect("still found");
+        let (_, kind, _) =
+            resolve_sound(&Default::default(), Some(&blorb), 9).expect("still found");
         assert_eq!(kind, blorb::SoundKind::Other);
-        assert!(sound_kind_to_format(kind).is_none(), "and the caller is what decides it is unplayable");
+        assert!(
+            sound_kind_to_format(kind).is_none(),
+            "and the caller is what decides it is unplayable"
+        );
     }
 
     #[test]
@@ -9375,9 +10939,15 @@ mod play_sound_tests {
         let lines = format_sound_resource_list(Some(&blorb), &Default::default());
         assert_eq!(lines[0], "3 sound resource(s):");
         let three = lines.iter().find(|l| l.contains("#3")).unwrap();
-        assert!(three.contains("AIFF") && three.contains("playable") && !three.contains("not decodable"));
+        assert!(
+            three.contains("AIFF")
+                && three.contains("playable")
+                && !three.contains("not decodable")
+        );
         let five = lines.iter().find(|l| l.contains("#5")).unwrap();
-        assert!(five.contains("OGG") && five.contains("playable") && !five.contains("not decodable"));
+        assert!(
+            five.contains("OGG") && five.contains("playable") && !five.contains("not decodable")
+        );
         let nine = lines.iter().find(|l| l.contains("#9")).unwrap();
         assert!(nine.contains("other") && nine.contains("not decodable"));
     }
@@ -9450,7 +11020,9 @@ mod play_sound_tests {
             sound_id: None,
         };
         let lines = format_play_sound_report(&r);
-        assert!(lines.iter().any(|l| l.contains("playback: backend returned None")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("playback: backend returned None")));
     }
 
     #[test]
@@ -9467,6 +11039,8 @@ mod play_sound_tests {
             sound_id: None,
         };
         let lines = format_play_sound_report(&r);
-        assert!(lines.iter().any(|l| l.contains("off (attempting playback anyway")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("off (attempting playback anyway")));
     }
 }

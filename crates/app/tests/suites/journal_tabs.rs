@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use app::input::{journal_tab_click_action, key_to_action, Action};
-use app::journal::{draw_tab_bar, JournalTab, TabBarHit};
+use app::journal::{draw_tab_bar, frame_files_body, FilesSubtab, JournalTab, TabBarHit};
 use app::layout::compute_pane_layout;
 use app::render::inventory_dock::{build_inventory_dock_rows, draw_inventory_dock, InventoryDockHits};
 use app::state::{AppState, Layout};
@@ -93,12 +93,12 @@ fn narrow_bars_abbreviate_then_show_only_the_active_tab_with_step_markers() {
     let colors = st.colors.clone();
 
     // Wide enough for abbreviations only.
-    let r = Rect::new(0, 0, 36, 1);
+    let r = Rect::new(0, 0, 30, 1);
     let mut buf = Buffer::empty(r);
     draw_tab_bar(r, JournalTab::Map, false, &colors, &mut buf);
     let row = text_in(&buf, r);
     assert!(row.contains("Inv") && !row.contains("Inventory"), "{row:?}");
-    assert!(row.contains("Docs") && !row.contains("Documents"), "the Documents tab abbreviates: {row:?}");
+    assert!(row.contains("Files"), "the combined Files tab is visible: {row:?}");
 
     // Too narrow for any strip: the active tab between markers, and the markers step.
     let r = Rect::new(0, 0, 9, 1);
@@ -129,6 +129,34 @@ fn alt_digits_switch_tabs_through_the_real_key_path_in_game_focus() {
         key_to_action(&st, crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('2'), crossterm::event::KeyModifiers::NONE)),
         Action::InputChar('2')
     ));
+}
+
+#[test]
+fn files_is_one_journal_tab_with_two_persistent_subtabs() {
+    let mut st = AppState::default();
+    let area = Rect::new(0, 0, 50, 12);
+    let mut buf = Buffer::empty(area);
+    let (content, hits) = frame_files_body(&mut buf, area, FilesSubtab::Hints, false, &st.colors);
+    assert_eq!(
+        hits.iter().map(|(tab, _)| *tab).collect::<Vec<_>>(),
+        [FilesSubtab::Hints, FilesSubtab::Documents]
+    );
+    let strip = text_in(&buf, Rect::new(area.x, area.y, area.width, 1));
+    assert!(strip.contains("Hints") && strip.contains("Documents"), "{strip:?}");
+    assert!(content.height > 0);
+    assert_eq!(
+        JournalTab::ALL.iter().filter(|tab| tab.label() == "Files").count(),
+        1,
+        "Hints and Documents share one top-level tab"
+    );
+
+    st.set_journal_tab(JournalTab::Documents);
+    assert!(st.documents_tab_visible());
+    st.set_journal_tab(JournalTab::Room);
+    st.set_journal_tab(JournalTab::Files);
+    assert!(st.documents_tab_visible(), "returning to Files restores its selected subtab");
+    st.set_journal_tab(JournalTab::Hints);
+    assert!(st.hints_tab_visible());
 }
 
 #[test]

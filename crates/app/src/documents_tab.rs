@@ -53,14 +53,13 @@ pub const UNLINKED_LINE: &str = "Link to IFDB for a documents folder";
 
 /// IBM code page 437's upper half, 0x80..=0xFF in order.
 const CP437_HIGH: [char; 128] = [
-    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å',
-    'É', 'æ', 'Æ', 'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ',
-    'á', 'í', 'ó', 'ú', 'ñ', 'Ñ', 'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»',
-    '░', '▒', '▓', '│', '┤', '╡', '╢', '╖', '╕', '╣', '║', '╗', '╝', '╜', '╛', '┐',
-    '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧',
-    '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌', '█', '▄', '▌', '▐', '▀',
-    'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩',
-    '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{a0}',
+    'Ç', 'ü', 'é', 'â', 'ä', 'à', 'å', 'ç', 'ê', 'ë', 'è', 'ï', 'î', 'ì', 'Ä', 'Å', 'É', 'æ', 'Æ',
+    'ô', 'ö', 'ò', 'û', 'ù', 'ÿ', 'Ö', 'Ü', '¢', '£', '¥', '₧', 'ƒ', 'á', 'í', 'ó', 'ú', 'ñ', 'Ñ',
+    'ª', 'º', '¿', '⌐', '¬', '½', '¼', '¡', '«', '»', '░', '▒', '▓', '│', '┤', '╡', '╢', '╖', '╕',
+    '╣', '║', '╗', '╝', '╜', '╛', '┐', '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦',
+    '╠', '═', '╬', '╧', '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌', '█', '▄', '▌', '▐',
+    '▀', 'α', 'ß', 'Γ', 'π', 'Σ', 'σ', 'µ', 'τ', 'Φ', 'Θ', 'Ω', 'δ', '∞', 'φ', 'ε', '∩', '≡', '±',
+    '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{a0}',
 ];
 
 /// Decode a document's bytes: UTF-8 when the whole thing is valid UTF-8,
@@ -85,7 +84,13 @@ pub fn decode_text(bytes: &[u8], truncated: bool) -> String {
         }
         Err(_) => bytes
             .iter()
-            .map(|&b| if b < 0x80 { b as char } else { CP437_HIGH[(b - 0x80) as usize] })
+            .map(|&b| {
+                if b < 0x80 {
+                    b as char
+                } else {
+                    CP437_HIGH[(b - 0x80) as usize]
+                }
+            })
             .collect(),
     }
 }
@@ -210,7 +215,9 @@ impl Pager {
         if stale {
             *self.wrapped.borrow_mut() = Some((width, wrap_lines(&self.raw, width as usize)));
         }
-        std::cell::Ref::map(self.wrapped.borrow(), |o| &o.as_ref().expect("just filled").1)
+        std::cell::Ref::map(self.wrapped.borrow(), |o| {
+            &o.as_ref().expect("just filled").1
+        })
     }
 
     fn scroll_by(&self, delta: isize) {
@@ -303,11 +310,13 @@ pub fn decide_open(entry: &DocEntry) -> OpenDecision {
             Err(e) => OpenDecision::Failed(format!("Could not read {}: {e}", entry.id)),
         },
         // The system opener only ever gets an allowlisted viewer type (SQ-1730).
-        DocKind::Pdf | DocKind::Other if !crate::documents::opener_allowed(&entry.id) => OpenDecision::Failed(format!(
-            "lanthorn will not open {} outside the app: it is not a document type it trusts. It is at {}",
-            entry.id,
-            entry.path.display()
-        )),
+        DocKind::Pdf | DocKind::Other if !crate::documents::opener_allowed(&entry.id) => {
+            OpenDecision::Failed(format!(
+                "lanthorn will not open {} outside the app: it is not a document type it trusts. It is at {}",
+                entry.id,
+                entry.path.display()
+            ))
+        }
         DocKind::Pdf | DocKind::Other => OpenDecision::External { note: None },
     }
 }
@@ -315,7 +324,9 @@ pub fn decide_open(entry: &DocEntry) -> OpenDecision {
 /// `External` for an allowlisted extension, else a refusal naming the file.
 fn external_if_allowed(entry: &DocEntry, note: &str) -> OpenDecision {
     if crate::documents::opener_allowed(&entry.id) {
-        OpenDecision::External { note: Some(note.into()) }
+        OpenDecision::External {
+            note: Some(note.into()),
+        }
     } else {
         OpenDecision::Failed(format!("{note} It is at {}", entry.path.display()))
     }
@@ -413,13 +424,19 @@ pub const SPOILER_FLAG: &str = " spoiler";
 /// A row's kind and size column: `PDF     2.1 MB`. Shared by the tab's list and
 /// the info panel's Documents section.
 pub fn row_meta(e: &DocEntry) -> String {
-    format!("{:<5} {:>7}", e.kind.label(), crate::ifdb_documents::format_size(e.size))
+    format!(
+        "{:<5} {:>7}",
+        e.kind.label(),
+        crate::ifdb_documents::format_size(e.size)
+    )
 }
 
 fn read_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
     let mut buf = Vec::new();
-    std::fs::File::open(path)?.take(cap + 1).read_to_end(&mut buf)?;
+    std::fs::File::open(path)?
+        .take(cap + 1)
+        .read_to_end(&mut buf)?;
     let truncated = buf.len() as u64 > cap;
     buf.truncate(cap as usize);
     Ok((buf, truncated))
@@ -452,12 +469,21 @@ impl DocumentsTab {
 
     /// Resolve the running game's folder and list it. A host with no library, or a
     /// game IFDB does not know, lists as unlinked.
-    pub fn refresh(&mut self, story_path: &Path, disk_entry: Option<&str>, roots: Option<&DataRoots>) {
+    pub fn refresh(
+        &mut self,
+        story_path: &Path,
+        disk_entry: Option<&str>,
+        roots: Option<&DataRoots>,
+    ) {
         self.no_library = roots.is_none();
         let loc = roots
             .and_then(|r| {
                 let entry = crate::picker::resolve_entry_from(story_path, disk_entry, r)?;
-                Some(crate::documents::locate(r, entry.meta.ifdb_tuid.as_deref(), &entry.title))
+                Some(crate::documents::locate(
+                    r,
+                    entry.meta.ifdb_tuid.as_deref(),
+                    &entry.title,
+                ))
             })
             .unwrap_or(Location::Unlinked);
         self.set_location(loc);
@@ -478,7 +504,10 @@ impl DocumentsTab {
         match &self.view {
             DocView::Text(p) => p.scroll_by(delta),
             DocView::List => {
-                let max = self.entries.len().saturating_sub(self.list_viewport.get().max(1));
+                let max = self
+                    .entries
+                    .len()
+                    .saturating_sub(self.list_viewport.get().max(1));
                 let next = (self.list_top.get() as isize + delta).clamp(0, max as isize);
                 self.list_top.set(next as usize);
                 self.follow.set(false);
@@ -506,7 +535,9 @@ impl DocumentsTab {
         web: bool,
         opener: &mut dyn FnMut(&str),
     ) -> OpenOutcome {
-        let Some(entry) = self.entries.get(idx).cloned() else { return OpenOutcome::Nothing };
+        let Some(entry) = self.entries.get(idx).cloned() else {
+            return OpenOutcome::Nothing;
+        };
         if !confirmed && needs_spoiler_confirm(&entry) {
             return OpenOutcome::NeedsConfirm(entry.id);
         }
@@ -590,7 +621,10 @@ impl DocumentsTab {
 pub fn open_selected(state: &mut AppState, idx: Option<usize>, confirmed: bool) {
     let idx = idx.unwrap_or(state.documents_tab.selected);
     let web = crate::opener::is_web_mode();
-    match state.documents_tab.open_entry(idx, confirmed, web, &mut |t| crate::opener::open(t)) {
+    match state
+        .documents_tab
+        .open_entry(idx, confirmed, web, &mut |t| crate::opener::open(t))
+    {
         OpenOutcome::NeedsConfirm(id) => {
             state.overlays.confirm_spoiler_document = Some(id);
             state.overlays.dialog_focus = 1; // Cancel is the safe default
@@ -606,7 +640,9 @@ pub fn open_selected(state: &mut AppState, idx: Option<usize>, confirmed: bool) 
 
 /// The spoiler dialog was answered.
 pub fn answer_spoiler(state: &mut AppState, open: bool) {
-    let Some(id) = state.overlays.confirm_spoiler_document.take() else { return };
+    let Some(id) = state.overlays.confirm_spoiler_document.take() else {
+        return;
+    };
     state.overlays.dialog_focus = 0;
     if open {
         if let Some(idx) = state.documents_tab.entries.iter().position(|e| e.id == id) {
@@ -618,7 +654,10 @@ pub fn answer_spoiler(state: &mut AppState, open: bool) {
 /// Close the viewer and free its terminal image.
 pub fn close_viewer(state: &mut AppState) {
     if let Some(id) = state.documents_tab.close_viewer() {
-        state.graphics_render.borrow_mut().queue_external_deletes([id]);
+        state
+            .graphics_render
+            .borrow_mut()
+            .queue_external_deletes([id]);
     }
 }
 
@@ -626,7 +665,10 @@ pub fn close_viewer(state: &mut AppState) {
 /// moved to another tab, so nothing re-places it until the tab is back.
 pub fn release_image(state: &mut AppState) {
     if let Some(id) = state.documents_tab.release_image() {
-        state.graphics_render.borrow_mut().queue_external_deletes([id]);
+        state
+            .graphics_render
+            .borrow_mut()
+            .queue_external_deletes([id]);
     }
 }
 
@@ -635,19 +677,28 @@ pub fn release_image(state: &mut AppState) {
 pub fn create_folder(state: &mut AppState, story_path: &Path) {
     let line = match state.data_roots.as_ref() {
         None => "No library to keep documents in".to_string(),
-        Some(roots) => match crate::picker::resolve_entry_from(story_path, state.source.disk_entry.as_deref(), roots) {
+        Some(roots) => match crate::picker::resolve_entry_from(
+            story_path,
+            state.source.disk_entry.as_deref(),
+            roots,
+        ) {
             None => "Could not read this game's IFDB record".to_string(),
-            Some(entry) => match crate::documents::locate(roots, entry.meta.ifdb_tuid.as_deref(), &entry.title) {
-                Location::Unlinked => UNLINKED_LINE.to_string(),
-                Location::Exists(p) => format!("Documents folder already exists: {}", p.display()),
-                Location::Missing(_) => {
-                    let tuid = entry.meta.ifdb_tuid.as_deref().unwrap_or_default();
-                    match crate::documents::ensure_documents_dir(roots, tuid, &entry.title) {
-                        Ok(p) => format!("Created documents folder: {}", p.display()),
-                        Err(e) => format!("Could not create the documents folder: {e}"),
+            Some(entry) => {
+                match crate::documents::locate(roots, entry.meta.ifdb_tuid.as_deref(), &entry.title)
+                {
+                    Location::Unlinked => UNLINKED_LINE.to_string(),
+                    Location::Exists(p) => {
+                        format!("Documents folder already exists: {}", p.display())
+                    }
+                    Location::Missing(_) => {
+                        let tuid = entry.meta.ifdb_tuid.as_deref().unwrap_or_default();
+                        match crate::documents::ensure_documents_dir(roots, tuid, &entry.title) {
+                            Ok(p) => format!("Created documents folder: {}", p.display()),
+                            Err(e) => format!("Could not create the documents folder: {e}"),
+                        }
                     }
                 }
-            },
+            }
         },
     };
     state.documents_tab.mark_dirty();
@@ -661,7 +712,9 @@ pub fn refresh_if_needed(state: &mut AppState, story_path: &Path) -> bool {
     }
     let disk = state.source.disk_entry.clone();
     let roots = state.data_roots.clone();
-    state.documents_tab.refresh(story_path, disk.as_deref(), roots.as_ref());
+    state
+        .documents_tab
+        .refresh(story_path, disk.as_deref(), roots.as_ref());
     true
 }
 
@@ -682,7 +735,10 @@ pub fn mouse_action(state: &AppState, m: &MouseEvent) -> Option<DocMouse> {
         return None;
     }
     let hits = state.documents_tab.hits();
-    let pt = ratatui::layout::Position { x: m.column, y: m.row };
+    let pt = ratatui::layout::Position {
+        x: m.column,
+        y: m.row,
+    };
     if !hits.area.contains(pt) {
         return None;
     }
@@ -787,7 +843,6 @@ fn put_link(buf: &mut Buffer, rect: Rect, text: &str, url: &str, style: Style) {
 
 /// Draw the tab into `area` (the Journal body) and record where things landed.
 pub fn draw(state: &AppState, outer: Rect, buf: &mut Buffer) {
-    let st = Styles::of(state);
     // The frame (shared with the Inventory tab) first; everything below, and
     // every hit-rect, lives in its inner rect.
     let area = if outer.width == 0 || outer.height == 0 {
@@ -795,8 +850,17 @@ pub fn draw(state: &AppState, outer: Rect, buf: &mut Buffer) {
     } else {
         crate::journal::frame_body(buf, outer, "Documents", &state.colors, false)
     };
+    draw_in_files(state, area, buf);
+}
+
+/// Draw the Documents child inside the shared Files frame.
+pub fn draw_in_files(state: &AppState, area: Rect, buf: &mut Buffer) {
+    let st = Styles::of(state);
     let tab = &state.documents_tab;
-    let mut hits = DocHits { area, ..DocHits::default() };
+    let mut hits = DocHits {
+        area,
+        ..DocHits::default()
+    };
     if area.width == 0 || area.height == 0 {
         *tab.hits.borrow_mut() = hits;
         return;
@@ -811,13 +875,24 @@ pub fn draw(state: &AppState, outer: Rect, buf: &mut Buffer) {
     *tab.hits.borrow_mut() = hits;
 }
 
-fn draw_list(state: &AppState, tab: &DocumentsTab, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut DocHits) {
+fn draw_list(
+    state: &AppState,
+    tab: &DocumentsTab,
+    st: &Styles,
+    area: Rect,
+    buf: &mut Buffer,
+    hits: &mut DocHits,
+) {
     let mut y = area.y;
     let x = area.x + 1;
     // Header: the folder, as a link when it exists.
     match &tab.location {
         Location::Unlinked => {
-            let line = if tab.no_library { "No library to keep documents in" } else { UNLINKED_LINE };
+            let line = if tab.no_library {
+                "No library to keep documents in"
+            } else {
+                UNLINKED_LINE
+            };
             put(buf, area, y, x, line, st.hint);
             return finish_list(tab, st, area, buf, hits, y + 2, false);
         }
@@ -855,7 +930,15 @@ fn draw_list(state: &AppState, tab: &DocumentsTab, st: &Styles, area: Rect, buf:
     let _ = state;
 }
 
-fn finish_list(tab: &DocumentsTab, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut DocHits, top: u16, has_folder: bool) {
+fn finish_list(
+    tab: &DocumentsTab,
+    st: &Styles,
+    area: Rect,
+    buf: &mut Buffer,
+    hits: &mut DocHits,
+    top: u16,
+    has_folder: bool,
+) {
     if top >= area.bottom() {
         return;
     }
@@ -878,10 +961,19 @@ fn finish_list(tab: &DocumentsTab, st: &Styles, area: Rect, buf: &mut Buffer, hi
     }
     // The footer takes the last row: a failure or the key hint.
     let footer_y = area.bottom() - 1;
-    let list_bottom = if footer_y > top { footer_y } else { area.bottom() };
+    let list_bottom = if footer_y > top {
+        footer_y
+    } else {
+        area.bottom()
+    };
     // A row is two lines when any file has a description to show, so every row
     // is the same height and scrolling stays in whole rows.
-    let row_h: u16 = if tab.entries.iter().any(|e| e.subtitle().is_some()) && list_bottom - top >= 2 { 2 } else { 1 };
+    let row_h: u16 = if tab.entries.iter().any(|e| e.subtitle().is_some()) && list_bottom - top >= 2
+    {
+        2
+    } else {
+        1
+    };
     let viewport = (list_bottom.saturating_sub(top) / row_h) as usize;
     tab.list_viewport.set(viewport);
     let max_top = tab.entries.len().saturating_sub(viewport.max(1));
@@ -913,21 +1005,49 @@ fn finish_list(tab: &DocumentsTab, st: &Styles, area: Rect, buf: &mut Buffer, hi
         let meta_style = if on { st.selected } else { st.meta };
         let r = put(buf, area, ry, meta_x, &meta, meta_style);
         if spoiler {
-            let sp_style = if on { st.selected.patch(st.spoiler) } else { st.spoiler };
+            let sp_style = if on {
+                st.selected.patch(st.spoiler)
+            } else {
+                st.spoiler
+            };
             put(buf, area, ry, r.right(), flag, sp_style);
         }
         if row_h == 2 {
             if let Some(sub) = e.subtitle() {
-                let line = crate::textwidth::clip_to_cols_ellipsis(&sub, (area.width as usize).saturating_sub(4));
-                put(buf, area, ry + 1, x + 2, &line, if on { st.selected } else { st.desc });
+                let line = crate::textwidth::clip_to_cols_ellipsis(
+                    &sub,
+                    (area.width as usize).saturating_sub(4),
+                );
+                put(
+                    buf,
+                    area,
+                    ry + 1,
+                    x + 2,
+                    &line,
+                    if on { st.selected } else { st.desc },
+                );
             }
         }
         hits.rows.push((i, row));
     }
     if footer_y > top {
-        let line = tab.message.clone().unwrap_or_else(|| "Shift+↑/↓ select · Shift+→ open · or double-click".to_string());
-        let style = if tab.message.is_some() { st.pager_notice } else { st.hint };
-        put(buf, area, footer_y, x, &crate::textwidth::clip_to_cols_ellipsis(&line, area.width.saturating_sub(2) as usize), style);
+        let line = tab
+            .message
+            .clone()
+            .unwrap_or_else(|| "Shift+↑/↓ select · Shift+→ open · or double-click".to_string());
+        let style = if tab.message.is_some() {
+            st.pager_notice
+        } else {
+            st.hint
+        };
+        put(
+            buf,
+            area,
+            footer_y,
+            x,
+            &crate::textwidth::clip_to_cols_ellipsis(&line, area.width.saturating_sub(2) as usize),
+            style,
+        );
     }
 }
 
@@ -936,7 +1056,14 @@ fn draw_title(name: &str, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut 
     let close_w = crate::textwidth::str_cells(CLOSE_LABEL) as u16;
     let close_x = area.right().saturating_sub(close_w).max(area.x);
     let name_w = close_x.saturating_sub(area.x + 1) as usize;
-    put(buf, area, area.y, area.x + 1, &crate::textwidth::clip_to_cols_ellipsis(name, name_w), st.pager_title);
+    put(
+        buf,
+        area,
+        area.y,
+        area.x + 1,
+        &crate::textwidth::clip_to_cols_ellipsis(name, name_w),
+        st.pager_title,
+    );
     hits.close = Some(put(buf, area, area.y, close_x, CLOSE_LABEL, st.button));
 }
 
@@ -944,7 +1071,9 @@ fn draw_pager(p: &Pager, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut D
     draw_title(&p.name, st, area, buf, hits);
     let notice = p.truncated.then_some("— only the first 4 MB is shown —");
     let top = area.y + 1;
-    let bottom = area.bottom().saturating_sub(u16::from(notice.is_some() && area.height > 2));
+    let bottom = area
+        .bottom()
+        .saturating_sub(u16::from(notice.is_some() && area.height > 2));
     let viewport = bottom.saturating_sub(top) as usize;
     let width = area.width.saturating_sub(2).max(1);
     let lines = p.wrapped_for(width);
@@ -961,25 +1090,52 @@ fn draw_pager(p: &Pager, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut D
     }
 }
 
-fn draw_image(state: &AppState, v: &ImageView, st: &Styles, area: Rect, buf: &mut Buffer, hits: &mut DocHits) {
+fn draw_image(
+    state: &AppState,
+    v: &ImageView,
+    st: &Styles,
+    area: Rect,
+    buf: &mut Buffer,
+    hits: &mut DocHits,
+) {
     draw_title(&v.name, st, area, buf, hits);
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
-    let Some(picker) = state.game_picker.as_ref().filter(|_| body.width > 0 && body.height > 0) else {
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
+    let Some(picker) = state
+        .game_picker
+        .as_ref()
+        .filter(|_| body.width > 0 && body.height > 0)
+    else {
         return;
     };
     let fs = picker.font_size();
     let key = (body.width, body.height, fs.width, fs.height);
     let stale = !matches!(&*v.proto.borrow(), Some((k, _)) if *k == key);
     if stale {
-        let built = crate::render::graphics::fitted_protocol(picker, &v.img, Size::new(body.width, body.height), false);
+        let built = crate::render::graphics::fitted_protocol(
+            picker,
+            &v.img,
+            Size::new(body.width, body.height),
+            false,
+        );
         *v.proto.borrow_mut() = built.map(|p| (key, p));
     }
     if let Some((_, proto)) = &*v.proto.borrow() {
         let sz = proto.size();
         let (w, h) = (sz.width.min(body.width), sz.height.min(body.height));
-        let dest = Rect::new(body.x + (body.width - w) / 2, body.y + (body.height - h) / 2, w, h);
+        let dest = Rect::new(
+            body.x + (body.width - w) / 2,
+            body.y + (body.height - h) / 2,
+            w,
+            h,
+        );
         v.last_rect.set(dest);
-        v.placed.set(crate::render::graphics::place_protocol(proto, dest, buf));
+        v.placed
+            .set(crate::render::graphics::place_protocol(proto, dest, buf));
     }
 }
 
@@ -1000,7 +1156,12 @@ fn draw_external(v: &ExternalView, st: &Styles, area: Rect, buf: &mut Buffer, hi
         line(buf, &mut y, n, st.pager_notice);
     }
     if v.web {
-        line(buf, &mut y, "This copy of lanthorn runs on a server, so there is no viewer to open it with. It is at:", st.pager);
+        line(
+            buf,
+            &mut y,
+            "This copy of lanthorn runs on a server, so there is no viewer to open it with. It is at:",
+            st.pager,
+        );
         line(buf, &mut y, &v.path.to_string_lossy(), st.header);
     } else {
         line(buf, &mut y, "Opened in your system viewer.", st.pager);
@@ -1045,7 +1206,11 @@ mod tests {
     fn text_of(buf: &Buffer) -> String {
         let a = buf.area;
         (a.y..a.bottom())
-            .map(|y| (a.x..a.right()).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .map(|y| {
+                (a.x..a.right())
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1063,14 +1228,20 @@ mod tests {
     fn the_body_is_framed_with_the_tab_name_and_content_sits_inside_it() {
         let (t, _d) = tab_with(&[("a.txt", b"x")]);
         let s = state_with(t);
-        let rows: Vec<Vec<char>> = text_of(&render(&s, 60, 10)).lines().map(|r| r.chars().collect()).collect();
+        let rows: Vec<Vec<char>> = text_of(&render(&s, 60, 10))
+            .lines()
+            .map(|r| r.chars().collect())
+            .collect();
         assert_eq!((rows[0][0], rows[0][59]), ('\u{250c}', '\u{2510}'));
         assert_eq!((rows[9][0], rows[9][59]), ('\u{2514}', '\u{2518}'));
         assert_eq!(rows[4][0], '\u{2502}');
         assert!(rows[0].iter().collect::<String>().contains("Documents"));
         let h = s.documents_tab.hits();
         let row = h.rows[0].1;
-        assert!(row.x >= 1 && row.right() <= 59 && row.y >= 1 && row.bottom() <= 9, "{row:?}");
+        assert!(
+            row.x >= 1 && row.right() <= 59 && row.y >= 1 && row.bottom() <= 9,
+            "{row:?}"
+        );
         let dl = h.download.unwrap();
         assert!(dl.x >= 1 && dl.y >= 1 && dl.bottom() <= 9, "{dl:?}");
     }
@@ -1080,11 +1251,15 @@ mod tests {
         let (t, _d) = tab_with(&[("a.txt", b"x")]);
         let mut s = state_with(t);
         let scheme = crate::colors::GhosttyScheme::default();
-        let parsed = crate::theme::toml_schema::parse("[panel]\nborder = { style = \"none\" }\n").unwrap();
+        let parsed =
+            crate::theme::toml_schema::parse("[panel]\nborder = { style = \"none\" }\n").unwrap();
         s.colors.theme = crate::theme::resolve::resolve_theme(&scheme, &parsed);
         let out = text_of(&render(&s, 60, 10));
         // Like the Inventory tab: no border glyphs, the title becomes a plain header row.
-        assert!(!out.contains('\u{250c}') && !out.contains('\u{2502}'), "{out}");
+        assert!(
+            !out.contains('\u{250c}') && !out.contains('\u{2502}'),
+            "{out}"
+        );
         assert!(out.lines().next().unwrap().contains("Documents"), "{out}");
         assert!(out.contains("a.txt"));
     }
@@ -1133,7 +1308,11 @@ mod tests {
     fn a_description_shows_as_a_second_line_and_clicks_still_hit_the_right_row() {
         let (t, dir) = tab_with(&[]);
         let src = crate::scratch_dir("docs-tab-desc-src");
-        for (n, d) in [("a.txt", Some("The first map")), ("b.txt", None), ("c.txt", Some("Third, with a very long description indeed"))] {
+        for (n, d) in [
+            ("a.txt", Some("The first map")),
+            ("b.txt", None),
+            ("c.txt", Some("Third, with a very long description indeed")),
+        ] {
             std::fs::write(src.join(n), n.as_bytes()).unwrap();
             let meta = crate::documents::DocMeta::now(None, d.map(String::from), None, false);
             crate::documents::import_with(&dir, &src.join(n), Some(meta)).unwrap();
@@ -1146,16 +1325,38 @@ mod tests {
         assert!(out.contains("The first map"), "{out}");
         let rows = s.documents_tab.hits().rows;
         assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|(_, r)| r.height == 2), "two-line rows: {rows:?}");
-        assert!(rows.windows(2).all(|w| w[1].1.y == w[0].1.bottom()), "rows tile: {rows:?}");
-        let line = |y: u16| (0..40).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>();
+        assert!(
+            rows.iter().all(|(_, r)| r.height == 2),
+            "two-line rows: {rows:?}"
+        );
+        assert!(
+            rows.windows(2).all(|w| w[1].1.y == w[0].1.bottom()),
+            "rows tile: {rows:?}"
+        );
+        let line = |y: u16| {
+            (0..40)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        };
         assert!(line(rows[0].1.y + 1).contains("The first map"));
-        assert!(line(rows[2].1.y + 1).contains('…'), "truncated to the width: {}", line(rows[2].1.y + 1));
-        let ev = |y| MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 5, row: y, modifiers: crossterm::event::KeyModifiers::NONE };
+        assert!(
+            line(rows[2].1.y + 1).contains('…'),
+            "truncated to the width: {}",
+            line(rows[2].1.y + 1)
+        );
+        let ev = |y| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
         for (i, (idx, r)) in rows.iter().enumerate() {
             for y in [r.y, r.y + 1] {
                 let hit = mouse_action(&s, &ev(y));
-                assert!(matches!(hit, Some(DocMouse::Action(Action::DocTabClickRow(n))) if n == *idx), "row {i} line {y}");
+                assert!(
+                    matches!(hit, Some(DocMouse::Action(Action::DocTabClickRow(n))) if n == *idx),
+                    "row {i} line {y}"
+                );
             }
         }
         // Few lines: scrolling still works in whole rows.
@@ -1165,7 +1366,11 @@ mod tests {
 
     #[test]
     fn list_shows_kinds_sizes_and_a_spoiler_marker() {
-        let (t, _d) = tab_with(&[("manual.txt", b"hello world\n"), ("walkthrough.txt", b"go north\n"), ("map.png", b"\x89PNG\r\n\x1a\nxx")]);
+        let (t, _d) = tab_with(&[
+            ("manual.txt", b"hello world\n"),
+            ("walkthrough.txt", b"go north\n"),
+            ("map.png", b"\x89PNG\r\n\x1a\nxx"),
+        ]);
         let s = state_with(t);
         let out = text_of(&render(&s, 60, 14));
         assert!(out.contains("manual.txt") && out.contains("text"), "{out}");
@@ -1175,7 +1380,10 @@ mod tests {
         assert_eq!(flagged.len(), 1, "{out}");
         assert!(flagged[0].contains("walkthrough.txt"));
         assert!(out.contains("Download documents"), "{out}");
-        assert!(!out.contains("Create documents folder"), "folder exists: {out}");
+        assert!(
+            !out.contains("Create documents folder"),
+            "folder exists: {out}"
+        );
     }
 
     #[test]
@@ -1187,10 +1395,21 @@ mod tests {
         let h = s.documents_tab.hits();
         let (c, d) = (h.create.unwrap(), h.download.unwrap());
         assert_eq!(c.y, d.y, "both fit on one row at 70 columns");
-        assert!(d.x > c.right(), "a gap cell between the hit-rects: {c:?} {d:?}");
+        assert!(
+            d.x > c.right(),
+            "a gap cell between the hit-rects: {c:?} {d:?}"
+        );
         let gap = &buf[(c.right(), c.y)];
-        assert_ne!(gap.style(), buf[(c.x, c.y)].style(), "the gap is not button-styled");
-        assert_ne!(gap.style(), buf[(d.x, d.y)].style(), "the gap is not button-styled");
+        assert_ne!(
+            gap.style(),
+            buf[(c.x, c.y)].style(),
+            "the gap is not button-styled"
+        );
+        assert_ne!(
+            gap.style(),
+            buf[(d.x, d.y)].style(),
+            "the gap is not button-styled"
+        );
     }
 
     #[test]
@@ -1201,7 +1420,10 @@ mod tests {
         let _ = render(&s, 40, 10);
         let h = s.documents_tab.hits();
         let (c, d) = (h.create.unwrap(), h.download.unwrap());
-        assert!(d.y > c.y, "the second button wraps to its own row: {c:?} {d:?}");
+        assert!(
+            d.y > c.y,
+            "the second button wraps to its own row: {c:?} {d:?}"
+        );
         assert!(d.right() <= 40 && c.right() <= 40);
     }
 
@@ -1211,7 +1433,10 @@ mod tests {
         t.set_location(Location::Missing(PathBuf::from("/lib/documents/Zork [x]")));
         let s = state_with(t);
         let out = text_of(&render(&s, 70, 10));
-        assert!(out.contains("Create documents folder") && out.contains("Download documents"), "{out}");
+        assert!(
+            out.contains("Create documents folder") && out.contains("Download documents"),
+            "{out}"
+        );
         assert!(out.contains("not created"), "{out}");
         assert!(s.documents_tab.hits().create.is_some());
 
@@ -1234,7 +1459,13 @@ mod tests {
         let buf = render(&s, 70, 8);
         let first: String = (0..70).map(|x| buf[(x, 1)].symbol().to_string()).collect();
         assert!(first.contains("\x1b]8;;file://"), "{first:?}");
-        assert!(s.documents_tab.hits().path_link.unwrap().1.starts_with("file://"));
+        assert!(s
+            .documents_tab
+            .hits()
+            .path_link
+            .unwrap()
+            .1
+            .starts_with("file://"));
         let _ = dir;
     }
 
@@ -1266,15 +1497,22 @@ mod tests {
         let big = vec![b'a'; (TEXT_CAP + 10) as usize];
         let (mut t, _d) = tab_with(&[("a.txt", b"line one\rline two\r"), ("big.txt", &big)]);
         let mut spawned = Vec::new();
-        assert_eq!(t.open_entry(0, false, false, &mut |p| spawned.push(p.to_string())), OpenOutcome::Opened);
-        let DocView::Text(p) = &t.view else { panic!("pager") };
+        assert_eq!(
+            t.open_entry(0, false, false, &mut |p| spawned.push(p.to_string())),
+            OpenOutcome::Opened
+        );
+        let DocView::Text(p) = &t.view else {
+            panic!("pager")
+        };
         assert_eq!(p.raw, ["line one", "line two"]);
         assert!(!p.truncated);
         assert!(spawned.is_empty());
         t.close_viewer();
         assert!(matches!(t.view, DocView::List));
         t.open_entry(1, false, false, &mut |_| {});
-        let DocView::Text(p) = &t.view else { panic!("pager") };
+        let DocView::Text(p) = &t.view else {
+            panic!("pager")
+        };
         assert!(p.truncated);
         let s = state_with(t);
         let out = text_of(&render(&s, 40, 10));
@@ -1285,7 +1523,10 @@ mod tests {
     fn a_pdf_goes_to_the_opener_and_web_mode_only_shows_the_path() {
         let (mut t, _d) = tab_with(&[("manual.pdf", b"%PDF-1.4 stuff")]);
         let mut spawned = Vec::new();
-        assert_eq!(t.open_entry(0, false, false, &mut |p| spawned.push(p.to_string())), OpenOutcome::Opened);
+        assert_eq!(
+            t.open_entry(0, false, false, &mut |p| spawned.push(p.to_string())),
+            OpenOutcome::Opened
+        );
         assert_eq!(spawned.len(), 1);
         assert!(spawned[0].ends_with("manual.pdf"));
         let s = state_with(t);
@@ -1299,7 +1540,10 @@ mod tests {
         assert!(spawned.is_empty(), "web mode never spawns");
         let s = state_with(t);
         let out = text_of(&render(&s, 90, 12));
-        assert!(out.contains("manual.pdf") && out.contains("no viewer"), "{out}");
+        assert!(
+            out.contains("manual.pdf") && out.contains("no viewer"),
+            "{out}"
+        );
         assert!(s.documents_tab.hits().open_viewer.is_none());
     }
 
@@ -1308,8 +1552,14 @@ mod tests {
         let (t, _d) = tab_with(&[("walkthrough.txt", b"go north\n")]);
         let mut s = state_with(t);
         open_selected(&mut s, None, false);
-        assert!(matches!(s.documents_tab.view, DocView::List), "not opened yet");
-        assert_eq!(s.overlays.confirm_spoiler_document.as_deref(), Some("walkthrough.txt"));
+        assert!(
+            matches!(s.documents_tab.view, DocView::List),
+            "not opened yet"
+        );
+        assert_eq!(
+            s.overlays.confirm_spoiler_document.as_deref(),
+            Some("walkthrough.txt")
+        );
         assert!(s.any_modal_overlay_open());
         answer_spoiler(&mut s, false);
         assert!(matches!(s.documents_tab.view, DocView::List));
@@ -1323,21 +1573,33 @@ mod tests {
     fn an_image_renders_through_the_picker_into_the_body() {
         let dir = crate::scratch_dir("docs-tab-img");
         let mut png = Vec::new();
-        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(40, 20, image::Rgba([200, 30, 30, 255])))
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-            .unwrap();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            40,
+            20,
+            image::Rgba([200, 30, 30, 255]),
+        ))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
         std::fs::write(dir.join("map.png"), &png).unwrap();
         let mut t = DocumentsTab::default();
         t.set_location(Location::Exists(dir));
-        assert_eq!(t.open_entry(0, false, false, &mut |_| {}), OpenOutcome::Opened);
+        assert_eq!(
+            t.open_entry(0, false, false, &mut |_| {}),
+            OpenOutcome::Opened
+        );
         assert!(matches!(t.view, DocView::Image(_)));
         let mut s = state_with(t);
         s.game_picker = Some(ratatui_image::picker::Picker::halfblocks());
         let _ = render(&s, 40, 12);
-        let DocView::Image(v) = &s.documents_tab.view else { panic!("image") };
+        let DocView::Image(v) = &s.documents_tab.view else {
+            panic!("image")
+        };
         let r = v.last_rect.get();
         assert!(r.width > 0 && r.height > 0, "placed somewhere: {r:?}");
-        assert!(r.y >= 1 && r.right() <= 40 && r.bottom() <= 12, "inside the body: {r:?}");
+        assert!(
+            r.y >= 1 && r.right() <= 40 && r.bottom() <= 12,
+            "inside the body: {r:?}"
+        );
         // Closing returns to the list.
         close_viewer(&mut s);
         assert!(matches!(s.documents_tab.view, DocView::List));
@@ -1351,7 +1613,10 @@ mod tests {
         assert_eq!(t.selected, 1);
         assert!(t.click_row(1, t0 + Duration::from_millis(100)));
         assert!(!t.click_row(0, t0 + Duration::from_millis(900)));
-        assert!(!t.click_row(0, t0 + Duration::from_millis(2000)), "too slow to be a double click");
+        assert!(
+            !t.click_row(0, t0 + Duration::from_millis(2000)),
+            "too slow to be a double click"
+        );
     }
 
     #[test]
@@ -1361,15 +1626,26 @@ mod tests {
         let s = state_with(t);
         let _ = render(&s, 60, 10);
         let h = s.documents_tab.hits();
-        let ev = |kind, x, y| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+        let ev = |kind, x, y| MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
         let dl = h.download.unwrap();
         assert!(matches!(
-            mouse_action(&s, &ev(MouseEventKind::Down(MouseButton::Left), dl.x + 1, dl.y)),
+            mouse_action(
+                &s,
+                &ev(MouseEventKind::Down(MouseButton::Left), dl.x + 1, dl.y)
+            ),
             Some(DocMouse::Command(CMD_DOWNLOAD))
         ));
         let row = h.rows[0].1;
         assert!(matches!(
-            mouse_action(&s, &ev(MouseEventKind::Down(MouseButton::Left), row.x + 2, row.y)),
+            mouse_action(
+                &s,
+                &ev(MouseEventKind::Down(MouseButton::Left), row.x + 2, row.y)
+            ),
             Some(DocMouse::Action(Action::DocTabClickRow(0)))
         ));
         assert!(matches!(
@@ -1394,7 +1670,11 @@ mod tests {
             let plain = s.colors.theme.get("journal.docs.row").style;
             let cell = |r: Rect| buf[(r.x + 3, r.y)].style();
             assert_eq!(cell(rows[0].1).fg, sel.fg, "honor_game_colours={honor}");
-            assert_eq!(cell(rows[0].1).add_modifier, sel.add_modifier, "selected row reverses (honor={honor})");
+            assert_eq!(
+                cell(rows[0].1).add_modifier,
+                sel.add_modifier,
+                "selected row reverses (honor={honor})"
+            );
             assert_eq!(cell(rows[1].1).fg, plain.fg, "honor_game_colours={honor}");
         }
     }
@@ -1402,15 +1682,31 @@ mod tests {
     #[test]
     fn every_documents_element_is_a_styleable_selector() {
         for name in [
-            "journal.docs.row", "journal.docs.row:selected", "journal.docs.meta", "journal.docs.desc", "journal.docs.spoiler",
-            "journal.docs.header", "journal.docs.button", "journal.docs.hint", "journal.docs.pager",
-            "journal.docs.pager_title", "journal.docs.pager_notice",
+            "journal.docs.row",
+            "journal.docs.row:selected",
+            "journal.docs.meta",
+            "journal.docs.desc",
+            "journal.docs.spoiler",
+            "journal.docs.header",
+            "journal.docs.button",
+            "journal.docs.hint",
+            "journal.docs.pager",
+            "journal.docs.pager_title",
+            "journal.docs.pager_notice",
         ] {
-            assert!(crate::theme::registry::REGISTRY.iter().any(|r| r.name == name), "{name} is in the registry");
+            assert!(
+                crate::theme::registry::REGISTRY
+                    .iter()
+                    .any(|r| r.name == name),
+                "{name} is in the registry"
+            );
         }
     }
 
-    fn key(code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) -> crossterm::event::KeyEvent {
+    fn key(
+        code: crossterm::event::KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> crossterm::event::KeyEvent {
         crossterm::event::KeyEvent::new(code, mods)
     }
 
@@ -1421,28 +1717,73 @@ mod tests {
         let (t, _d) = tab_with(&[("a.txt", b"hello"), ("b.txt", b"x")]);
         let mut s = state_with(t);
         let act = |s: &AppState, c, m| key_to_action(s, key(c, m));
-        assert!(matches!(act(&s, KeyCode::Down, M::SHIFT), Action::DocTabSelect(1)));
-        assert!(matches!(act(&s, KeyCode::Up, M::SHIFT), Action::DocTabSelect(-1)));
-        assert!(matches!(act(&s, KeyCode::Right, M::SHIFT), Action::DocTabOpen(None)));
+        assert!(matches!(
+            act(&s, KeyCode::Down, M::SHIFT),
+            Action::DocTabSelect(1)
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Up, M::SHIFT),
+            Action::DocTabSelect(-1)
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Right, M::SHIFT),
+            Action::DocTabOpen(None)
+        ));
         // Plain typing, plain arrows and Esc are still the command line's.
-        assert!(matches!(act(&s, KeyCode::Char('d'), M::NONE), Action::InputChar('d')));
-        assert!(matches!(act(&s, KeyCode::Char('D'), M::SHIFT), Action::InputChar('D')));
-        assert!(matches!(act(&s, KeyCode::Down, M::NONE), Action::HistoryNext));
+        assert!(matches!(
+            act(&s, KeyCode::Char('d'), M::NONE),
+            Action::InputChar('d')
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Char('D'), M::SHIFT),
+            Action::InputChar('D')
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Down, M::NONE),
+            Action::HistoryNext
+        ));
         assert!(matches!(act(&s, KeyCode::Up, M::NONE), Action::HistoryPrev));
-        assert!(matches!(act(&s, KeyCode::Left, M::NONE), Action::CursorLeft));
-        assert!(!matches!(act(&s, KeyCode::Esc, M::NONE), Action::DocTabClose), "Esc on the list is not ours");
+        assert!(matches!(
+            act(&s, KeyCode::Left, M::NONE),
+            Action::CursorLeft
+        ));
+        assert!(
+            !matches!(act(&s, KeyCode::Esc, M::NONE), Action::DocTabClose),
+            "Esc on the list is not ours"
+        );
         // With a document open, Shift+Up/Down scroll it and Esc / Shift+Left close it.
         s.documents_tab.open_entry(0, false, false, &mut |_| {});
         assert!(s.documents_tab.viewer_open());
-        assert!(matches!(act(&s, KeyCode::Down, M::SHIFT), Action::DocTabScroll(1)));
-        assert!(matches!(act(&s, KeyCode::PageDown, M::SHIFT), Action::DocTabPage(1)));
-        assert!(matches!(act(&s, KeyCode::Esc, M::NONE), Action::DocTabClose));
-        assert!(matches!(act(&s, KeyCode::Left, M::SHIFT), Action::DocTabClose));
-        assert!(matches!(act(&s, KeyCode::Char('d'), M::NONE), Action::InputChar('d')), "typing still types");
+        assert!(matches!(
+            act(&s, KeyCode::Down, M::SHIFT),
+            Action::DocTabScroll(1)
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::PageDown, M::SHIFT),
+            Action::DocTabPage(1)
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Esc, M::NONE),
+            Action::DocTabClose
+        ));
+        assert!(matches!(
+            act(&s, KeyCode::Left, M::SHIFT),
+            Action::DocTabClose
+        ));
+        assert!(
+            matches!(act(&s, KeyCode::Char('d'), M::NONE), Action::InputChar('d')),
+            "typing still types"
+        );
         // On any other tab the same keys keep their old meaning.
         s.journal_tab = crate::journal::JournalTab::Map;
-        assert!(matches!(act(&s, KeyCode::Down, M::SHIFT), Action::Pan(0, 1)));
-        assert!(!matches!(act(&s, KeyCode::Esc, M::NONE), Action::DocTabClose));
+        assert!(matches!(
+            act(&s, KeyCode::Down, M::SHIFT),
+            Action::Pan(0, 1)
+        ));
+        assert!(!matches!(
+            act(&s, KeyCode::Esc, M::NONE),
+            Action::DocTabClose
+        ));
     }
 
     #[test]
@@ -1450,12 +1791,30 @@ mod tests {
         use crate::keymap::Context;
         use crate::slash::{parse_in_context, SlashOutcome};
         let p = |l: &str| parse_in_context(l, '/', Context::Global);
-        assert!(matches!(p("open-document"), SlashOutcome::Action(Action::DocTabOpen(None))));
-        assert!(matches!(p("close-document"), SlashOutcome::Action(Action::DocTabClose)));
-        assert!(matches!(p("select-document -2"), SlashOutcome::Action(Action::DocTabSelect(-2))));
-        assert!(matches!(p("scroll-document 5"), SlashOutcome::Action(Action::DocTabScroll(5))));
-        assert!(matches!(p("scroll-document page-down"), SlashOutcome::Action(Action::DocTabPage(1))));
-        assert!(matches!(p("scroll-document sideways"), SlashOutcome::Error(_)));
+        assert!(matches!(
+            p("open-document"),
+            SlashOutcome::Action(Action::DocTabOpen(None))
+        ));
+        assert!(matches!(
+            p("close-document"),
+            SlashOutcome::Action(Action::DocTabClose)
+        ));
+        assert!(matches!(
+            p("select-document -2"),
+            SlashOutcome::Action(Action::DocTabSelect(-2))
+        ));
+        assert!(matches!(
+            p("scroll-document 5"),
+            SlashOutcome::Action(Action::DocTabScroll(5))
+        ));
+        assert!(matches!(
+            p("scroll-document page-down"),
+            SlashOutcome::Action(Action::DocTabPage(1))
+        ));
+        assert!(matches!(
+            p("scroll-document sideways"),
+            SlashOutcome::Error(_)
+        ));
         assert!(matches!(p(CMD_DOWNLOAD), SlashOutcome::DownloadDocuments));
         assert!(matches!(p(CMD_CREATE), SlashOutcome::CreateDocumentsFolder));
     }
@@ -1472,11 +1831,19 @@ mod tests {
         assert!(matches!(s.documents_tab.view, DocView::Text(_)));
         let _ = render(&s, 40, 12);
         apply_action(Action::DocTabScroll(5), &mut s, &mut m);
-        let DocView::Text(p) = &s.documents_tab.view else { panic!("pager") };
+        let DocView::Text(p) = &s.documents_tab.view else {
+            panic!("pager")
+        };
         assert_eq!(p.scroll.get(), 5);
         apply_action(Action::DocTabPage(1), &mut s, &mut m);
-        let DocView::Text(p) = &s.documents_tab.view else { panic!("pager") };
-        assert_eq!(p.scroll.get(), 5 + 8, "a page is the viewport less one line (9 body rows here: 12 less the frame and the title)");
+        let DocView::Text(p) = &s.documents_tab.view else {
+            panic!("pager")
+        };
+        assert_eq!(
+            p.scroll.get(),
+            5 + 8,
+            "a page is the viewport less one line (9 body rows here: 12 less the frame and the title)"
+        );
         apply_action(Action::DocTabClose, &mut s, &mut m);
         assert!(matches!(s.documents_tab.view, DocView::List));
     }
@@ -1486,10 +1853,16 @@ mod tests {
         let mut s = AppState::default();
         s.documents_tab.dirty = false;
         s.set_journal_tab(crate::journal::JournalTab::Documents);
-        assert!(s.documents_tab.dirty, "read the folder when the tab is shown");
+        assert!(
+            s.documents_tab.dirty,
+            "read the folder when the tab is shown"
+        );
         assert!(refresh_if_needed(&mut s, Path::new("/nowhere/story.z5")));
         assert!(!s.documents_tab.dirty);
-        assert!(!refresh_if_needed(&mut s, Path::new("/nowhere/story.z5")), "nothing to do until told");
+        assert!(
+            !refresh_if_needed(&mut s, Path::new("/nowhere/story.z5")),
+            "nothing to do until told"
+        );
         let out = text_of(&render(&s, 50, 6));
         assert!(out.contains("No library"), "{out}");
     }
@@ -1506,15 +1879,24 @@ mod tests {
     fn a_hint_program_row_says_so_and_opens_the_hints_tab_instead_of_a_pager() {
         let z = zcode_hint();
         let (t, dir) = tab_with(&[("zork1inv.z5", &z), ("notes.txt", b"hello")]);
-        let hint = t.entries.iter().position(|e| e.id == "zork1inv.z5").unwrap();
+        let hint = t
+            .entries
+            .iter()
+            .position(|e| e.id == "zork1inv.z5")
+            .unwrap();
         assert_eq!(t.entries[hint].kind, DocKind::HintProgram);
         let mut s = state_with(t);
         let shown = text_of(&render(&s, 70, 12));
-        assert!(shown.contains("hint program \u{2014} opens in Hints tab"), "{shown}");
+        assert!(
+            shown.contains("hint program \u{2014} opens in Hints tab"),
+            "{shown}"
+        );
         // Even a spoiler-flagged hint file is not asked about: the Hints tab shows
         // nothing until the player asks it something.
         s.documents_tab.entries[hint].spoiler = true;
-        let out = s.documents_tab.open_entry(hint, false, false, &mut |_| panic!("no external opener"));
+        let out = s
+            .documents_tab
+            .open_entry(hint, false, false, &mut |_| panic!("no external opener"));
         assert_eq!(out, OpenOutcome::HintProgram(dir.join("zork1inv.z5")));
         assert!(!s.documents_tab.viewer_open(), "no pager, no card");
     }
@@ -1528,25 +1910,40 @@ mod tests {
         assert_eq!(s.focus, crate::state::Focus::Game);
         open_selected(&mut s, Some(0), false);
         assert_eq!(s.journal_tab, crate::journal::JournalTab::Hints);
-        assert_eq!(s.focus, crate::state::Focus::Game, "the keyboard stays in the story");
-        assert_eq!(s.hints_tab.phase, crate::hints_tab::Phase::NotStarted, "the run loop starts the session");
+        assert_eq!(
+            s.focus,
+            crate::state::Focus::Game,
+            "the keyboard stays in the story"
+        );
+        assert_eq!(
+            s.hints_tab.phase,
+            crate::hints_tab::Phase::NotStarted,
+            "the run loop starts the session"
+        );
         // The loop's next turn starts it and remembers this file as the game's hints.
         s.config.user_dir = crate::scratch_dir("docs-tab-hint-user");
         let story = dir.join("story.z3");
         std::fs::write(&story, b"story").unwrap();
         crate::hints_tab::ensure_started_in(&mut s, &story, "IFID-X", Some(&dir));
         assert_ne!(s.hints_tab.phase, crate::hints_tab::Phase::NotStarted);
-        assert_eq!(crate::hints::load_hint_index(&s.config.user_dir).get("IFID-X"), Some(dir.join("zork1inv.z5")));
+        assert_eq!(
+            crate::hints::load_hint_index(&s.config.user_dir).get("IFID-X"),
+            Some(dir.join("zork1inv.z5"))
+        );
     }
 
     #[test]
     fn a_text_sol_opens_in_the_pager_and_never_reaches_the_opener() {
-        let (mut tab, dir) = tab_with(&[("Walkthrough.sol", b"1. open mailbox\n2. take leaflet\n")]);
+        let (mut tab, dir) =
+            tab_with(&[("Walkthrough.sol", b"1. open mailbox\n2. take leaflet\n")]);
         let mut opened = Vec::new();
         let out = tab.open_entry(0, true, false, &mut |t| opened.push(t.to_string()));
         assert_eq!(out, OpenOutcome::Opened);
         assert!(matches!(tab.view, DocView::Text(_)), "shown in the pager");
-        assert!(opened.is_empty(), "the system opener was not called: {opened:?}");
+        assert!(
+            opened.is_empty(),
+            "the system opener was not called: {opened:?}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1566,12 +1963,26 @@ mod tests {
             if id == "Manual.pdf" {
                 assert_eq!(out, OpenOutcome::Opened, "{id}");
             } else {
-                assert!(!matches!(&out, OpenOutcome::Opened) || matches!(tab.view, DocView::Text(_)), "{id}: {out:?}");
+                assert!(
+                    !matches!(&out, OpenOutcome::Opened) || matches!(tab.view, DocView::Text(_)),
+                    "{id}: {out:?}"
+                );
             }
         }
-        assert!(opened.iter().all(|p| p.ends_with("Manual.pdf")), "only the pdf may be launched: {opened:?}");
-        let blob = tab.entries.iter().find(|e| e.id == "blob.sol").unwrap().clone();
-        assert!(matches!(decide_open(&blob), OpenDecision::Failed(_)), "binary .sol is refused");
+        assert!(
+            opened.iter().all(|p| p.ends_with("Manual.pdf")),
+            "only the pdf may be launched: {opened:?}"
+        );
+        let blob = tab
+            .entries
+            .iter()
+            .find(|e| e.id == "blob.sol")
+            .unwrap()
+            .clone();
+        assert!(
+            matches!(decide_open(&blob), OpenDecision::Failed(_)),
+            "binary .sol is refused"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

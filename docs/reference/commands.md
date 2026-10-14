@@ -41,7 +41,7 @@ Every slash command, grouped the way `/help` groups them. Type any of these afte
 | Map | `toggle-portal-labels` | toggle portal labels |
 | View | `toggle-map` | show or hide the Journal (the map's panel); persisted per-game |
 | View | `toggle-focus` | switch focus between panes |
-| View | `journal-tab <map|room|inventory|hints|documents|notes>` | show a tab of the Journal (the right-hand panel), revealing it if hidden; remembered per story |
+| View | `journal-tab <map|room|inventory|files|hints|documents|notes>` | show a Journal tab or Files subtab, revealing it if hidden; remembered per story |
 | View | `journal-next-tab` | show the Journal's next tab, wrapping |
 | View | `journal-prev-tab` | show the Journal's previous tab, wrapping |
 | View | `filter-items [query]` | filter the Journal's Inventory tab (both Carrying and Elsewhere) to items matching query; no query clears the filter |

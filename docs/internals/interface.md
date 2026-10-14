@@ -73,19 +73,23 @@ inspecting the machine, and firing commands — without ever leaving the story.
 - **The Journal** (SQ-1684) — the tabbed panel on the right, `journal.rs` and
   `layout.rs`'s `journal`/`journal_tabs`/`journal_body` rects. A one-row tab bar
   (styleable as `journal.tabbar`, `journal.tab`, `journal.tab:active`) sits over
-  the active tab's body: **Map**, **Room**, **Inventory**, **Hints**,
-  **Documents**, and player-authored **Notes**. `/journal-tab <name>`,
+  the active tab's body: **Map**, **Room**, **Inventory**, **Files**, and
+  player-authored **Notes**. Files has **Hints** and **Documents** subtabs in
+  its title strip. `/journal-tab <name>`,
   `/journal-next-tab`, `/journal-prev-tab`, a click on a label, **Alt+1/2/3**,
   and the leader panel's `j`/`k`/`i` select a tab
   (`Action::SetJournalTab`), revealing the Journal if `/toggle-map` had hidden
   it. At narrow widths the bar abbreviates its labels and then shows only the
-  active tab between `‹` `›` markers. The active tab is remembered per story
+  active tab between `‹` `›` markers. **Alt+4/Alt+5** select Hints/Documents;
+  `Ctrl+Shift+Left/Right` switches Room's Info/Diagnostics views or the Files
+  subtabs. The active tab is remembered per story
   (`journal_tab` in the per-game sidecar); the width is `split_ratio`. Notes
-  text is stored in that sidecar too. `Alt+Left`/`Alt+Right` traverse Journal
-  tabs. Notes editing starts with `Shift+Enter` or a click in its body; `Esc` or
+  text is stored in that sidecar too. `Ctrl+Left`/`Ctrl+Right` traverse Journal
+  tabs; `Ctrl+Shift+Left`/`Ctrl+Shift+Right` switch Room views or Files subtabs. Notes editing starts with `Shift+Enter` or a click in its body; `Esc` or
   a click outside saves and exits. In Notes, Shift+Arrow selects text, `Ctrl+C`
-  copies it, and `Ctrl+X` cuts it; bracketed terminal paste inserts at the
-  caret. Shift+Arrow remains available to the map, Documents, and Hints.
+  copies it, and `Ctrl+X` cuts it; `Ctrl+Left`/`Ctrl+Right` move by word and
+  adding Shift selects by word. Bracketed terminal paste inserts at the caret.
+  Shift+Up/Down pan Map, scroll Room and Inventory, and navigate Files content.
 - **The Room tab** — one panel describing one room. It has two
   bodies:
   - **Room** — the room's notes, its [exit card](mapping.md#room-card) in the
@@ -113,8 +117,9 @@ inspecting the machine, and firing commands — without ever leaving the story.
   a further **Esc** on the Room tab returns to the Map tab. It is not a modal, so
   it costs you nothing to leave up: it never takes the keyboard and it never hides
   the prompt.
-- **The map and Journal follow focus.** `Alt+Left`/`Alt+Right` traverse Journal
-  tabs without taking Shift+Arrow from pane navigation. Shift+Up/Down pan the map,
+- **The map and Journal follow focus.** `Ctrl+Left`/`Ctrl+Right` traverse Journal
+  tabs without taking Shift+Arrow from pane navigation (except during tidy
+  animation, where they jump animation stages). Shift+Up/Down pan the map,
   and the mouse pans/zooms/selects. Zoom and
   centring live on the `Ctrl+P` leader panel's **Map** group. **Tab** / **Shift-Tab** are only
   live when the debug inspector is open, where they step through its windows.
@@ -717,7 +722,7 @@ know which side you're on).
   shortcuts your shell uses. Only live while you're actually typing a command
   (not mid-`read_char` prompt), so they never steal a keystroke the game expects.
 - **Keyboard map navigation** — **Shift+Up/Down pan the map** without leaving the
-  command line, including *during the tidy animation*. `Alt+Left`/`Alt+Right`
+  command line, including *during the tidy animation*.   `Ctrl+Left`/`Ctrl+Right`
   traverse Journal tabs while preserving each tab's Shift+Arrow navigation. The plain
   horizontal arrows
   step through the layout stages instead. Zoom (`+`/`-`)
@@ -733,8 +738,8 @@ know which side you're on).
   after a few seconds, so a "map exported" or "style reloaded" note never
   interrupts the transcript. `/dump-notifications` replays the recent ones into
   the transcript if you missed a slide-by.
-- **In-game hints** — the Journal's **Hints** tab (`Alt+4`, `/journal-tab hints`,
-  `/open-hints`; `hints_tab.rs`) runs a companion *Invisiclues* `.z5` in a second
+- **In-game hints** — the Journal's **Files → Hints** subtab (`Alt+4`,
+  `/journal-tab hints`, `/open-hints`; `hints_tab.rs`) runs a companion *Invisiclues* `.z5` in a second
   Z-machine session (`AppState.overlays.hints`, never saved to the archive). The
   session starts the first time the tab is on screen and is kept, as the same
   object, across tab switches until quit. The tab renders the file's full split
@@ -756,7 +761,7 @@ know which side you're on).
   window, or Tab from an empty story prompt (story → hints → debug windows →
   story), does; Esc, Tab on an empty hint input, a click on the story and any tab
   switch return it. The focused input shows the cursor, the other dims
-  (`journal.hints.input:unfocused`), and the tab label wears `▸`
+  (`journal.hints.input:unfocused`), and the Files tab label wears `▸`
   (`journal.hints.tab:focused`). The downloaded *InvisiClues* files open on a
   "your screen is only N characters wide" banner (their menu names can be very
   long); lanthorn skips it for you and drops you straight on the topic menu —

@@ -22,11 +22,13 @@ pub enum JournalTab {
     Room,
     /// The inventory panel: what is carried and where everything else was seen.
     Inventory,
-    /// The story's hint file (InvisiClues), run as a Z-machine companion in the
-    /// tab's own window (SQ-1685). Between Inventory and Documents.
+    /// The combined Hints/Documents area.
+    Files,
+    /// The Hints subtab (kept as a selector for the existing `journal-tab hints`
+    /// command and the compatibility alias).
     Hints,
-    /// The current game's documents folder: manuals, maps and feelies, read in
-    /// place (SQ-1681).
+    /// The Documents subtab (kept as a selector for the existing
+    /// `journal-tab documents` command and compatibility alias).
     Documents,
     /// Player-authored notes for this story.
     Notes,
@@ -34,14 +36,21 @@ pub enum JournalTab {
 
 impl JournalTab {
     /// Every tab, in display order.
-    pub const ALL: [JournalTab; 6] = [
+    pub const ALL: [JournalTab; 5] = [
         JournalTab::Map,
         JournalTab::Room,
         JournalTab::Inventory,
-        JournalTab::Hints,
-        JournalTab::Documents,
+        JournalTab::Files,
         JournalTab::Notes,
     ];
+
+    /// The tab-bar category for either legacy Files-subtab selector.
+    pub fn top_level(self) -> JournalTab {
+        match self {
+            JournalTab::Hints | JournalTab::Documents => JournalTab::Files,
+            other => other,
+        }
+    }
 
     /// The command argument and sidecar spelling.
     pub fn name(self) -> &'static str {
@@ -49,6 +58,7 @@ impl JournalTab {
             JournalTab::Map => "map",
             JournalTab::Room => "room",
             JournalTab::Inventory => "inventory",
+            JournalTab::Files => "files",
             JournalTab::Hints => "hints",
             JournalTab::Documents => "documents",
             JournalTab::Notes => "notes",
@@ -61,8 +71,7 @@ impl JournalTab {
             JournalTab::Map => "Map",
             JournalTab::Room => "Room",
             JournalTab::Inventory => "Inventory",
-            JournalTab::Hints => "Hints",
-            JournalTab::Documents => "Documents",
+            JournalTab::Files | JournalTab::Hints | JournalTab::Documents => "Files",
             JournalTab::Notes => "Notes",
         }
     }
@@ -73,8 +82,7 @@ impl JournalTab {
             JournalTab::Map => "Map",
             JournalTab::Room => "Rm",
             JournalTab::Inventory => "Inv",
-            JournalTab::Hints => "Hint",
-            JournalTab::Documents => "Docs",
+            JournalTab::Files | JournalTab::Hints | JournalTab::Documents => "Files",
             JournalTab::Notes => "Notes",
         }
     }
@@ -86,6 +94,7 @@ impl JournalTab {
             "map" => Some(JournalTab::Map),
             "room" => Some(JournalTab::Room),
             "inventory" | "inv" | "items" => Some(JournalTab::Inventory),
+            "files" => Some(JournalTab::Files),
             "hints" | "hint" => Some(JournalTab::Hints),
             "documents" | "docs" => Some(JournalTab::Documents),
             "notes" => Some(JournalTab::Notes),
@@ -95,7 +104,10 @@ impl JournalTab {
 
     /// 0-based position in [`JournalTab::ALL`].
     pub fn index(self) -> usize {
-        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+        Self::ALL
+            .iter()
+            .position(|t| *t == self.top_level())
+            .unwrap_or(0)
     }
 
     /// The tab after this one, wrapping.
@@ -139,18 +151,26 @@ fn padded(label: &str) -> String {
 /// marker steps to the neighbouring tab). A bar narrower than the narrow form
 /// is truncated by the drawing clip, not here.
 pub fn tab_bar_cells(width: u16, active: JournalTab) -> Vec<TabBarCell> {
+    let active = active.top_level();
     let strip = |label: fn(JournalTab) -> &'static str| {
         let mut col = 0u16;
         let mut cells = Vec::new();
         for t in JournalTab::ALL {
             let text = padded(label(t));
             let w = text.chars().count() as u16;
-            cells.push(TabBarCell { hit: TabBarHit::Tab(t), col, text });
+            cells.push(TabBarCell {
+                hit: TabBarHit::Tab(t),
+                col,
+                text,
+            });
             col += w;
         }
         (cells, col)
     };
-    for label in [JournalTab::label as fn(JournalTab) -> &'static str, JournalTab::short_label] {
+    for label in [
+        JournalTab::label as fn(JournalTab) -> &'static str,
+        JournalTab::short_label,
+    ] {
         let (cells, total) = strip(label);
         if total <= width {
             return cells;
@@ -159,15 +179,52 @@ pub fn tab_bar_cells(width: u16, active: JournalTab) -> Vec<TabBarCell> {
     let mid = padded(active.label());
     let mid_w = mid.chars().count() as u16;
     vec![
-        TabBarCell { hit: TabBarHit::Prev, col: 0, text: "\u{2039}".into() },
-        TabBarCell { hit: TabBarHit::Tab(active), col: 1, text: mid },
-        TabBarCell { hit: TabBarHit::Next, col: 1 + mid_w, text: "\u{203a}".into() },
+        TabBarCell {
+            hit: TabBarHit::Prev,
+            col: 0,
+            text: "\u{2039}".into(),
+        },
+        TabBarCell {
+            hit: TabBarHit::Tab(active),
+            col: 1,
+            text: mid,
+        },
+        TabBarCell {
+            hit: TabBarHit::Next,
+            col: 1 + mid_w,
+            text: "\u{203a}".into(),
+        },
     ]
 }
 
 /// The mark drawn before the Hints tab's label while the hint session has the
 /// keyboard (SQ-1685).
 pub const HINTS_FOCUS_MARK: char = '\u{25b8}';
+
+/// The selected subtab inside Files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilesSubtab {
+    #[default]
+    Hints,
+    Documents,
+}
+
+impl FilesSubtab {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Hints => Self::Documents,
+            Self::Documents => Self::Hints,
+        }
+    }
+
+    pub fn from_journal_tab(tab: JournalTab) -> Option<Self> {
+        match tab {
+            JournalTab::Hints => Some(Self::Hints),
+            JournalTab::Documents => Some(Self::Documents),
+            _ => None,
+        }
+    }
+}
 
 /// Draw the tab bar into the one-row `area` and return each cell's hit rect.
 /// Selectors: `journal.tabbar` (the row's fill), `journal.tab`,
@@ -193,10 +250,10 @@ pub fn draw_tab_bar(
         }
     }
     let mut hits = Vec::new();
-    for c in tab_bar_cells(area.width, active) {
-        let marked = hints_focused && c.hit == TabBarHit::Tab(JournalTab::Hints);
+    for c in tab_bar_cells(area.width, active.top_level()) {
+        let marked = hints_focused && c.hit == TabBarHit::Tab(JournalTab::Files);
         let style = match c.hit {
-            TabBarHit::Tab(t) if t == active => on,
+            TabBarHit::Tab(t) if t == active.top_level() => on,
             _ => tab,
         };
         let style = if marked { style.patch(focused) } else { style };
@@ -218,6 +275,66 @@ pub fn draw_tab_bar(
     hits
 }
 
+/// Draw the shared Files panel with Hints and Documents as title-strip subtabs.
+/// Returns the inner content rect and the hit rects used for mouse selection.
+pub fn frame_files_body(
+    buf: &mut Buffer,
+    area: Rect,
+    active: FilesSubtab,
+    hints_focused: bool,
+    colors: &ColorScheme,
+) -> (Rect, Vec<(FilesSubtab, Rect)>) {
+    use crate::render::paneframe::{InsetSegment, PaneGlyphs};
+    use crate::render::panel::{draw_panel, PanelSpec, PanelStrip};
+    if area.width == 0 || area.height == 0 {
+        return (area, Vec::new());
+    }
+    let style = colors.theme.get("inventory_panel").style;
+    let border_selector = if hints_focused {
+        "panel.border:active"
+    } else {
+        "panel.border"
+    };
+    let border_color = if hints_focused {
+        colors.theme.get("panel.border:active").style
+    } else {
+        style
+    };
+    let segments = [
+        InsetSegment {
+            text: "Hints",
+            active: active == FilesSubtab::Hints,
+        },
+        InsetSegment {
+            text: "Documents",
+            active: active == FilesSubtab::Documents,
+        },
+    ];
+    let frame = draw_panel(
+        buf,
+        &PanelSpec {
+            area,
+            border_selector,
+            border_color: Some(border_color),
+            border_style: None,
+            glyphs: &PaneGlyphs::default(),
+            header_on: true,
+            strip: Some(PanelStrip {
+                segments: &segments,
+                base: colors.theme.get("panel.tab").style,
+                active: colors.theme.get("panel.tab:active").style,
+            }),
+            body_fill: None,
+        },
+        &colors.theme,
+    );
+    let tabs = [FilesSubtab::Hints, FilesSubtab::Documents]
+        .into_iter()
+        .zip(frame.tab_rects)
+        .collect();
+    (frame.content, tabs)
+}
+
 #[cfg(all(test, feature = "t-render"))]
 mod tests {
     use super::*;
@@ -230,15 +347,29 @@ mod tests {
         }
         assert_eq!(JournalTab::Notes.next(), JournalTab::Map);
         assert_eq!(JournalTab::Map.prev(), JournalTab::Notes);
-        assert_eq!(JournalTab::ALL.last(), Some(&JournalTab::Notes), "Notes is the last tab");
+        assert_eq!(
+            JournalTab::ALL.last(),
+            Some(&JournalTab::Notes),
+            "Notes is the last tab"
+        );
         assert_eq!(
             JournalTab::ALL,
-            [JournalTab::Map, JournalTab::Room, JournalTab::Inventory, JournalTab::Hints, JournalTab::Documents, JournalTab::Notes],
-            "Notes follows Documents"
+            [
+                JournalTab::Map,
+                JournalTab::Room,
+                JournalTab::Inventory,
+                JournalTab::Files,
+                JournalTab::Notes
+            ],
+            "Files combines Hints and Documents"
         );
-        assert_eq!(JournalTab::Hints.index(), 3, "Alt+4 is the fourth tab");
-        assert_eq!(JournalTab::Inventory.next(), JournalTab::Hints);
-        assert_eq!(JournalTab::Documents.prev(), JournalTab::Hints);
+        assert_eq!(JournalTab::Hints.index(), 3);
+        assert_eq!(JournalTab::Documents.index(), 3);
+        assert_eq!(JournalTab::Inventory.next(), JournalTab::Files);
+        assert_eq!(JournalTab::Notes.prev(), JournalTab::Files);
+        assert_eq!(JournalTab::Hints.label(), "Files");
+        assert_eq!(JournalTab::Documents.label(), "Files");
+        assert_eq!(JournalTab::from_name("files"), Some(JournalTab::Files));
         assert_eq!(JournalTab::from_name("docs"), Some(JournalTab::Documents));
         assert_eq!(JournalTab::from_name("INV"), Some(JournalTab::Inventory));
         assert_eq!(JournalTab::from_name("hints"), Some(JournalTab::Hints));
@@ -248,21 +379,27 @@ mod tests {
     fn wide_bar_shows_full_labels_in_order() {
         let cells = tab_bar_cells(55, JournalTab::Map);
         let text: Vec<&str> = cells.iter().map(|c| c.text.as_str()).collect();
-        assert_eq!(text, [" Map ", " Room ", " Inventory ", " Hints ", " Documents ", " Notes "]);
+        assert_eq!(
+            text,
+            [" Map ", " Room ", " Inventory ", " Files ", " Notes "]
+        );
         assert_eq!(cells[1].col, 5);
     }
 
     #[test]
     fn narrower_bar_abbreviates_then_collapses_to_the_active_tab() {
-        let short = tab_bar_cells(36, JournalTab::Map);
+        let short = tab_bar_cells(30, JournalTab::Map);
         assert_eq!(short[2].text, " Inv ");
-        assert_eq!(short[3].text, " Hint ", "Hints abbreviates too");
-        assert_eq!(short[4].text, " Docs ");
+        assert_eq!(short[3].text, " Files ");
         let narrow = tab_bar_cells(25, JournalTab::Room);
         let kinds: Vec<TabBarHit> = narrow.iter().map(|c| c.hit).collect();
         assert_eq!(
             kinds,
-            [TabBarHit::Prev, TabBarHit::Tab(JournalTab::Room), TabBarHit::Next]
+            [
+                TabBarHit::Prev,
+                TabBarHit::Tab(JournalTab::Room),
+                TabBarHit::Next
+            ]
         );
         assert_eq!(narrow[1].text, " Room ");
     }
@@ -272,12 +409,26 @@ mod tests {
 /// themed panel (`panel.border`, `:active` when `highlighted`), the tab's name as
 /// the title strip, and a `panel.border` of `none` (frameless) dropping the
 /// border exactly as it does for the other tabs. Returns the inner content rect.
-pub fn frame_body(buf: &mut Buffer, area: Rect, title: &str, colors: &ColorScheme, highlighted: bool) -> Rect {
+pub fn frame_body(
+    buf: &mut Buffer,
+    area: Rect,
+    title: &str,
+    colors: &ColorScheme,
+    highlighted: bool,
+) -> Rect {
     use crate::render::paneframe::{InsetSegment, PaneGlyphs};
     use crate::render::panel::{draw_panel, PanelSpec, PanelStrip};
     let style = colors.theme.get("inventory_panel").style;
-    let border_selector = if highlighted { "panel.border:active" } else { "panel.border" };
-    let border_color = if highlighted { colors.theme.get("panel.border:active").style } else { style };
+    let border_selector = if highlighted {
+        "panel.border:active"
+    } else {
+        "panel.border"
+    };
+    let border_color = if highlighted {
+        colors.theme.get("panel.border:active").style
+    } else {
+        style
+    };
     let spec = PanelSpec {
         area,
         border_selector,
@@ -285,7 +436,14 @@ pub fn frame_body(buf: &mut Buffer, area: Rect, title: &str, colors: &ColorSchem
         border_style: None,
         glyphs: &PaneGlyphs::default(),
         header_on: true,
-        strip: Some(PanelStrip { segments: &[InsetSegment { text: title, active: false }], base: style, active: style }),
+        strip: Some(PanelStrip {
+            segments: &[InsetSegment {
+                text: title,
+                active: false,
+            }],
+            base: style,
+            active: style,
+        }),
         body_fill: None,
     };
     draw_panel(buf, &spec, &colors.theme).content

@@ -79,6 +79,30 @@ fn byte_at(text: &str, char_index: usize) -> usize {
         .map_or(text.len(), |(at, _)| at)
 }
 
+fn word_left(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut target = cursor.min(chars.len());
+    while target > 0 && chars[target - 1].is_whitespace() {
+        target -= 1;
+    }
+    while target > 0 && !chars[target - 1].is_whitespace() {
+        target -= 1;
+    }
+    target
+}
+
+fn word_right(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut target = cursor.min(chars.len());
+    while target < chars.len() && !chars[target].is_whitespace() {
+        target += 1;
+    }
+    while target < chars.len() && chars[target].is_whitespace() {
+        target += 1;
+    }
+    target
+}
+
 /// Wrap physical note lines into screen-width rows while retaining their
 /// document character offsets for selection and caret placement.
 fn wrapped_lines(text: &str, width: u16) -> Vec<(usize, usize, String)> {
@@ -97,10 +121,9 @@ fn wrapped_lines(text: &str, width: u16) -> Vec<(usize, usize, String)> {
                 line_offset = end;
                 break;
             };
-            if br.last_space == Some(overflow) {
-                // Move a boundary space to the next visual row. Notes reserve
-                // one cell for the caret, so the separator itself starts the
-                // next row instead of landing under or beyond the cursor.
+            if br.last_space == Some(overflow)
+                && remaining[overflow..].chars().all(char::is_whitespace)
+            {
                 let head = &remaining[..overflow];
                 if !head.is_empty() {
                     let count = head.chars().count();
@@ -395,6 +418,8 @@ pub(crate) fn handle_key_with_width(state: &mut AppState, key: KeyEvent, width: 
         return;
     }
     let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+    let by_word =
+        key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
     let len = state.journal_notes.chars().count();
     let cursor = state.journal_notes_cursor.min(len);
     match key.code {
@@ -409,6 +434,14 @@ pub(crate) fn handle_key_with_width(state: &mut AppState, key: KeyEvent, width: 
             });
         }
         KeyCode::Enter => replace_selection(state, "\n"),
+        KeyCode::Left if by_word => {
+            state.journal_notes_vertical_goal = None;
+            move_caret(state, word_left(&state.journal_notes, cursor), extend);
+        }
+        KeyCode::Right if by_word => {
+            state.journal_notes_vertical_goal = None;
+            move_caret(state, word_right(&state.journal_notes, cursor), extend);
+        }
         KeyCode::Left if cursor > 0 => {
             state.journal_notes_vertical_goal = None;
             move_caret(state, cursor - 1, extend);
@@ -585,16 +618,10 @@ pub fn draw(state: &AppState, area: Rect, buf: &mut Buffer) {
                 .saturating_add(caret_col.min(area.width.saturating_sub(1) as usize) as u16);
             if let Some(cell) = buf.cell_mut((caret_x, caret_y)) {
                 if cell.symbol() == " " || cell.symbol().is_empty() {
-                    cell.set_symbol("▏")
-                        .set_style(state.colors.theme.get("accent").style);
+                    cell.set_symbol(" ")
+                        .set_style(body.add_modifier(Modifier::REVERSED));
                 } else {
-                    let accent = state.colors.theme.get("accent").style;
-                    let style = accent
-                        .fg
-                        .map(|fg| cell.style().fg(fg))
-                        .unwrap_or_else(|| cell.style())
-                        .add_modifier(Modifier::UNDERLINED);
-                    cell.set_style(style);
+                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
                 }
             }
         }
@@ -639,10 +666,49 @@ mod tests {
     }
 
     #[test]
+    fn control_arrows_move_by_word_and_shift_control_selects_by_word() {
+        let mut state = AppState::default();
+        state.journal_notes = "one two, three".into();
+        state.journal_notes_cursor = 0;
+        state.journal_notes_editing = true;
+
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes_cursor, 4);
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        );
+        assert_eq!(state.journal_notes_cursor, 9);
+        assert_eq!(copy_selection(&state).as_deref(), Some("two, "));
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes_cursor, 4);
+        assert_eq!(state.journal_notes_selection, None);
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.journal_notes_cursor, 0);
+    }
+
+    #[test]
     fn wraps_before_a_word_instead_of_splitting_it() {
         assert_eq!(
             wrapped_lines("The foobar", 7),
             vec![(0, 3, "The".into()), (4, 10, "foobar".into())]
+        );
+    }
+
+    #[test]
+    fn boundary_space_does_not_indent_the_next_visual_row() {
+        assert_eq!(
+            wrapped_lines("123456 next", 7),
+            vec![(0, 6, "123456".into()), (7, 11, "next".into())]
         );
     }
 
@@ -664,7 +730,8 @@ mod tests {
         let caret = buf.cell((body.right() - 1, content_top)).unwrap();
         assert_eq!(text_last.symbol(), "x");
         assert_eq!(trailing_space.symbol(), " ");
-        assert_eq!(caret.symbol(), "▏");
+        assert_eq!(caret.symbol(), " ");
+        assert!(caret.modifier.contains(Modifier::REVERSED));
         assert!(!text_last
             .style()
             .add_modifier
@@ -686,7 +753,12 @@ mod tests {
         draw(&state, area, &mut buf);
 
         assert!(body.bottom() - text_top > 1);
-        assert_eq!(buf.cell((body.x, text_top + 1)).unwrap().symbol(), "▏");
+        assert_eq!(buf.cell((body.x, text_top + 1)).unwrap().symbol(), " ");
+        assert!(buf
+            .cell((body.x, text_top + 1))
+            .unwrap()
+            .modifier
+            .contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -863,14 +935,14 @@ mod tests {
         state.journal_notes_wrap_width = 8;
 
         handle_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.journal_notes_cursor, 8);
+        assert_eq!(state.journal_notes_cursor, 9);
         handle_key(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(state.journal_notes_cursor, 1);
 
         handle_key(&mut state, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
         assert_eq!(state.journal_notes_cursor, 7);
         handle_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.journal_notes_cursor, 7);
+        assert_eq!(state.journal_notes_cursor, 13);
     }
 
     #[test]
