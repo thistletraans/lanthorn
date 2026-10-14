@@ -15,19 +15,16 @@ and Scott Adams stories. It is a Rust Cargo workspace; the main TUI package is
 Current checkout facts when these notes were written:
 
 - Git remote `origin` points to the user's fork,
-  `https://github.com/thistletraans/lanthorn.git`. No `upstream` remote is
-  configured in this worktree.
-- The working branch is `thistletraans-notepad-zen-fixes`. Its current `HEAD`
-  includes local feature commit `b9fd2c28` (`feat(app): finish Zen Mode and
-  Journal Notes`). The work was based on the newer locally available Lanthorn
-  tree, rather than the older Notes branch.
-- The user has explicitly requested a PR into the fork's
-  `codex/Zen-Mode&Notes` branch. That target was at `e4ef0f55` when checked and
-  has one commit not present in the feature branch, while the feature branch
-  has 41 commits not present in the target. Those 41 include the newer project
-  history and the finished feature. The branches overlap in Notes and Zen
-  files, so reconcile and verify the combined tree before pushing or opening
-  the PR. Do not assume the target branch has already been updated.
+  `https://github.com/thistletraans/lanthorn.git`; `upstream` and `sharkusk`
+  remotes are also configured in this worktree.
+- The current worktree is on `thistletraans-notepad-zen-fixes`, at
+  `5288ee47` (`feat(journal): unify file tabs and improve notes navigation`).
+  That commit is pushed to the fork. The user says this feature branch is to be
+  deleted; do not push more commits to it or open another PR. Do not delete it
+  on GitHub or locally unless explicitly asked.
+- PR #2, from this feature branch into `codex/Zen-Mode&Notes`, was merged on
+  2026-10-13. The feature work is considered complete; the user asked only for
+  this handoff document to be refreshed before closing out.
 
 ## Read these first
 
@@ -84,8 +81,8 @@ responsibilities across these boundaries.
   also have a template/reference; keep these in sync.
 - Do not stage blindly (`git add .`), commit, push, publish, or cut a release
   unless explicitly requested. Inspect `git status` first and stage named
-  files only. The user explicitly requested the PR described above, superseding
-  an earlier instruction not to create one.
+  files only. The user has explicitly said not to create PRs; the already-merged
+  PR #2 was requested earlier and is not authorization to open another.
 - `CLAUDE.md` notes that buildinfo embeds Git state and commits invalidate
   build fingerprints. Verify before committing when practical, to avoid
   paying for a full relink twice.
@@ -140,11 +137,11 @@ installed later, use the exact `nextest` commands and suite filters in
 `CLAUDE.md`; otherwise Cargo's built-in `cargo test` is available. Full test
 runs can be much slower with Cargo's runner.
 
-## Current feature work in this checkout
+## Completed feature work
 
-The local change set brings the Notes and Zen Mode work forward onto the
-newer Lanthorn tree available in this checkout and fixes the usability issues
-reported during testing.
+The work brought the Notes and Zen Mode changes forward onto the current
+Lanthorn tree and adds the Journal navigation changes below. The user manually
+tested the app and reported that the features work well.
 
 ### Zen Mode
 
@@ -182,6 +179,21 @@ reported during testing.
   History is in-memory for the current editing session and is cleared when
   editing begins again; it is not persisted to disk.
 
+### Journal tabs and navigation
+
+- Hints and Documents share a single **Files** top-level Journal tab, with
+  Hints and Documents as subtabs. The selected Files subtab is remembered while
+  another Journal tab is active.
+- **Ctrl+Left/Right** moves between Journal tabs. **Ctrl+Shift+Left/Right**
+  switches between Room and Diagnostics while on Room, and between Hints and
+  Documents while on Files. Notes editing owns Ctrl+arrow chords for word
+  movement/selection.
+- Shift+Up/Down scrolls Room and Inventory; the same keys retain their existing
+  behavior on other Journal tabs.
+- The Notes editor's caret, selection, and word wrapping are aligned with the
+  displayed text; a space at a wrap boundary does not indent the following
+  visual row.
+
 Relevant implementation is in `journal_notes.rs`, `journal.rs`, `state.rs`,
 `styles.rs`, `startup.rs`, `input.rs`, `main.rs`, `render/transcript.rs`,
 `config.rs`, `config_template.rs`, and `slash.rs`. Player-facing details are
@@ -189,42 +201,29 @@ in `docs/guide/playing.md`; generated command/config/style references should
 be validated via the `docs_reference` tests when their registries/templates
 change.
 
-## Verification status for this feature
+## Verification and closeout status
 
-Latest checks after Notes undo grouping and the 30-action history change:
+Most recent focused checks for the completed Journal/Notes work:
 
-- `cargo test -p lanthorn --lib --features t-input journal_notes`: 7 passed.
-- Notes shortcut routing and save-on-leave tests passed individually; the latter
-  verifies the sidecar contains the Notes text after the tab changes.
-- `cargo check -p lanthorn --bin lanthorn` passed during this work, and the
-  full binary check also passed after the Notes editor was added. Cargo emits
-  existing unused/dead-code warnings, especially in `term_colors.rs` and
-  terminal-watchdog code in `main.rs`.
-- `docs_reference` passed all 5 checks after regenerating the command
-  reference.
-- `git diff --check` and `rustfmt --check` for the Notes editor passed.
-- The user manually launched the local Anchorhead build and reported that it
-  worked. This is a user smoke test, not an exhaustive test of every story or
-  terminal.
-- Two `cargo test --workspace --all-features` runs were attempted with
-  `LANTHORN_FIXTURES_REQUIRED=1`. Both stop at the same failing test in
-  `lanthorn-gvm-cli`: `glulxercise_all_groups_pass`, whose bundled Glulx math
-  test reports `pow(2, -1075)` as the smallest positive subnormal instead of
-  zero. This test and its math implementation are outside the Notes/Zen
-  changes; the workspace gate is not green.
-- Strict `cargo clippy -p lanthorn --all-targets --all-features -- -D
-  warnings` fails on pre-existing unused/dead-code warnings in
-  `term_colors.rs` and an unnecessary cast in transcript code. The cast was
-  restored to its original form because changing it was unrelated; rerunning
-  with those existing warning classes allowed completed successfully. This
-  is not a clean strict Clippy pass.
-- `cargo-nextest` is not installed in this Windows environment; use Cargo's
-  built-in `cargo test` for focused validation unless nextest is installed.
+- `cargo test -p lanthorn --lib --features t-input journal_notes::`: 20 passed.
+- `cargo test -p lanthorn --lib --features t-input input::tests::journal_shortcuts_use_control_and_preserve_pane_shift_arrows`:
+  passed, including Room Diagnostics switching.
+- The `journal_tabs::` and `journal_hints_tab::` integration filters passed
+  (8 and 41 tests respectively).
+- `cargo check -p lanthorn --bin lanthorn`, targeted Rust formatting checks,
+  and `git diff --check` passed.
+- `cargo build --release -p lanthorn` completed successfully; the executable
+  is `target.noindex/release/lanthorn.exe`. Cargo emitted existing unused/dead
+  code warnings in `term_colors.rs` and `main.rs`.
+- The user manually tested the app and said it all works great.
+- These checks are focused and do not claim that the full workspace test gate
+  or strict Clippy is clean. `cargo-nextest` is unavailable in this Windows
+  environment; use Cargo's built-in `cargo test` for focused checks.
 
-The feature changes are committed locally on `thistletraans-notepad-zen-fixes`
-in `b9fd2c28`. The requested PR targets `codex/Zen-Mode&Notes`; push only after
-the combined tree has been resolved and checked. Do not claim the workspace
-test gate or strict Clippy is clean.
+The feature commit is `5288ee47`, pushed to
+`origin/thistletraans-notepad-zen-fixes`. PR #2 is merged. The user intends to
+delete the feature branch; leave any branch deletion to the user and do not
+push additional work there.
 
 ## When the official repository changes
 
